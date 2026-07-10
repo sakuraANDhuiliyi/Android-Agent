@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 密钥与本地配置
+config.yaml
+.env
+
+# Agent 运行时数据
+workspaces/
+builds/
+
+# Android 手机端 App（勿在 android-app/ 内提交构建产物）
+android-app/.gradle/
+android-app/.idea/
+android-app/local.properties
+android-app/build/
+android-app/app/build/
+
+# macOS
+.DS_Store
+
+# 勿在 template/ 内构建（template 有自己的 .gitignore）
+template/.gradle/
+template/.idea/
+template/local.properties
+template/build/
+template/app/build/

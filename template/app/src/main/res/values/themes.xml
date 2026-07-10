@@ -1,0 +1,5 @@
+<resources>
+    <style name="Base.Theme.AndroidTemplate" parent="Theme.Material3.DayNight.NoActionBar" />
+
+    <style name="Theme.AndroidTemplate" parent="Base.Theme.AndroidTemplate" />
+</resources>

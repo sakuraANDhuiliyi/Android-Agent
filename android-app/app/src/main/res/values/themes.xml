@@ -1,0 +1,5 @@
+<resources>
+    <style name="Base.Theme.AndroidAgentClient" parent="Theme.Material3.DayNight.NoActionBar" />
+
+    <style name="Theme.AndroidAgentClient" parent="Base.Theme.AndroidAgentClient" />
+</resources>

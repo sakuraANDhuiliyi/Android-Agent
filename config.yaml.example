@@ -1,0 +1,29 @@
+# 复制为 config.yaml 并填写 API Key
+# cp config.yaml.example config.yaml
+
+# 主提供商: deepseek | anthropic
+provider: deepseek
+api_key: "sk-你的DeepSeek密钥"
+base_url: https://api.deepseek.com
+model: deepseek-chat
+
+# 可选：提供商级备用
+# provider_fallbacks:
+#   - anthropic
+# anthropic_api_key: "sk-你的Anthropic密钥"
+# anthropic_base_url: https://api.anthropic.com
+# anthropic_model: claude-sonnet-4-20250514
+
+max_turns: 15
+auto_build_after_edit: false
+
+server_host: 0.0.0.0
+server_port: 8000
+
+# 用户隔离（每个用户只能访问 workspaces/{user_id}/）
+# 手机端填写对应 Token：Authorization: Bearer <token>
+users:
+  - id: local
+    token: ""
+  # - id: alice
+  #   token: "请换成随机长字符串"

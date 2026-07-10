@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from agent.model_fallback import unique_models
+from agent.paths import DEFAULT_USER_ID, ROOT, validate_id
+
+CONFIG_PATH = ROOT / "config.yaml"
+
+PROVIDER_DEFAULTS = {
+    "anthropic": {
+        "model": "claude-sonnet-4-20250514",
+        "model_fallbacks": [],
+        "base_url": None,
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+    },
+    "deepseek": {
+        "model": "deepseek-chat",
+        "model_fallbacks": [],
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+    },
+}
+
+DEFAULT_PROVIDER_FALLBACKS: dict[str, list[str]] = {
+    "deepseek": [],
+    "anthropic": [],
+}
+
+
+@dataclass
+class UserAccount:
+    id: str
+    token: str
+
+
+@dataclass
+class Settings:
+    provider: str
+    api_key: str
+    model: str
+    model_candidates: list[str]
+    max_turns: int
+    base_url: str | None
+    auto_build_after_edit: bool
+    server_host: str
+    server_port: int
+    api_token: str
+    users: list[UserAccount] = field(default_factory=list)
+    provider_fallbacks: list["Settings"] = field(default_factory=list)
+
+
+def _resolve_api_key(provider: str, file_data: dict[str, Any], *, is_primary: bool) -> str:
+    defaults = PROVIDER_DEFAULTS[provider]
+    candidates: list[str | None] = []
+
+    if is_primary:
+        candidates.extend(
+            [
+                os.environ.get("AGENT_API_KEY"),
+                os.environ.get(defaults["api_key_env"]),
+                file_data.get("api_key"),
+            ]
+        )
+
+    candidates.extend(
+        [
+            file_data.get(f"{provider}_api_key"),
+            file_data.get("deepseek_api_key") if provider == "deepseek" else None,
+            file_data.get("anthropic_api_key") if provider == "anthropic" else None,
+        ]
+    )
+
+    for value in candidates:
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _resolve_base_url(provider: str, file_data: dict[str, Any], *, is_primary: bool) -> str | None:
+    defaults = PROVIDER_DEFAULTS[provider]
+    candidates: list[str | None] = []
+
+    if is_primary:
+        candidates.extend(
+            [
+                os.environ.get("AGENT_BASE_URL"),
+                os.environ.get(defaults["base_url_env"]),
+                file_data.get("base_url"),
+            ]
+        )
+
+    candidates.extend(
+        [
+            file_data.get(f"{provider}_base_url"),
+            file_data.get("deepseek_base_url") if provider == "deepseek" else None,
+            file_data.get("anthropic_base_url") if provider == "anthropic" else None,
+            defaults["base_url"],
+        ]
+    )
+
+    for value in candidates:
+        if value:
+            cleaned = str(value).strip()
+            if cleaned:
+                return cleaned
+    return None
+
+
+def _build_settings(
+    provider: str,
+    file_data: dict[str, Any],
+    *,
+    is_primary: bool,
+    shared: dict[str, Any],
+) -> Settings:
+    if provider not in PROVIDER_DEFAULTS:
+        raise ValueError(f"不支持的 provider: {provider}")
+
+    defaults = PROVIDER_DEFAULTS[provider]
+    model_key = "model" if is_primary else f"{provider}_model"
+    primary_model = str(file_data.get(model_key, defaults["model"]))
+
+    if is_primary:
+        model_fallbacks = file_data.get("model_fallbacks", defaults.get("model_fallbacks", []))
+    else:
+        model_fallbacks = file_data.get(
+            f"{provider}_model_fallbacks",
+            defaults.get("model_fallbacks", []),
+        )
+
+    model_candidates = unique_models(primary_model, list(model_fallbacks or []))
+
+    return Settings(
+        provider=provider,
+        api_key=_resolve_api_key(provider, file_data, is_primary=is_primary),
+        model=model_candidates[0],
+        model_candidates=model_candidates,
+        max_turns=int(shared["max_turns"]),
+        base_url=_resolve_base_url(provider, file_data, is_primary=is_primary),
+        auto_build_after_edit=bool(shared["auto_build_after_edit"]),
+        server_host=str(shared["server_host"]),
+        server_port=int(shared["server_port"]),
+        api_token=str(shared["api_token"]),
+        users=list(shared["users"]),
+        provider_fallbacks=[],
+    )
+
+
+def _load_users(file_data: dict[str, Any], legacy_api_token: str) -> list[UserAccount]:
+    raw_users = file_data.get("users")
+    users: list[UserAccount] = []
+    seen: set[str] = set()
+
+    if isinstance(raw_users, list):
+        for item in raw_users:
+            if not isinstance(item, dict):
+                continue
+            try:
+                user_id = validate_id(str(item.get("id", "")), kind="user_id")
+            except ValueError:
+                continue
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            users.append(
+                UserAccount(
+                    id=user_id,
+                    token=str(item.get("token", "") or "").strip(),
+                )
+            )
+
+    if not users:
+        users.append(
+            UserAccount(
+                id=DEFAULT_USER_ID,
+                token=legacy_api_token,
+            )
+        )
+    return users
+
+
+def resolve_user_id(settings: Settings, authorization: str | None) -> str:
+    """Map Bearer token to user_id. Empty Authorization matches a user with empty token."""
+    token = ""
+    if authorization:
+        auth = authorization.strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+        else:
+            token = auth
+
+    matches = [user for user in settings.users if user.token == token]
+    if len(matches) == 1:
+        return matches[0].id
+    if len(matches) > 1:
+        raise PermissionError("多个用户使用了相同 Token，请检查 config.yaml")
+    if not token:
+        raise PermissionError("未提供 API Token")
+    raise PermissionError("无效的 API Token")
+
+
+def load_settings() -> Settings:
+    file_data: dict[str, Any] = {}
+    if CONFIG_PATH.is_file():
+        with CONFIG_PATH.open(encoding="utf-8") as f:
+            file_data = yaml.safe_load(f) or {}
+
+    provider = (
+        os.environ.get("AGENT_PROVIDER")
+        or file_data.get("provider")
+        or "deepseek"
+    ).strip().lower()
+
+    if provider not in PROVIDER_DEFAULTS:
+        raise ValueError(f"不支持的 provider: {provider}")
+
+    legacy_api_token = str(file_data.get("api_token", "") or "").strip()
+    users = _load_users(file_data, legacy_api_token)
+
+    shared = {
+        "max_turns": int(file_data.get("max_turns", 15)),
+        "auto_build_after_edit": bool(file_data.get("auto_build_after_edit", False)),
+        "server_host": str(file_data.get("server_host", "0.0.0.0")),
+        "server_port": int(file_data.get("server_port", 8000)),
+        "api_token": legacy_api_token,
+        "users": users,
+    }
+
+    primary = _build_settings(provider, file_data, is_primary=True, shared=shared)
+
+    configured_fallbacks = file_data.get("provider_fallbacks")
+    if configured_fallbacks is None:
+        configured_fallbacks = DEFAULT_PROVIDER_FALLBACKS.get(provider, [])
+
+    fallback_settings: list[Settings] = []
+    for fallback_provider in configured_fallbacks:
+        name = str(fallback_provider).strip().lower()
+        if not name or name == provider or name not in PROVIDER_DEFAULTS:
+            continue
+        fallback_settings.append(
+            _build_settings(name, file_data, is_primary=False, shared=shared)
+        )
+
+    primary.provider_fallbacks = fallback_settings
+    return primary
+
+
+def list_configured_providers(settings: Settings) -> list[Settings]:
+    seen: set[str] = set()
+    providers: list[Settings] = []
+    for item in [settings, *settings.provider_fallbacks]:
+        if item.api_key and item.provider not in seen:
+            seen.add(item.provider)
+            providers.append(item)
+    return providers
+
+
+def provider_option_dict(item: Settings, *, is_default: bool = False) -> dict[str, Any]:
+    return {
+        "id": item.provider,
+        "provider": item.provider,
+        "model": item.model,
+        "model_candidates": item.model_candidates,
+        "label": f"{item.provider} / {item.model}",
+        "configured": bool(item.api_key),
+        "is_default": is_default,
+    }
+
+
+def models_catalog(settings: Settings) -> dict[str, Any]:
+    models: list[dict[str, Any]] = [
+        {
+            "id": "auto",
+            "provider": "auto",
+            "model": settings.model,
+            "model_candidates": settings.model_candidates,
+            "label": "自动（含备用切换）",
+            "configured": True,
+            "is_default": False,
+        }
+    ]
+    for item in list_configured_providers(settings):
+        models.append(
+            provider_option_dict(item, is_default=item.provider == settings.provider)
+        )
+    return {
+        "default_provider": settings.provider,
+        "models": models,
+    }
+
+
+def resolve_job_settings(
+    base: Settings,
+    provider: str | None,
+    *,
+    auto_fallback: bool = False,
+) -> Settings:
+    if not provider or provider == "auto":
+        if auto_fallback:
+            return base
+        return replace(base, provider_fallbacks=[])
+
+    for item in list_configured_providers(base):
+        if item.provider == provider:
+            selected = replace(item, provider_fallbacks=[])
+            if auto_fallback:
+                fallbacks = [
+                    replace(fallback, provider_fallbacks=[])
+                    for fallback in base.provider_fallbacks
+                    if fallback.provider != provider and fallback.api_key
+                ]
+                selected = replace(selected, provider_fallbacks=fallbacks)
+            return selected
+
+    raise ValueError(f"未配置的提供商: {provider}")

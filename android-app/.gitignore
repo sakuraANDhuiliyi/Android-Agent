@@ -1,0 +1,16 @@
+# IDE
+.idea/
+*.iml
+
+# Gradle / 构建产物（禁止提交到 template）
+.gradle/
+build/
+app/build/
+**/build/
+local.properties
+
+# 其他
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
