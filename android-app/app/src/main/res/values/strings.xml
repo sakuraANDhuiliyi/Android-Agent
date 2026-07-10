@@ -1,8 +1,11 @@
 <resources>
     <string name="app_name">Android Agent</string>
     <string name="server_url_hint">http://192.168.1.100:8000</string>
-    <string name="api_token_hint">用户 Token（与 config.yaml 中该用户一致）</string>
-    <string name="user_id_hint">用户 ID（如 local）</string>
+    <string name="api_token_hint">访问 Token（注册后自动保存）</string>
+    <string name="user_id_hint">用户 ID（注册后自动生成）</string>
+    <string name="register_user">注册新用户</string>
+    <string name="register_confirm_title">注册新用户？</string>
+    <string name="register_confirm_message">这会生成一套新的用户 ID 和 Token。原用户的项目不会出现在新账号中。</string>
     <string name="connect">连接</string>
     <string name="refresh_projects">刷新项目</string>
     <string name="new_project">新建项目</string>

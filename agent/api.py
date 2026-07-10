@@ -11,9 +11,16 @@ from pydantic import BaseModel, Field
 
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
 from agent.jobs import get_job, job_to_dict, list_jobs, start_ask_job
-from agent.paths import build_log_path, latest_apk_path, user_builds_dir, workspace_path
+from agent.paths import (
+    build_log_path,
+    latest_apk_path,
+    user_builds_dir,
+    user_workspaces_dir,
+    workspace_path,
+)
 from agent.project import init_project, list_projects, load_project_meta
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
+from agent.users import UserStore
 
 
 class CreateProjectRequest(BaseModel):
@@ -30,6 +37,13 @@ class AskRequest(BaseModel):
 class WriteFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
     content: str = Field(default="")
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    value = authorization.strip()
+    return value[7:].strip() if value.lower().startswith("bearer ") else value
 
 
 def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
@@ -55,14 +69,18 @@ def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
     }
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    user_store: UserStore | None = None,
+) -> FastAPI:
     settings = settings or load_settings()
     app = FastAPI(
         title="Android Agent API",
-        version="0.2.0",
+        version="0.3.0",
         description="本地 Android AI Agent HTTP 服务，按 user_id 隔离项目",
     )
     app.state.settings = settings
+    app.state.user_store = user_store or UserStore()
 
     app.add_middleware(
         CORSMiddleware,
@@ -72,11 +90,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    def current_user(authorization: Optional[str] = Header(default=None)) -> str:
+    def authenticated_user(authorization: str | None) -> str:
+        token = _bearer_token(authorization)
+        registered_user = app.state.user_store.authenticate(token)
+        if registered_user:
+            return registered_user
         try:
             return resolve_user_id(app.state.settings, authorization)
         except PermissionError as e:
             raise HTTPException(status_code=401, detail=str(e)) from e
+
+    def current_user(authorization: Optional[str] = Header(default=None)) -> str:
+        return authenticated_user(authorization)
+
+    @app.post("/api/register", status_code=201)
+    def register() -> dict[str, str]:
+        user_id, token = app.state.user_store.register()
+        user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
+        user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
+        return {
+            "user_id": user_id,
+            "token": token,
+            "token_type": "Bearer",
+        }
 
     @app.get("/api/health")
     def health(user_id: str = Depends(current_user)) -> dict[str, Any]:
@@ -306,11 +342,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.websocket("/api/ws/jobs/{job_id}")
     async def ws_job(job_id: str, websocket: WebSocket) -> None:
         try:
-            user_id = resolve_user_id(
-                settings,
-                websocket.headers.get("authorization"),
-            )
-        except PermissionError:
+            user_id = authenticated_user(websocket.headers.get("authorization"))
+        except HTTPException:
             await websocket.close(code=4401)
             return
 

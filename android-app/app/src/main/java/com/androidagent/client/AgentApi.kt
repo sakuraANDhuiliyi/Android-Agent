@@ -20,6 +20,11 @@ data class HealthInfo(
     val port: Int,
 )
 
+data class RegisteredAccount(
+    val userId: String,
+    val token: String,
+)
+
 data class ModelOption(
     val id: String,
     val provider: String,
@@ -77,6 +82,14 @@ class AgentApi(
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+
+    fun register(): RegisteredAccount {
+        val json = postJson("/api/register", JSONObject())
+        return RegisteredAccount(
+            userId = json.getString("user_id"),
+            token = json.getString("token"),
+        )
+    }
 
     fun health(): HealthInfo {
         val json = getJson("/api/health")

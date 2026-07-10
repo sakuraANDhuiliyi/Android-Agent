@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
         binding.recyclerProjects.adapter = projectAdapter
 
         binding.btnConnect.setOnClickListener { connectServer() }
+        binding.btnRegister.setOnClickListener { confirmRegisterUser() }
         binding.btnRefreshProjects.setOnClickListener { refreshProjects() }
         binding.btnNewProject.setOnClickListener { showCreateProjectDialog() }
         binding.btnBrowseFiles.setOnClickListener { browseFiles() }
@@ -88,9 +89,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         prefs.serverUrl = serverUrl
-        prefs.userId = binding.editUserId.text?.toString()?.trim().orEmpty().ifBlank { "local" }
         prefs.apiToken = binding.editApiToken.text?.toString()?.trim().orEmpty()
-        binding.editUserId.setText(prefs.userId)
+        if (prefs.apiToken.isBlank()) {
+            toast("请先注册用户")
+            return
+        }
         api = AgentApi(serverUrl, prefs.apiToken)
 
         setBusy(true)
@@ -117,6 +120,49 @@ class MainActivity : AppCompatActivity() {
                 selectedModelOption = null
                 appendLog("连接失败: ${e.message}")
                 toast("连接失败")
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun confirmRegisterUser() {
+        val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
+        if (serverUrl.isBlank()) {
+            toast("请填写服务器地址")
+            return
+        }
+        if (prefs.apiToken.isBlank()) {
+            registerUser(serverUrl)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.register_confirm_title)
+            .setMessage(R.string.register_confirm_message)
+            .setPositiveButton(R.string.register_user) { _, _ -> registerUser(serverUrl) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun registerUser(serverUrl: String) {
+        prefs.serverUrl = serverUrl
+        setBusy(true)
+        lifecycleScope.launch {
+            try {
+                val account = withContext(Dispatchers.IO) {
+                    AgentApi(serverUrl).register()
+                }
+                prefs.userId = account.userId
+                prefs.apiToken = account.token
+                prefs.selectedProjectId = null
+                binding.editUserId.setText(account.userId)
+                binding.editApiToken.setText(account.token)
+                api = AgentApi(serverUrl, account.token)
+                appendLog("注册成功，用户 ID: ${account.userId}")
+                connectServer()
+            } catch (e: Exception) {
+                appendLog("注册失败: ${e.message}")
+                toast("注册失败")
             } finally {
                 setBusy(false)
             }
@@ -428,6 +474,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setBusy(busy: Boolean) {
+        binding.btnRegister.isEnabled = !busy
         binding.btnConnect.isEnabled = !busy
         binding.btnRefreshProjects.isEnabled = !busy
         binding.btnNewProject.isEnabled = !busy

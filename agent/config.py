@@ -169,15 +169,18 @@ def _load_users(file_data: dict[str, Any], legacy_api_token: str) -> list[UserAc
                 continue
             if user_id in seen:
                 continue
+            token = str(item.get("token", "") or "").strip()
+            if not token:
+                continue
             seen.add(user_id)
             users.append(
                 UserAccount(
                     id=user_id,
-                    token=str(item.get("token", "") or "").strip(),
+                    token=token,
                 )
             )
 
-    if not users:
+    if not users and legacy_api_token:
         users.append(
             UserAccount(
                 id=DEFAULT_USER_ID,

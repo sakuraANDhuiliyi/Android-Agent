@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_DIR = ROOT / "template"
 WORKSPACES_DIR = ROOT / "workspaces"
 BUILDS_DIR = ROOT / "builds"
+DATA_DIR = Path(os.environ.get("AGENT_DATA_DIR", ROOT / "data")).expanduser()
 
 DEFAULT_PACKAGE = "com.example.template"
 DEFAULT_USER_ID = os.environ.get("AGENT_USER_ID", "local").strip() or "local"

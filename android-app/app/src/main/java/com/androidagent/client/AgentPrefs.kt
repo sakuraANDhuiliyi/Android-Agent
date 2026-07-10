@@ -15,7 +15,7 @@ class AgentPrefs(context: Context) {
         set(value) = prefs.edit().putString(KEY_API_TOKEN, value.trim()).apply()
 
     var userId: String
-        get() = prefs.getString(KEY_USER_ID, DEFAULT_USER_ID).orEmpty()
+        get() = prefs.getString(KEY_USER_ID, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_USER_ID, value.trim()).apply()
 
     var selectedProjectId: String?
@@ -35,6 +35,5 @@ class AgentPrefs(context: Context) {
         private const val KEY_SELECTED_PROVIDER = "selected_provider"
         private const val DEFAULT_SERVER_URL = "http://192.168.1.100:8000"
         private const val DEFAULT_PROVIDER = "auto"
-        private const val DEFAULT_USER_ID = "local"
     }
 }

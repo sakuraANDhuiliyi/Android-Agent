@@ -11,6 +11,7 @@ config.yaml
 # Agent 运行时数据
 workspaces/
 builds/
+data/
 
 # Android 手机端 App（勿在 android-app/ 内提交构建产物）
 android-app/.gradle/

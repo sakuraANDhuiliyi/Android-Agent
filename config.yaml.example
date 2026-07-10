@@ -20,10 +20,9 @@ auto_build_after_edit: false
 server_host: 0.0.0.0
 server_port: 8000
 
-# 用户隔离（每个用户只能访问 workspaces/{user_id}/）
-# 手机端填写对应 Token：Authorization: Bearer <token>
-users:
-  - id: local
-    token: ""
-  # - id: alice
-  #   token: "请换成随机长字符串"
+# App 通过 POST /api/register 自助注册。账号保存在 data/users.db，
+# 每个用户只能访问 workspaces/{user_id}/ 下的项目。
+# 可选：保留由管理员预设的固定账号（Token 不可为空）
+# users:
+#   - id: admin
+#     token: "请换成随机长字符串"
