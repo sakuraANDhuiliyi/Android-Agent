@@ -15,6 +15,7 @@ model: deepseek-chat
 # anthropic_model: claude-sonnet-4-20250514
 
 max_turns: 15
+max_auto_continuations: 2  # 每 15 轮自动续接，2 表示最多共 45 轮
 auto_build_after_edit: false
 
 server_host: 0.0.0.0

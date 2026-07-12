@@ -43,6 +43,8 @@ data class ProjectInfo(
     val name: String,
     val packageName: String,
     val hasApk: Boolean,
+    val latestStatus: String?,
+    val latestTaskId: String?,
 )
 
 data class JobInfo(
@@ -53,6 +55,17 @@ data class JobInfo(
     val result: String?,
     val error: String?,
     val events: List<JSONObject>,
+    val changedFiles: List<JSONObject>,
+    val cancelRequested: Boolean,
+    val inputTokens: Int?,
+    val outputTokens: Int?,
+    val totalTokens: Int?,
+    val provider: String?,
+    val model: String?,
+    val createdAt: Double?,
+    val startedAt: Double?,
+    val finishedAt: Double?,
+    val hasBuildLog: Boolean,
 )
 
 data class FileEntry(
@@ -154,6 +167,21 @@ class AgentApi(
         return parseJob(json.getJSONObject("job"))
     }
 
+    fun listJobs(projectId: String): List<JobInfo> {
+        val json = getJson("/api/jobs?project_id=$projectId")
+        val jobs = json.optJSONArray("jobs") ?: JSONArray()
+        return (0 until jobs.length()).map { parseJob(jobs.getJSONObject(it)) }
+    }
+
+    fun cancelJob(jobId: String): JobInfo {
+        val json = postJson("/api/jobs/$jobId/cancel", JSONObject())
+        return parseJob(json.getJSONObject("job"))
+    }
+
+    fun getTaskBuildLog(jobId: String): String {
+        return getJson("/api/jobs/$jobId/log").optString("content")
+    }
+
     fun downloadApk(projectId: String, dest: File) {
         val request = buildRequest("/api/projects/$projectId/apk")
         client.newCall(request).execute().use { response ->
@@ -209,6 +237,8 @@ class AgentApi(
             name = json.optString("name"),
             packageName = json.optString("package"),
             hasApk = json.optBoolean("has_apk"),
+            latestStatus = json.optString("latest_status").takeIf { it.isNotBlank() && it != "null" },
+            latestTaskId = json.optString("latest_task_id").takeIf { it.isNotBlank() && it != "null" },
         )
     }
 
@@ -225,6 +255,10 @@ class AgentApi(
     private fun parseJob(json: JSONObject): JobInfo {
         val eventsArray = json.optJSONArray("events") ?: JSONArray()
         val events = (0 until eventsArray.length()).map { eventsArray.getJSONObject(it) }
+        val changedArray = json.optJSONArray("changed_files") ?: JSONArray()
+        val changed = (0 until changedArray.length()).map { changedArray.getJSONObject(it) }
+        fun nullableInt(name: String): Int? = if (json.isNull(name)) null else json.optInt(name)
+        fun nullableDouble(name: String): Double? = if (json.isNull(name)) null else json.optDouble(name)
         return JobInfo(
             id = json.optString("id"),
             projectId = json.optString("project_id"),
@@ -233,6 +267,17 @@ class AgentApi(
             result = json.optString("result").takeIf { it.isNotBlank() },
             error = json.optString("error").takeIf { it.isNotBlank() },
             events = events,
+            changedFiles = changed,
+            cancelRequested = json.optBoolean("cancel_requested"),
+            inputTokens = nullableInt("input_tokens"),
+            outputTokens = nullableInt("output_tokens"),
+            totalTokens = nullableInt("total_tokens"),
+            provider = json.optString("provider").takeIf { it.isNotBlank() && it != "null" },
+            model = json.optString("model").takeIf { it.isNotBlank() && it != "null" },
+            createdAt = nullableDouble("created_at"),
+            startedAt = nullableDouble("started_at"),
+            finishedAt = nullableDouble("finished_at"),
+            hasBuildLog = !json.isNull("build_log_path") && json.optString("build_log_path").isNotBlank(),
         )
     }
 

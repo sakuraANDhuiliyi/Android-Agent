@@ -10,7 +10,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
-from agent.jobs import get_job, job_to_dict, list_jobs, start_ask_job
+from agent.database import TaskStore
+from agent.jobs import (
+    configure_task_store,
+    get_job,
+    job_to_dict,
+    list_jobs,
+    request_cancel,
+    start_ask_job,
+)
 from agent.paths import (
     build_log_path,
     latest_apk_path,
@@ -18,7 +26,7 @@ from agent.paths import (
     user_workspaces_dir,
     workspace_path,
 )
-from agent.project import init_project, list_projects, load_project_meta
+from agent.project import delete_project, init_project, list_projects, load_project_meta
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
 from agent.users import UserStore
 
@@ -59,6 +67,8 @@ def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
                     "path": str(log_file),
                 }
             )
+    recent_tasks = list_jobs(user_id, project_id)
+    latest_task = recent_tasks[0] if recent_tasks else None
     return {
         **meta,
         "user_id": user_id,
@@ -66,21 +76,26 @@ def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
         "has_apk": apk.is_file(),
         "apk_path": str(apk) if apk.is_file() else None,
         "build_logs": build_logs[:20],
+        "latest_status": latest_task.get("status") if latest_task else None,
+        "latest_task_id": latest_task.get("id") if latest_task else None,
     }
 
 
 def create_app(
     settings: Settings | None = None,
     user_store: UserStore | None = None,
+    task_store: TaskStore | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     app = FastAPI(
         title="Android Agent API",
-        version="0.3.0",
+        version="1.0.0-mvp",
         description="本地 Android AI Agent HTTP 服务，按 user_id 隔离项目",
     )
     app.state.settings = settings
     app.state.user_store = user_store or UserStore()
+    if task_store is not None:
+        configure_task_store(task_store)
 
     app.add_middleware(
         CORSMiddleware,
@@ -189,12 +204,10 @@ def create_app(
         if not job_settings.api_key:
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
 
-        job = start_ask_job(
-            user_id,
-            project_id,
-            body.prompt,
-            job_settings,
-        )
+        try:
+            job = start_ask_job(user_id, project_id, body.prompt, job_settings)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         return {"job": job_to_dict(job)}
 
     @app.get("/api/jobs")
@@ -216,6 +229,47 @@ def create_app(
         if not job:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         return {"job": job_to_dict(job)}
+
+    @app.post("/api/jobs/{job_id}/cancel", status_code=202)
+    def cancel_job(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        if job["status"] in {"succeeded", "failed", "canceled"}:
+            return {"job": job_to_dict(job)}
+        request_cancel(job_id, user_id)
+        return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
+
+    @app.get("/api/jobs/{job_id}/apk")
+    def download_task_apk(job_id: str, user_id: str = Depends(current_user)) -> FileResponse:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        apk_path = job.get("apk_path")
+        if not apk_path or not __import__("pathlib").Path(apk_path).is_file():
+            raise HTTPException(status_code=404, detail="该任务没有 APK")
+        return FileResponse(apk_path, media_type="application/vnd.android.package-archive", filename=f"{job['project_id']}-{job_id}.apk")
+
+    @app.get("/api/jobs/{job_id}/log")
+    def get_task_log(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        log_path = job.get("build_log_path")
+        path = __import__("pathlib").Path(log_path) if log_path else None
+        if not path or not path.is_file():
+            raise HTTPException(status_code=404, detail="该任务没有构建日志")
+        return {"job_id": job_id, "content": path.read_text(encoding="utf-8", errors="replace")}
+
+    @app.delete("/api/projects/{project_id}", status_code=204)
+    def remove_project(project_id: str, user_id: str = Depends(current_user)) -> None:
+        active = [item for item in list_jobs(user_id, project_id) if item["status"] in {"queued", "running"}]
+        if active:
+            raise HTTPException(status_code=409, detail="项目有正在运行的任务")
+        try:
+            delete_project(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
     @app.get("/api/projects/{project_id}/apk")
     def download_apk(
@@ -360,18 +414,18 @@ def create_app(
                 if not job:
                     break
 
-                while sent < len(job.events):
-                    await websocket.send_json(job.events[sent])
+                while sent < len(job.get("events", [])):
+                    await websocket.send_json(job["events"][sent])
                     sent += 1
 
-                if job.status in {"completed", "failed"}:
+                if job["status"] in {"succeeded", "failed", "canceled"}:
                     await websocket.send_json(
                         {
                             "type": "done",
-                            "ts": job.finished_at,
-                            "status": job.status,
-                            "result": job.result,
-                            "error": job.error,
+                            "ts": job["finished_at"],
+                            "status": job["status"],
+                            "result": job.get("final_message"),
+                            "error": job.get("error_message"),
                         }
                     )
                     break

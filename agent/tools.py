@@ -27,6 +27,7 @@ ALLOWED_WRITE_PREFIXES = (
     "app/src/main/java/",
     "app/src/main/res/",
     "app/src/main/AndroidManifest.xml",
+    "app/build.gradle.kts",
 )
 
 GRADLE_TASKS = {"assembleDebug", "clean"}
@@ -36,6 +37,21 @@ GRADLE_TASKS = {"assembleDebug", "clean"}
 class ToolResult:
     ok: bool
     output: Any
+
+
+def summarize_build_log(log_body: str, tail_lines: int = 120) -> str:
+    lines = log_body.splitlines()
+    markers = (" error:", "ERROR", "Exception", "FAILED", "Manifest merger failed", "resource linking failed")
+    first_error = next((index for index, line in enumerate(lines) if any(marker in line for marker in markers)), None)
+    selected: list[str] = []
+    if first_error is not None:
+        selected.extend(lines[max(0, first_error - 3): first_error + 12])
+    tail = lines[-tail_lines:]
+    if selected and tail and selected[-1] != tail[0]:
+        selected.append("... 日志尾部 ...")
+    selected.extend(tail)
+    deduped = list(dict.fromkeys(selected))
+    return "\n".join(deduped) if deduped else "(构建日志为空)"
 
 
 def _normalize_rel(path: str) -> str:
@@ -241,10 +257,10 @@ def run_gradle(
         log_file.write_text(log_body, encoding="utf-8")
 
         if proc.returncode != 0:
-            tail = "\n".join(log_body.splitlines()[-80:])
+            tail = summarize_build_log(log_body)
             return ToolResult(
                 False,
-                f"Gradle 失败 (exit {proc.returncode})\n日志: {log_file}\n\n--- 最后 80 行 ---\n{tail}",
+                f"Gradle 失败 (exit {proc.returncode})\n日志: {log_file}\n\n--- 关键日志摘要 ---\n{tail}",
             )
 
         msg = f"Gradle {task} 成功\n日志: {log_file}"
@@ -318,7 +334,7 @@ BASE_TOOL_DEFINITIONS = [
     },
     {
         "name": "write_file",
-        "description": "写入工程内文件（覆盖）。仅限 app/src/main 下源码与资源",
+        "description": "写入工程内文件（覆盖）。仅限 app/src/main 下源码资源及 app/build.gradle.kts",
         "input_schema": {
             "type": "object",
             "properties": {

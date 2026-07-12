@@ -1,10 +1,17 @@
 # Android Agent
 
-Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可向服务端注册用户、创建隔离的 Android 项目，并通过 Agent 修改和构建项目。
+Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可初始化设备连接、创建隔离的 Android 项目，并通过 Agent 修改和构建项目。第一阶段的完整范围见 `MVP_SPEC.md`。
 
-## 用户注册与目录隔离
+## 第一阶段能力
 
-App 首次使用时填写服务器地址并点击“注册新用户”。服务端会生成唯一的 `user_id` 和随机访问 Token：
+- SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
+- 同一项目串行执行，可请求停止，服务重启后中断任务会标记失败。
+- Agent 必须执行 `assembleDebug`，成功任务保留任务级 APK 和构建日志。
+- 手机端支持任务提交、轮询、停止、历史恢复、调试事件、APK 下载与安装。
+
+## 设备初始化与目录隔离
+
+App 首次使用时填写服务器地址并点击“初始化设备连接”。服务端会生成唯一的 `user_id` 和随机访问 Token：
 
 - 账号数据库：`data/users.db`（只保存 Token 的 SHA-256 哈希）
 - 用户项目：`workspaces/{user_id}/{project_id}`
@@ -21,6 +28,18 @@ python3 -m pip install -r requirements.txt
 cp config.yaml.example config.yaml
 python3 -m agent serve
 ```
+
+启动后访问 `http://127.0.0.1:8000/docs` 查看 API。手机连接时使用电脑的局域网 IP，例如 `http://192.168.1.100:8000`。
+
+## 验证与构建
+
+```bash
+python3 -m unittest discover -s tests -v
+cd android-app && ./gradlew assembleDebug
+cd ../template && ./gradlew assembleDebug
+```
+
+手机端 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。
 
 ## 迁移到云服务器
 

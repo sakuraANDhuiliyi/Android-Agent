@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -78,7 +79,7 @@ def init_project(
         raise FileNotFoundError(f"模板不存在: {TEMPLATE_DIR}")
 
     user_id = validate_id(user_id, kind="user_id")
-    package = package or DEFAULT_PACKAGE
+    package = package or f"com.androidagent.{_slugify(name).replace('-', '')}"
     _validate_package(package)
 
     user_dir = user_workspaces_dir(user_id)
@@ -102,6 +103,8 @@ def init_project(
         "name": name,
         "package": package,
         "user_id": user_id,
+        "created_at": time.time(),
+        "updated_at": time.time(),
     }
     project_meta_path(user_id, project_id).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2),
@@ -143,6 +146,11 @@ def list_projects(user_id: str) -> list[dict]:
         meta["user_id"] = user_id
         projects.append(meta)
     return projects
+
+
+def delete_project(user_id: str, project_id: str) -> None:
+    load_project_meta(user_id, project_id)
+    shutil.rmtree(workspace_path(user_id, project_id))
 
 
 def new_build_id() -> str:

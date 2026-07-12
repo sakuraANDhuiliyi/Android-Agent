@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable
 
 from agent.config import Settings
@@ -9,6 +10,28 @@ from agent.prompts import get_system_prompt
 from agent.tools import dispatch_tool, get_tool_definitions
 
 EventCallback = Callable[[str, Any], None]
+CancelCheck = Callable[[], None]
+
+
+class CancellationRequested(RuntimeError):
+    pass
+
+
+def _total_turns(settings: Settings) -> int:
+    batches = max(1, 1 + settings.max_auto_continuations)
+    return max(1, settings.max_turns) * batches
+
+
+def _emit_continuation(on_event: EventCallback | None, turn: int, settings: Settings) -> None:
+    if turn > 1 and (turn - 1) % settings.max_turns == 0:
+        batch = (turn - 1) // settings.max_turns + 1
+        _emit(
+            on_event,
+            "auto_continue",
+            f"已用完一批 {settings.max_turns} 轮，自动继续第 {batch} 批",
+            batch=batch,
+            max_batches=1 + settings.max_auto_continuations,
+        )
 
 
 def run_agent(
@@ -18,11 +41,14 @@ def run_agent(
     project_id: str,
     user_prompt: str,
     on_event: EventCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
 
     for index, current_settings in enumerate(provider_chain):
+        if cancel_check:
+            cancel_check()
         if not current_settings.api_key:
             errors.append(f"{current_settings.provider}: 未配置 API Key")
             continue
@@ -49,6 +75,7 @@ def run_agent(
                 project_id,
                 user_prompt,
                 on_event,
+                cancel_check,
             )
         except Exception as exc:
             errors.append(f"{current_settings.provider}: {exc}")
@@ -76,6 +103,7 @@ def _run_agent_with_provider(
     project_id: str,
     user_prompt: str,
     on_event: EventCallback | None,
+    cancel_check: CancelCheck | None,
 ) -> str:
     system_prompt = get_system_prompt(settings)
 
@@ -88,6 +116,7 @@ def _run_agent_with_provider(
             user_prompt,
             system_prompt,
             on_event,
+            cancel_check,
         )
     return _run_openai_compatible(
         settings,
@@ -97,6 +126,7 @@ def _run_agent_with_provider(
         user_prompt,
         system_prompt,
         on_event,
+        cancel_check,
     )
 
 
@@ -217,6 +247,7 @@ def _run_openai_compatible(
     user_prompt: str,
     system_prompt: str,
     on_event: EventCallback | None,
+    cancel_check: CancelCheck | None,
 ) -> str:
     try:
         from openai import OpenAI
@@ -235,9 +266,13 @@ def _run_openai_compatible(
     final_text_parts: list[str] = []
     active_model = settings.model
 
-    for turn in range(1, settings.max_turns + 1):
-        turn_msg = f"\n--- Agent 轮次 {turn}/{settings.max_turns} ---"
-        _emit(on_event, "turn", turn_msg, turn=turn, max_turns=settings.max_turns)
+    total_turns = _total_turns(settings)
+    for turn in range(1, total_turns + 1):
+        _emit_continuation(on_event, turn, settings)
+        if cancel_check:
+            cancel_check()
+        turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
+        _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
 
         response, active_model = _chat_completion_with_fallback(
             client,
@@ -250,6 +285,15 @@ def _run_openai_compatible(
         )
 
         choice = response.choices[0]
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens = getattr(usage, "prompt_tokens", None)
+            output_tokens = getattr(usage, "completion_tokens", None)
+            _emit(on_event, "usage", provider=settings.provider, model=active_model, usage={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": getattr(usage, "total_tokens", None),
+            })
         message = choice.message
         if message.content:
             text = message.content.strip()
@@ -259,6 +303,8 @@ def _run_openai_compatible(
 
         tool_calls = message.tool_calls or []
         for tool_call in tool_calls:
+            if cancel_check:
+                cancel_check()
             args = tool_call.function.arguments
             try:
                 tool_input = json.loads(args) if args else {}
@@ -299,6 +345,7 @@ def _run_openai_compatible(
                 tool_input = json.loads(tool_call.function.arguments or "{}")
             except json.JSONDecodeError:
                 tool_input = {}
+            started = time.monotonic()
             result = dispatch_tool(
                 workspace,
                 user_id,
@@ -319,6 +366,7 @@ def _run_openai_compatible(
                 name=tool_call.function.name,
                 ok=result.ok,
                 preview=preview,
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
             messages.append(
                 {
@@ -341,6 +389,7 @@ def _run_anthropic(
     user_prompt: str,
     system_prompt: str,
     on_event: EventCallback | None,
+    cancel_check: CancelCheck | None,
 ) -> str:
     try:
         import anthropic
@@ -357,9 +406,13 @@ def _run_anthropic(
     tool_definitions = get_tool_definitions(settings)
     active_model = settings.model
 
-    for turn in range(1, settings.max_turns + 1):
-        turn_msg = f"\n--- Agent 轮次 {turn}/{settings.max_turns} ---"
-        _emit(on_event, "turn", turn_msg, turn=turn, max_turns=settings.max_turns)
+    total_turns = _total_turns(settings)
+    for turn in range(1, total_turns + 1):
+        _emit_continuation(on_event, turn, settings)
+        if cancel_check:
+            cancel_check()
+        turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
+        _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
 
         response, active_model = _anthropic_message_with_fallback(
             client,
@@ -371,6 +424,15 @@ def _run_anthropic(
             tools=tool_definitions,
             messages=messages,
         )
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens = getattr(usage, "input_tokens", None)
+            output_tokens = getattr(usage, "output_tokens", None)
+            _emit(on_event, "usage", provider=settings.provider, model=active_model, usage={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": (input_tokens + output_tokens) if input_tokens is not None and output_tokens is not None else None,
+            })
 
         assistant_content = []
         tool_uses = []
@@ -400,6 +462,9 @@ def _run_anthropic(
 
         tool_results = []
         for tool_use in tool_uses:
+            if cancel_check:
+                cancel_check()
+            started = time.monotonic()
             result = dispatch_tool(
                 workspace,
                 user_id,
@@ -420,6 +485,7 @@ def _run_anthropic(
                 name=tool_use.name,
                 ok=result.ok,
                 preview=preview,
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
             tool_results.append(
                 {

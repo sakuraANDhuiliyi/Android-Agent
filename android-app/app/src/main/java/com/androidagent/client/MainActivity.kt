@@ -40,6 +40,8 @@ class MainActivity : AppCompatActivity() {
     private var selectedProject: ProjectInfo? = null
     private var pollJob: Job? = null
     private var downloadedApk: File? = null
+    private var currentJobId: String? = null
+    private var displayedJobId: String? = null
 
     private val installPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -69,8 +71,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnNewProject.setOnClickListener { showCreateProjectDialog() }
         binding.btnBrowseFiles.setOnClickListener { browseFiles() }
         binding.btnSend.setOnClickListener { sendPrompt() }
+        binding.btnStop.setOnClickListener { stopCurrentJob() }
         binding.btnDownloadApk.setOnClickListener { downloadApk() }
         binding.btnInstallApk.setOnClickListener { requestInstallPermissionIfNeeded() }
+        binding.btnLoadFullLog.setOnClickListener { loadFullBuildLog() }
 
         binding.dropdownModel.setOnItemClickListener { _, _, position, _ ->
             if (position in modelOptions.indices) {
@@ -296,6 +300,7 @@ class MainActivity : AppCompatActivity() {
 
         pollJob?.cancel()
         setBusy(true)
+        binding.textStatus.text = "正在提交任务..."
         lifecycleScope.launch {
             try {
                 appendLog("提交任务到 Agent...")
@@ -308,9 +313,14 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
                 appendLog("任务已创建: ${job.id}")
+                currentJobId = job.id
+                binding.btnStop.visibility = View.VISIBLE
+                binding.textStatus.text = "任务运行中"
+                toast("任务已提交")
                 pollJob = launch { pollJobUntilDone(currentApi, job.id) }
             } catch (e: Exception) {
                 appendLog("发送失败: ${e.message}")
+                binding.textStatus.text = "发送失败"
                 toast("发送失败")
                 setBusy(false)
             }
@@ -322,32 +332,134 @@ class MainActivity : AppCompatActivity() {
         while (coroutineContext.isActive) {
             try {
                 val job = withContext(Dispatchers.IO) { currentApi.getJob(jobId) }
+                renderDebugSummary(job)
                 while (lastEventCount < job.events.size) {
                     appendLog(formatEvent(job.events[lastEventCount]))
                     lastEventCount++
                 }
 
                 when (job.status) {
-                    "completed" -> {
+                    "succeeded" -> {
                         appendLog("=== 任务完成 ===")
                         job.result?.let { appendLog(it) }
+                        appendTaskSummary(job)
+                        binding.textStatus.text = "任务成功"
                         refreshProjects()
                         setBusy(false)
+                        finishPolling()
                         return
                     }
                     "failed" -> {
                         appendLog("=== 任务失败 ===")
                         appendLog(job.error ?: "未知错误")
+                        appendTaskSummary(job)
+                        binding.textStatus.text = "任务失败"
                         setBusy(false)
+                        finishPolling()
+                        return
+                    }
+                    "canceled" -> {
+                        appendLog("=== 任务已停止 ===")
+                        binding.textStatus.text = "任务已停止"
+                        setBusy(false)
+                        finishPolling()
                         return
                     }
                 }
             } catch (e: Exception) {
                 appendLog("轮询失败: ${e.message}")
+                binding.textStatus.text = "同步失败"
                 setBusy(false)
                 return
             }
             delay(1000)
+        }
+    }
+
+    private fun stopCurrentJob() {
+        val currentApi = api ?: return
+        val jobId = currentJobId ?: return
+        binding.btnStop.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { currentApi.cancelJob(jobId) }
+                appendLog("已发送停止请求，将在安全检查点停止")
+            } catch (e: Exception) {
+                appendLog("停止失败: ${e.message}")
+                binding.btnStop.isEnabled = true
+            }
+        }
+    }
+
+    private fun finishPolling() {
+        currentJobId = null
+        binding.btnStop.visibility = View.GONE
+        binding.btnStop.isEnabled = true
+    }
+
+    private fun appendTaskSummary(job: JobInfo) {
+        job.totalTokens?.let {
+            appendLog("Token: 输入 ${job.inputTokens ?: "?"} / 输出 ${job.outputTokens ?: "?"} / 总计 $it")
+        }
+        if (job.changedFiles.isNotEmpty()) {
+            appendLog("改动文件 (${job.changedFiles.size}):")
+            job.changedFiles.forEach { file ->
+                appendLog("  ${file.optString("change")}  ${file.optString("path")}")
+            }
+        }
+    }
+
+    private fun renderDebugSummary(job: JobInfo) {
+        displayedJobId = job.id
+        val turns = job.events.count { it.optString("type") == "turn" }
+        val toolCalls = job.events.count { it.optString("type") == "tool_call" }
+        val toolFailures = job.events.count {
+            it.optString("type") == "tool_result" && !it.optBoolean("ok")
+        }
+        val switches = job.events.count {
+            it.optString("type") == "model_switch" || it.optString("type") == "provider_switch"
+        }
+        val started = job.startedAt ?: job.createdAt
+        val ended = job.finishedAt ?: (System.currentTimeMillis() / 1000.0)
+        val duration = started?.let { (ended - it).coerceAtLeast(0.0).toInt() }
+        val changes = if (job.changedFiles.isEmpty()) {
+            "无"
+        } else {
+            job.changedFiles.joinToString("\n") {
+                "  ${it.optString("change")} ${it.optString("path")}"
+            }
+        }
+        binding.textDebugSummary.text = buildString {
+            appendLine("任务: ${job.id}")
+            appendLine("状态: ${job.status}${if (job.cancelRequested) "（停止中）" else ""}")
+            appendLine("模型: ${job.provider ?: "?"} / ${job.model ?: "?"}")
+            appendLine("轮次: $turns  工具: $toolCalls  失败: $toolFailures  切换: $switches")
+            appendLine("Token: ${job.inputTokens ?: "?"} + ${job.outputTokens ?: "?"} = ${job.totalTokens ?: "?"}")
+            appendLine("耗时: ${duration?.let { "${it}s" } ?: "?"}")
+            append("改动:\n$changes")
+            job.error?.let { append("\n错误: $it") }
+        }
+        binding.btnLoadFullLog.visibility = if (job.hasBuildLog) View.VISIBLE else View.GONE
+    }
+
+    private fun loadFullBuildLog() {
+        val currentApi = api ?: return
+        val jobId = displayedJobId ?: currentJobId ?: selectedProject?.latestTaskId ?: run {
+            toast("没有可用的任务日志")
+            return
+        }
+        binding.btnLoadFullLog.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                val content = withContext(Dispatchers.IO) { currentApi.getTaskBuildLog(jobId) }
+                appendLog("=== 完整构建日志 ===\n$content")
+                binding.mainScroll.post { binding.mainScroll.fullScroll(View.FOCUS_DOWN) }
+            } catch (e: Exception) {
+                toast("读取日志失败")
+                appendLog("读取完整构建日志失败: ${e.message}")
+            } finally {
+                binding.btnLoadFullLog.isEnabled = true
+            }
         }
     }
 
@@ -420,6 +532,30 @@ class MainActivity : AppCompatActivity() {
         prefs.selectedProjectId = project.id
         projectAdapter.submitList(projects, project.id)
         appendLog("已选择项目: ${project.name} (${project.id})")
+        loadRecentTasks(project)
+    }
+
+    private fun loadRecentTasks(project: ProjectInfo) {
+        val currentApi = api ?: return
+        lifecycleScope.launch {
+            try {
+                val jobs = withContext(Dispatchers.IO) { currentApi.listJobs(project.id) }
+                if (jobs.isNotEmpty()) {
+                    appendLog("最近任务: " + jobs.take(5).joinToString(" | ") { "${it.id}:${it.status}" })
+                    val latest = withContext(Dispatchers.IO) { currentApi.getJob(jobs.first().id) }
+                    renderDebugSummary(latest)
+                }
+                val active = jobs.firstOrNull { it.status == "queued" || it.status == "running" }
+                if (active != null && currentJobId != active.id) {
+                    currentJobId = active.id
+                    binding.btnStop.visibility = View.VISIBLE
+                    pollJob?.cancel()
+                    pollJob = launch { pollJobUntilDone(currentApi, active.id) }
+                }
+            } catch (e: Exception) {
+                appendLog("读取任务历史失败: ${e.message}")
+            }
+        }
     }
 
     private fun browseFiles() {
@@ -447,10 +583,17 @@ class MainActivity : AppCompatActivity() {
             }
             "tool_result" -> message.ifBlank {
                 "结果: ${event.optString("name")} -> ${event.optBoolean("ok")}"
-            }
+            } + event.optLong("duration_ms").takeIf { it > 0 }?.let { " (${it}ms)" }.orEmpty()
             "started" -> "任务开始"
             "completed" -> "任务结束"
             "failed" -> "任务失败: ${event.optString("error")}"
+            "canceled" -> "任务已停止"
+            "cancel_requested" -> "已请求停止"
+            "usage" -> event.optJSONObject("usage")?.let {
+                "Token usage: ${it.optInt("input_tokens")} + ${it.optInt("output_tokens")} = ${it.optInt("total_tokens")}"
+            } ?: "Token usage 未知"
+            "changes" -> message
+            "auto_continue" -> message.ifBlank { "Agent 自动继续下一批轮次" }
             "model_switch" -> message.ifBlank {
                 "切换模型: ${event.optString("from_model")} -> ${event.optString("to_model")}"
             }
@@ -468,9 +611,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             "$current\n$message"
         }
-        binding.scrollLogs.post {
-            binding.scrollLogs.fullScroll(android.view.View.FOCUS_DOWN)
-        }
     }
 
     private fun setBusy(busy: Boolean) {
@@ -480,6 +620,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnNewProject.isEnabled = !busy
         binding.btnBrowseFiles.isEnabled = !busy
         binding.btnSend.isEnabled = !busy
+        binding.btnStop.isEnabled = currentJobId != null
         binding.btnDownloadApk.isEnabled = !busy
         binding.btnInstallApk.isEnabled = !busy
         binding.dropdownModel.isEnabled = !busy
