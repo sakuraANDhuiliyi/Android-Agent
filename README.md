@@ -29,7 +29,31 @@ cp config.yaml.example config.yaml
 python3 -m agent serve
 ```
 
-启动后访问 `http://127.0.0.1:8000/docs` 查看 API。手机连接时使用电脑的局域网 IP，例如 `http://192.168.1.100:8000`。
+启动后：
+
+- 可视化操作台：`http://127.0.0.1:8000/ui/`（打开即自动连接本机 `local` 用户，无需注册）
+- API 文档：`http://127.0.0.1:8000/docs`
+
+手机连接时使用电脑的局域网 IP，例如 `http://192.168.1.100:8000`。无 Token 时 API 同样默认使用 `local` 用户；需要隔离时再走注册或配置 Token。
+
+## 桌面端（Electron + Monaco）
+
+Cursor 式三栏桌面编辑器：左侧文件树、中间 Monaco、右侧 AI 占位（暂未接 Agent）。
+
+需本机已安装 Node.js 18+。
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
+> Electron 本体约 100MB+，默认从 GitHub 下载，国内常会长时间无进度。本目录已配置 `.npmrc` 使用 npmmirror 镜像；若仍慢，可手动执行：
+> `export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`
+
+- 默认尝试打开仓库下的 `workspaces/`（若存在）
+- 支持打开文件夹 / 文件、多标签编辑、保存（⌘S / Ctrl+S）、未保存关闭确认
+- 快捷键与菜单：新建、打开、另存为
 
 ## 验证与构建
 

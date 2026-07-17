@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:;"
+  />
+  <title>Android Agent</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="titlebar">
+    <div class="brand">Android Agent</div>
+    <div class="actions">
+      <button type="button" id="btnOpenFolder">打开文件夹</button>
+      <button type="button" id="btnOpenFile">打开文件</button>
+      <button type="button" id="btnSave">保存</button>
+    </div>
+    <div class="status" id="folderStatus">未打开文件夹</div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="panel-title">资源管理器</div>
+      <div class="tree" id="fileTree"></div>
+    </aside>
+
+    <section class="editor-pane">
+      <div class="tabs" id="tabs"></div>
+      <div class="monaco-host" id="monacoHost"></div>
+      <div class="empty" id="emptyState">打开文件夹或文件开始编辑</div>
+    </section>
+
+    <aside class="ai-pane">
+      <div class="panel-title">AI</div>
+      <p class="ai-hint">问答区将在后续版本接入 Agent。<br />当前阶段仅提供 Monaco 编辑器。</p>
+      <textarea class="ai-draft" placeholder="（占位）在此输入问题…" disabled></textarea>
+    </aside>
+  </main>
+
+  <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

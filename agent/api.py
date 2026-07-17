@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
@@ -20,6 +22,7 @@ from agent.jobs import (
     start_ask_job,
 )
 from agent.paths import (
+    DEFAULT_USER_ID,
     build_log_path,
     latest_apk_path,
     user_builds_dir,
@@ -107,6 +110,9 @@ def create_app(
 
     def authenticated_user(authorization: str | None) -> str:
         token = _bearer_token(authorization)
+        if not token:
+            # 单机自用：无 Token 时默认 local，与 CLI 一致，无需注册
+            return DEFAULT_USER_ID
         registered_user = app.state.user_store.authenticate(token)
         if registered_user:
             return registered_user
@@ -394,9 +400,16 @@ def create_app(
         }
 
     @app.websocket("/api/ws/jobs/{job_id}")
-    async def ws_job(job_id: str, websocket: WebSocket) -> None:
+    async def ws_job(
+        job_id: str,
+        websocket: WebSocket,
+        token: Optional[str] = Query(default=None),
+    ) -> None:
+        auth_header = websocket.headers.get("authorization")
+        if not auth_header and token:
+            auth_header = f"Bearer {token}"
         try:
-            user_id = authenticated_user(websocket.headers.get("authorization"))
+            user_id = authenticated_user(auth_header)
         except HTTPException:
             await websocket.close(code=4401)
             return
@@ -433,6 +446,22 @@ def create_app(
                 await asyncio.sleep(0.3)
         except WebSocketDisconnect:
             return
+
+    web_dir = Path(__file__).resolve().parent / "web"
+    if web_dir.is_dir():
+        @app.get("/", include_in_schema=False)
+        def ui_root() -> RedirectResponse:
+            return RedirectResponse(url="/ui/")
+
+        @app.get("/ui", include_in_schema=False)
+        def ui_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/ui/")
+
+        app.mount(
+            "/ui",
+            StaticFiles(directory=str(web_dir), html=True),
+            name="ui",
+        )
 
     return app
 

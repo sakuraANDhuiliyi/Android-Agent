@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Agent · 操作台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Android Agent</h1>
+        <p class="brand-sub">本地调试操作台</p>
+      </div>
+    </div>
+    <div class="topbar-meta" id="topbarMeta">
+      <span class="pill" id="connPill" data-state="busy">连接中</span>
+      <span class="meta-text" id="healthMeta">—</span>
+      <button type="button" class="btn sm ghost" id="btnSettings">设置</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel connect-panel" id="connectPanel" hidden>
+      <h2>连接设置</h2>
+      <p class="hint">默认已自动连接本机服务（用户 local）。一般无需改动。</p>
+      <div class="form-grid">
+        <label>
+          服务地址
+          <input id="serverUrl" type="url" placeholder="http://127.0.0.1:8000" autocomplete="off" />
+        </label>
+        <label>
+          Token（可选，多用户时才需要）
+          <input id="apiToken" type="password" placeholder="留空即使用 local" autocomplete="off" />
+        </label>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="btnConnect">重新连接</button>
+        <button type="button" class="btn ghost" id="btnDisconnect">收起</button>
+      </div>
+      <p class="status-line" id="connectStatus"></p>
+    </section>
+
+    <div class="workspace" id="workspace">
+      <!-- 左侧：项目 -->
+      <aside class="panel projects-panel">
+        <div class="panel-head">
+          <h2>项目</h2>
+          <div class="btn-row tight">
+            <button type="button" class="btn sm" id="btnRefreshProjects" title="刷新">刷新</button>
+            <button type="button" class="btn sm primary" id="btnNewProject">新建</button>
+          </div>
+        </div>
+        <ul class="project-list" id="projectList"></ul>
+        <p class="empty" id="projectsEmpty" hidden>暂无项目，点击新建开始。</p>
+      </aside>
+
+      <!-- 中间：任务与事件 -->
+      <section class="panel main-panel">
+        <div class="project-banner" id="projectBanner">
+          <div>
+            <h2 id="projectTitle">选择项目</h2>
+            <p class="hint" id="projectMeta">从左侧选择或创建一个项目</p>
+          </div>
+          <div class="btn-row tight">
+            <button type="button" class="btn sm" id="btnBrowseFiles" disabled>文件</button>
+            <button type="button" class="btn sm" id="btnDownloadApk" disabled>APK</button>
+            <button type="button" class="btn sm danger" id="btnDeleteProject" disabled>删除</button>
+          </div>
+        </div>
+
+        <div class="ask-box">
+          <label class="sr-only" for="promptInput">提示词</label>
+          <textarea id="promptInput" rows="3" placeholder="描述要生成或修改的 Android 功能…" disabled></textarea>
+          <div class="ask-toolbar">
+            <label class="inline">
+              模型
+              <select id="modelSelect" disabled>
+                <option value="">默认</option>
+              </select>
+            </label>
+            <label class="inline check">
+              <input type="checkbox" id="autoFallback" />
+              自动降级
+            </label>
+            <div class="spacer"></div>
+            <button type="button" class="btn danger" id="btnStop" disabled>停止</button>
+            <button type="button" class="btn primary" id="btnSend" disabled>发送任务</button>
+          </div>
+        </div>
+
+        <div class="job-strip" id="jobStrip">
+          <div class="stat">
+            <span class="stat-label">状态</span>
+            <span class="stat-value" id="jobStatus">—</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">任务</span>
+            <span class="stat-value mono" id="jobId">—</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">轮次</span>
+            <span class="stat-value" id="statTurns">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">工具</span>
+            <span class="stat-value" id="statTools">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Token</span>
+            <span class="stat-value mono" id="statTokens">—</span>
+          </div>
+        </div>
+
+        <div class="timeline-head">
+          <h3>事件时间线</h3>
+          <select id="jobHistory" disabled>
+            <option value="">最近任务</option>
+          </select>
+        </div>
+        <div class="timeline" id="timeline" role="log" aria-live="polite"></div>
+      </section>
+
+      <!-- 右侧：摘要 / 日志 -->
+      <aside class="panel side-panel">
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="summary">摘要</button>
+          <button type="button" class="tab" data-tab="changes">改动</button>
+          <button type="button" class="tab" data-tab="log">构建日志</button>
+        </div>
+        <div class="tab-panels">
+          <div class="tab-panel active" id="tabSummary">
+            <pre class="mono block" id="summaryText">连接后查看任务摘要。</pre>
+          </div>
+          <div class="tab-panel" id="tabChanges">
+            <ul class="change-list" id="changeList"></ul>
+            <p class="empty" id="changesEmpty">暂无文件改动。</p>
+          </div>
+          <div class="tab-panel" id="tabLog">
+            <div class="btn-row tight" style="margin-bottom:0.5rem">
+              <button type="button" class="btn sm" id="btnLoadLog" disabled>加载完整日志</button>
+            </div>
+            <pre class="mono block log-block" id="logText">—</pre>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- 新建项目对话框 -->
+  <dialog id="createDialog">
+    <form method="dialog" id="createForm">
+      <h3>新建项目</h3>
+      <label>
+        项目名称
+        <input name="name" required minlength="1" placeholder="我的 App" />
+      </label>
+      <label>
+        包名（可选）
+        <input name="package" placeholder="com.example.myapp" />
+      </label>
+      <div class="btn-row">
+        <button type="submit" class="btn primary" value="ok">创建</button>
+        <button type="submit" class="btn ghost" value="cancel">取消</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 文件浏览对话框 -->
+  <dialog id="filesDialog" class="wide">
+    <div class="files-layout">
+      <div class="files-tree">
+        <div class="panel-head">
+          <h3>文件</h3>
+          <button type="button" class="btn sm ghost" id="btnCloseFiles">关闭</button>
+        </div>
+        <p class="path-bar mono" id="filesPath">.</p>
+        <ul class="file-list" id="fileList"></ul>
+      </div>
+      <div class="files-editor">
+        <div class="panel-head">
+          <h3 id="fileTitle">预览</h3>
+          <button type="button" class="btn sm primary" id="btnSaveFile" disabled>保存</button>
+        </div>
+        <textarea id="fileContent" class="mono" spellcheck="false" disabled></textarea>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

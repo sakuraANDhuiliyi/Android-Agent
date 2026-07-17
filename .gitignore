@@ -20,6 +20,11 @@ android-app/local.properties
 android-app/build/
 android-app/app/build/
 
+# 桌面端 Electron
+desktop/node_modules/
+desktop/dist/
+desktop/out/
+
 # macOS
 .DS_Store
 

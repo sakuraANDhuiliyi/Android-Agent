@@ -15,7 +15,7 @@ Claude Code 的主路径可以概括为：用户输入进入 REPL/SDK，`QueryEn
 4. **上下文层**：`services/compact/` 估算 Token、预留摘要输出空间，并用 compact boundary 替换早期历史；Session Memory 保存长期有价值信息。
 5. **扩展层**：Skills 是带 frontmatter 的提示模块；MCP 动态贡献工具、资源和提示；LSP 提供语言语义能力；插件把这些贡献打包。
 6. **任务层**：后台 Shell、子 Agent、远程 Agent 使用统一任务状态，复杂任务可形成依赖关系；只读子任务可以并发。
-7. **展示层**：React/Ink 将消息、工具、权限、diff 和任务状态投影到终端；远程层把同一结构化事件同步到其他客户端。
+7. **展示层**：React/Ink 将消息、工具、权限、diff 和任务状态投影到终端；远程层把同一结构化事件同步到其他客户端。（APP端的展示）
 
 ## 阅读方法与准确性边界
 
