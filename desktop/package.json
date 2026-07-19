@@ -4,8 +4,8 @@
   "description": "Android Agent desktop editor (Electron + Monaco)",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron ."
+    "start": "ELECTRON_RUN_AS_NODE= electron .",
+    "dev": "ELECTRON_RUN_AS_NODE= electron ."
   },
   "private": true,
   "dependencies": {

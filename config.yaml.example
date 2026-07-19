@@ -27,3 +27,6 @@ server_port: 8000
 # users:
 #   - id: admin
 #     token: "请换成随机长字符串"
+
+# max_gradle_retries: 3
+# compact_max_chars: 80000

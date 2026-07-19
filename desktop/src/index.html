@@ -4,42 +4,247 @@
   <meta charset="UTF-8" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:;"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:;"
   />
   <title>Android Agent</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="titlebar">
-    <div class="brand">Android Agent</div>
-    <div class="actions">
-      <button type="button" id="btnOpenFolder">打开文件夹</button>
-      <button type="button" id="btnOpenFile">打开文件</button>
-      <button type="button" id="btnSave">保存</button>
+  <div class="app" id="app">
+    <header class="titlebar drag-region">
+      <div class="titlebar-left no-drag">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand">Android Agent</span>
+      </div>
+      <div class="titlebar-center no-drag" id="windowTitle">欢迎</div>
+      <div class="titlebar-right no-drag">
+        <button type="button" class="icon-btn" id="btnCommandPalette" title="命令面板 (⌘⇧P)">⌘</button>
+        <span class="conn-pill" id="connPill" data-state="idle">未连接</span>
+      </div>
+    </header>
+
+    <div class="workbench">
+      <nav class="activitybar" aria-label="活动栏">
+        <button type="button" class="activity-btn active" data-view="explorer" title="资源管理器 (⌘⇧E)">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 4h8l2 2h8v14H3V4zm2 2v12h14V8h-7.17l-2-2H5z"/></svg>
+        </button>
+        <button type="button" class="activity-btn" data-view="search" title="快速打开 (⌘P)">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 5L20.49 19l-5-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        </button>
+        <div class="activity-spacer"></div>
+        <button type="button" class="activity-btn" id="btnToggleAiActivity" title="AI 对话 (⌘L)">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12zM7 9h2v2H7V9zm4 0h2v2h-2V9zm4 0h2v2h-2V9z"/></svg>
+        </button>
+      </nav>
+
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-view" data-view="explorer">
+          <div class="sidebar-header">
+            <span>资源管理器</span>
+            <div class="sidebar-actions">
+              <button type="button" class="icon-btn" id="btnNewFile" title="新建文件">+</button>
+              <button type="button" class="icon-btn" id="btnRefreshTree" title="刷新">↻</button>
+              <button type="button" class="icon-btn" id="btnCollapseTree" title="全部折叠">▤</button>
+            </div>
+          </div>
+          <div class="sidebar-subtitle" id="explorerRootName">未打开文件夹</div>
+          <div class="tree" id="fileTree"></div>
+        </div>
+      </aside>
+
+      <div class="sash sash-sidebar" id="sashSidebar" data-target="sidebar"></div>
+
+      <section class="editor-pane">
+        <div class="tabs" id="tabs"></div>
+        <div class="breadcrumbs" id="breadcrumbs">
+          <span class="crumb muted">打开文件开始编辑</span>
+        </div>
+        <div class="editor-split" id="editorSplit">
+          <div class="monaco-host" id="monacoHost"></div>
+          <div class="sash sash-preview" id="sashPreview" hidden title="拖动调整预览宽度"></div>
+          <aside class="preview-pane" id="previewPane" hidden>
+            <div class="preview-toolbar">
+              <span class="preview-title">布局预览</span>
+              <span class="preview-badge" id="previewBadge">近似</span>
+              <div class="preview-toolbar-actions">
+                <button type="button" class="ghost-btn sm" id="btnRefreshPreview" title="刷新预览">刷新</button>
+                <button type="button" class="icon-btn" id="btnClosePreview" title="关闭预览">×</button>
+              </div>
+            </div>
+            <div class="preview-stage" id="previewStage">
+              <div class="phone-frame">
+                <div class="phone-notch" aria-hidden="true"></div>
+                <div class="phone-screen" id="previewScreen"></div>
+              </div>
+            </div>
+            <div class="preview-meta" id="previewMeta"></div>
+          </aside>
+        </div>
+        <div class="empty" id="emptyState">
+          <div class="welcome">
+            <h1>Android Agent</h1>
+            <p>本地编辑器 · Cursor 风格 AI 对话</p>
+            <ul class="welcome-actions">
+              <li><kbd>⌘O</kbd> 打开文件夹</li>
+              <li><kbd>⌘P</kbd> 快速打开文件</li>
+              <li><kbd>⌘⇧P</kbd> 命令面板</li>
+              <li><kbd>⌘L</kbd> 打开 AI 对话</li>
+              <li>打开 <code>res/layout/*.xml</code> 可预览界面</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <div class="sash sash-ai" id="sashAi" data-target="ai"></div>
+
+      <aside class="ai-pane" id="aiPane">
+        <div class="ai-header">
+          <div class="ai-header-left">
+            <span class="ai-title">Chat</span>
+            <select id="projectSelect" class="ai-select" title="选择项目">
+              <option value="">选择项目…</option>
+            </select>
+          </div>
+          <div class="ai-header-right">
+            <button type="button" class="icon-btn" id="btnNewChat" title="新对话">＋</button>
+            <button type="button" class="icon-btn" id="btnAiSettings" title="连接设置">⚙</button>
+            <button type="button" class="icon-btn" id="btnCloseAi" title="关闭面板">×</button>
+          </div>
+        </div>
+
+        <div class="ai-toolbar">
+          <select id="modelSelect" class="ai-select sm" disabled>
+            <option value="">默认模型</option>
+          </select>
+          <label class="ai-check" title="提供商失败时自动降级">
+            <input type="checkbox" id="autoFallback" />
+            自动降级
+          </label>
+          <select id="jobHistory" class="ai-select sm" disabled>
+            <option value="">本轮任务</option>
+          </select>
+        </div>
+
+        <div class="ai-conv-bar">
+          <select id="conversationSelect" class="ai-select" title="切换对话">
+            <option value="">暂无对话</option>
+          </select>
+          <button type="button" class="ghost-btn sm" id="btnNewConversation" title="新开独立对话">新对话</button>
+        </div>
+
+        <div class="ai-server-bar" id="aiServerBar">
+          <button type="button" class="ghost-btn sm" id="btnStartServer" title="运行 python3 -m agent serve">
+            启动服务
+          </button>
+          <button type="button" class="danger-btn sm" id="btnStopServer" hidden title="停止由桌面端拉起的服务">
+            停止服务
+          </button>
+          <div class="server-meta">
+            <span class="server-port" id="serverPortLabel">端口 —</span>
+            <span class="server-divider">·</span>
+            <span class="muted">手机</span>
+            <code class="phone-url" id="phoneUrl" title="手机端填写此地址">—</code>
+            <button type="button" class="icon-btn" id="btnCopyPhoneUrl" title="复制手机连接地址">复制</button>
+          </div>
+        </div>
+
+        <div class="ai-messages" id="aiMessages" role="log" aria-live="polite">
+          <div class="ai-empty" id="aiEmpty">
+            <h3>与 Agent 对话</h3>
+            <p>描述要生成或修改的 Android 功能。Agent 会编辑工程并执行 <code>assembleDebug</code>。</p>
+            <p class="muted">请先连接服务并选择项目。</p>
+          </div>
+        </div>
+
+        <div class="ai-context" id="aiContext" hidden></div>
+
+        <div class="ai-composer">
+          <textarea
+            id="promptInput"
+            rows="3"
+            placeholder="询问 Agent…（Enter 发送，⇧Enter 换行）"
+            disabled
+          ></textarea>
+          <div class="composer-bar">
+            <button type="button" class="ghost-btn" id="btnUseCurrentFile" title="附加当前文件" disabled>
+              @文件
+            </button>
+            <div class="spacer"></div>
+            <button type="button" class="danger-btn" id="btnStop" disabled>停止</button>
+            <button type="button" class="primary-btn" id="btnSend" disabled>发送</button>
+          </div>
+        </div>
+      </aside>
     </div>
-    <div class="status" id="folderStatus">未打开文件夹</div>
-  </header>
 
-  <main class="layout">
-    <aside class="sidebar" id="sidebar">
-      <div class="panel-title">资源管理器</div>
-      <div class="tree" id="fileTree"></div>
-    </aside>
+    <footer class="statusbar" id="statusBar">
+      <div class="status-left">
+        <span id="statusBranch" class="status-item">本地</span>
+        <span id="statusErrors" class="status-item muted">就绪</span>
+      </div>
+      <div class="status-right">
+        <span id="statusCursor" class="status-item">Ln 1, Col 1</span>
+        <span id="statusLang" class="status-item">Plain Text</span>
+        <span id="statusEncoding" class="status-item">UTF-8</span>
+        <span id="statusEol" class="status-item">LF</span>
+        <button type="button" class="status-item clickable" id="statusConn">Agent · 未连接</button>
+      </div>
+    </footer>
+  </div>
 
-    <section class="editor-pane">
-      <div class="tabs" id="tabs"></div>
-      <div class="monaco-host" id="monacoHost"></div>
-      <div class="empty" id="emptyState">打开文件夹或文件开始编辑</div>
-    </section>
+  <!-- Command / Quick Open palette -->
+  <div class="overlay" id="paletteOverlay" hidden>
+    <div class="palette" role="dialog" aria-modal="true">
+      <input type="text" id="paletteInput" placeholder="输入命令或文件名…" autocomplete="off" />
+      <ul id="paletteList" class="palette-list"></ul>
+    </div>
+  </div>
 
-    <aside class="ai-pane">
-      <div class="panel-title">AI</div>
-      <p class="ai-hint">问答区将在后续版本接入 Agent。<br />当前阶段仅提供 Monaco 编辑器。</p>
-      <textarea class="ai-draft" placeholder="（占位）在此输入问题…" disabled></textarea>
-    </aside>
-  </main>
+  <!-- Settings dialog -->
+  <dialog id="settingsDialog">
+    <form method="dialog" id="settingsForm">
+      <h3>Agent 连接</h3>
+      <label>
+        服务地址
+        <input id="serverUrl" type="url" value="http://127.0.0.1:8000" autocomplete="off" />
+      </label>
+      <label>
+        Token（可选，留空使用 local）
+        <input id="apiToken" type="password" placeholder="留空即 local" autocomplete="off" />
+      </label>
+      <p class="dialog-hint" id="settingsHint">默认连接本机 Agent 服务。</p>
+      <div class="dialog-actions">
+        <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
+        <button type="submit" class="primary-btn" value="connect" id="btnConnect">连接</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- New project dialog -->
+  <dialog id="createProjectDialog">
+    <form method="dialog" id="createProjectForm">
+      <h3>新建项目</h3>
+      <label>
+        项目名称
+        <input name="name" required minlength="1" placeholder="我的 App" />
+      </label>
+      <label>
+        包名（可选）
+        <input name="package" placeholder="com.example.myapp" />
+      </label>
+      <div class="dialog-actions">
+        <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
+        <button type="submit" class="primary-btn" value="ok">创建</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
 
   <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="agent-api.js"></script>
+  <script src="layout-preview.js"></script>
   <script src="renderer.js"></script>
+  <script src="ai-panel.js"></script>
 </body>
 </html>

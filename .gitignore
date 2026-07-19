@@ -25,6 +25,9 @@ desktop/node_modules/
 desktop/dist/
 desktop/out/
 
+# 参考源码（本地对照用，不入库）
+agent- example/
+
 # macOS
 .DS_Store
 

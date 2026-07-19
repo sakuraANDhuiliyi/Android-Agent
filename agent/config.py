@@ -49,6 +49,8 @@ class Settings:
     model_candidates: list[str]
     max_turns: int
     max_auto_continuations: int
+    max_gradle_retries: int
+    compact_max_chars: int
     base_url: str | None
     auto_build_after_edit: bool
     server_host: str
@@ -146,6 +148,8 @@ def _build_settings(
         model_candidates=model_candidates,
         max_turns=int(shared["max_turns"]),
         max_auto_continuations=int(shared["max_auto_continuations"]),
+        max_gradle_retries=int(shared["max_gradle_retries"]),
+        compact_max_chars=int(shared["compact_max_chars"]),
         base_url=_resolve_base_url(provider, file_data, is_primary=is_primary),
         auto_build_after_edit=bool(shared["auto_build_after_edit"]),
         server_host=str(shared["server_host"]),
@@ -233,6 +237,8 @@ def load_settings() -> Settings:
     shared = {
         "max_turns": int(file_data.get("max_turns", 15)),
         "max_auto_continuations": int(file_data.get("max_auto_continuations", 2)),
+        "max_gradle_retries": int(file_data.get("max_gradle_retries", 3)),
+        "compact_max_chars": int(file_data.get("compact_max_chars", 80_000)),
         "auto_build_after_edit": bool(file_data.get("auto_build_after_edit", False)),
         "server_host": str(file_data.get("server_host", "0.0.0.0")),
         "server_port": int(file_data.get("server_port", 8000)),

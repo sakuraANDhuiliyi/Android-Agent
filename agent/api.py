@@ -14,12 +14,19 @@ from pydantic import BaseModel, Field
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
 from agent.database import TaskStore
 from agent.jobs import (
+    clear_project_session,
     configure_task_store,
+    create_conversation,
+    delete_conversation,
+    get_conversation,
     get_job,
+    get_project_session,
     job_to_dict,
+    list_conversations,
     list_jobs,
     request_cancel,
     start_ask_job,
+    update_conversation,
 )
 from agent.paths import (
     DEFAULT_USER_ID,
@@ -40,6 +47,24 @@ class CreateProjectRequest(BaseModel):
 
 
 class AskRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    provider: Optional[str] = None
+    auto_fallback: bool = False
+    continue_session: bool = True
+    reset_session: bool = False
+    conversation_id: Optional[str] = None
+
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class UpdateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ConversationAskRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     provider: Optional[str] = None
     auto_fallback: bool = False
@@ -211,19 +236,129 @@ def create_app(
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
 
         try:
-            job = start_ask_job(user_id, project_id, body.prompt, job_settings)
+            job = start_ask_job(
+                user_id,
+                project_id,
+                body.prompt,
+                job_settings,
+                conversation_id=body.conversation_id,
+                continue_session=body.continue_session and not body.reset_session,
+                reset_session=body.reset_session,
+            )
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         return {"job": job_to_dict(job)}
 
+    @app.get("/api/projects/{project_id}/conversations")
+    def get_conversations(project_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            items = list_conversations(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {"user_id": user_id, "project_id": project_id, "conversations": items}
+
+    @app.post("/api/projects/{project_id}/conversations", status_code=201)
+    def post_conversation(
+        project_id: str,
+        body: CreateConversationRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            conv = create_conversation(user_id, project_id, title=body.title or "新对话")
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return conv
+
+    @app.get("/api/conversations/{conversation_id}")
+    def get_conversation_detail(
+        conversation_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        conv = get_conversation(conversation_id, user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        return conv
+
+    @app.patch("/api/conversations/{conversation_id}")
+    def patch_conversation(
+        conversation_id: str,
+        body: UpdateConversationRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = body.model_dump(exclude_unset=True)
+        conv = update_conversation(conversation_id, user_id, **payload)
+        if not conv:
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        return conv
+
+    @app.delete("/api/conversations/{conversation_id}", status_code=204)
+    def remove_conversation(
+        conversation_id: str,
+        user_id: str = Depends(current_user),
+    ) -> None:
+        if not delete_conversation(conversation_id, user_id):
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+
+    @app.post("/api/conversations/{conversation_id}/ask")
+    def ask_conversation(
+        conversation_id: str,
+        body: ConversationAskRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        conv = get_conversation(conversation_id, user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        try:
+            job_settings = resolve_job_settings(
+                settings,
+                body.provider,
+                auto_fallback=body.auto_fallback
+                or (body.provider in {None, "", "auto"}),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not job_settings.api_key:
+            raise HTTPException(status_code=503, detail="未配置 LLM API Key")
+        try:
+            job = start_ask_job(
+                user_id,
+                conv["project_id"],
+                body.prompt,
+                job_settings,
+                conversation_id=conversation_id,
+                continue_session=True,
+                reset_session=False,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        return {"job": job_to_dict(job), "conversation_id": conversation_id}
+
+    @app.get("/api/projects/{project_id}/session")
+    def get_session(project_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            return get_project_session(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.delete("/api/projects/{project_id}/session", status_code=204)
+    def delete_session(project_id: str, user_id: str = Depends(current_user)) -> None:
+        try:
+            clear_project_session(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
     @app.get("/api/jobs")
     def get_jobs(
         project_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
         return {
             "user_id": user_id,
-            "jobs": [job_to_dict(job) for job in list_jobs(user_id, project_id)],
+            "jobs": [
+                job_to_dict(job)
+                for job in list_jobs(user_id, project_id, conversation_id)
+            ],
         }
 
     @app.get("/api/jobs/{job_id}")

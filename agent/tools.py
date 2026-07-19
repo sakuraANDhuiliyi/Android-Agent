@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.paths import (
     STUDIO_JBR,
@@ -31,6 +35,12 @@ ALLOWED_WRITE_PREFIXES = (
 )
 
 GRADLE_TASKS = {"assembleDebug", "clean"}
+IGNORE_DIR_NAMES = {".git", ".gradle", "build", "node_modules", "__pycache__", ".idea"}
+
+CancelCheck = Callable[[], None]
+
+_active_gradle: dict[str, subprocess.Popen] = {}
+_gradle_lock = threading.Lock()
 
 
 @dataclass
@@ -211,11 +221,174 @@ def write_file(workspace: Path, rel_path: str, content: str) -> ToolResult:
         return ToolResult(False, str(e))
 
 
+def str_replace(
+    workspace: Path,
+    rel_path: str,
+    old_string: str,
+    new_string: str,
+    *,
+    replace_all: bool = False,
+) -> ToolResult:
+    try:
+        rel = _normalize_rel(rel_path)
+        if not _is_allowed(rel, ALLOWED_WRITE_PREFIXES):
+            return ToolResult(False, f"不允许写入: {rel_path}")
+        if old_string == "":
+            return ToolResult(False, "old_string 不能为空")
+        target = _resolve_in_workspace(workspace, rel)
+        if not target.is_file():
+            return ToolResult(False, f"文件不存在: {rel_path}")
+        content = target.read_text(encoding="utf-8")
+        count = content.count(old_string)
+        if count == 0:
+            return ToolResult(False, f"未找到要替换的文本: {rel}")
+        if count > 1 and not replace_all:
+            return ToolResult(
+                False,
+                f"匹配到 {count} 处，请提供更唯一的 old_string，或设置 replace_all=true",
+            )
+        if replace_all:
+            updated = content.replace(old_string, new_string)
+            replaced = count
+        else:
+            updated = content.replace(old_string, new_string, 1)
+            replaced = 1
+        target.write_text(updated, encoding="utf-8")
+        return ToolResult(True, f"已替换 {rel}（{replaced} 处，现 {len(updated)} 字符）")
+    except Exception as e:
+        return ToolResult(False, str(e))
+
+
+def _iter_readable_files(workspace: Path, root_rel: str = "app/src"):
+    workspace = workspace.resolve()
+    root_rel = _normalize_rel(root_rel) or "."
+    if root_rel in {".", ""}:
+        roots = [workspace / _normalize_rel(p).rstrip("/") for p in ALLOWED_READ_PREFIXES if p.endswith("/")]
+        roots += [workspace / _normalize_rel(p) for p in ALLOWED_READ_PREFIXES if not p.endswith("/")]
+    else:
+        roots = [(workspace / root_rel).resolve()]
+
+    for root in roots:
+        if root.is_file():
+            try:
+                rel = root.relative_to(workspace).as_posix()
+            except ValueError:
+                continue
+            if _is_allowed(rel, ALLOWED_READ_PREFIXES):
+                yield root, rel
+            continue
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in IGNORE_DIR_NAMES for part in path.parts):
+                continue
+            try:
+                rel = path.resolve().relative_to(workspace).as_posix()
+            except ValueError:
+                continue
+            if _is_allowed(rel, ALLOWED_READ_PREFIXES):
+                yield path, rel
+
+
+def glob_files(workspace: Path, pattern: str, path: str = "app/src") -> ToolResult:
+    try:
+        if not pattern or not str(pattern).strip():
+            return ToolResult(False, "pattern 不能为空")
+        pattern = str(pattern).strip().replace("\\", "/")
+        matches: list[str] = []
+        for _, rel in _iter_readable_files(workspace, path):
+            posix = Path(rel).as_posix()
+            name = Path(rel).name
+            matched = False
+            try:
+                matched = Path(posix).match(pattern) or Path(name).match(pattern)
+            except Exception:
+                matched = False
+            if not matched:
+                matched = fnmatch(posix, pattern) or fnmatch(name, pattern)
+            if matched:
+                matches.append(posix)
+        matches = sorted(dict.fromkeys(matches))
+        if len(matches) > 200:
+            shown = matches[:200]
+            return ToolResult(True, "\n".join(shown) + f"\n... 另有 {len(matches) - 200} 个匹配未列出")
+        return ToolResult(True, "\n".join(matches) if matches else "(无匹配文件)")
+    except Exception as e:
+        return ToolResult(False, str(e))
+
+
+def grep_files(
+    workspace: Path,
+    query: str,
+    path: str = "app/src",
+    *,
+    case_insensitive: bool = False,
+    max_hits: int = 50,
+) -> ToolResult:
+    try:
+        if not query:
+            return ToolResult(False, "query 不能为空")
+        flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            regex = re.compile(query, flags)
+        except re.error as exc:
+            return ToolResult(False, f"无效正则: {exc}")
+
+        hits: list[str] = []
+        files_scanned = 0
+        for file_path, rel in _iter_readable_files(workspace, path):
+            files_scanned += 1
+            try:
+                text = file_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if regex.search(line):
+                    hits.append(f"{rel}:{line_no}: {line.strip()[:200]}")
+                    if len(hits) >= max_hits:
+                        return ToolResult(
+                            True,
+                            "\n".join(hits) + f"\n... 已达 {max_hits} 条上限（扫描 {files_scanned} 个文件）",
+                        )
+        if not hits:
+            return ToolResult(True, f"(无匹配，已扫描 {files_scanned} 个文件)")
+        return ToolResult(True, "\n".join(hits))
+    except Exception as e:
+        return ToolResult(False, str(e))
+
+
+def _gradle_key(user_id: str, project_id: str) -> str:
+    return f"{user_id}:{project_id}"
+
+
+def cancel_gradle(user_id: str, project_id: str) -> bool:
+    key = _gradle_key(user_id, project_id)
+    with _gradle_lock:
+        proc = _active_gradle.get(key)
+    if not proc or proc.poll() is not None:
+        return False
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return True
+
+
 def run_gradle(
     workspace: Path,
     user_id: str,
     project_id: str,
     task: str = "assembleDebug",
+    cancel_check: CancelCheck | None = None,
 ) -> ToolResult:
     if task not in GRADLE_TASKS:
         return ToolResult(False, f"不允许的任务: {task}，仅支持 {sorted(GRADLE_TASKS)}")
@@ -244,23 +417,48 @@ def run_gradle(
         )
 
     cmd = [str(gradlew), task, "--no-daemon", "--stacktrace"]
+    key = _gradle_key(user_id, project_id)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=workspace,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=900,
         )
-        log_body = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        with _gradle_lock:
+            _active_gradle[key] = proc
+
+        chunks: list[str] = []
+        assert proc.stdout is not None
+        while True:
+            if cancel_check:
+                try:
+                    cancel_check()
+                except Exception:
+                    cancel_gradle(user_id, project_id)
+                    raise
+            line = proc.stdout.readline()
+            if line:
+                chunks.append(line)
+            elif proc.poll() is not None:
+                rest = proc.stdout.read()
+                if rest:
+                    chunks.append(rest)
+                break
+            else:
+                time.sleep(0.05)
+
+        returncode = proc.wait(timeout=5)
+        log_body = "".join(chunks)
         log_file.write_text(log_body, encoding="utf-8")
 
-        if proc.returncode != 0:
+        if returncode != 0:
             tail = summarize_build_log(log_body)
             return ToolResult(
                 False,
-                f"Gradle 失败 (exit {proc.returncode})\n日志: {log_file}\n\n--- 关键日志摘要 ---\n{tail}",
+                f"Gradle 失败 (exit {returncode})\n日志: {log_file}\n\n--- 关键日志摘要 ---\n{tail}",
             )
 
         msg = f"Gradle {task} 成功\n日志: {log_file}"
@@ -275,9 +473,20 @@ def run_gradle(
                 msg += f"\n警告: 未找到 {apk}"
         return ToolResult(True, msg)
     except subprocess.TimeoutExpired:
+        cancel_gradle(user_id, project_id)
         return ToolResult(False, "Gradle 超时 (15 分钟)")
     except Exception as e:
+        cancel_gradle(user_id, project_id)
+        # Re-raise cancellation-like errors for the loop to handle
+        if e.__class__.__name__ == "CancellationRequested":
+            raise
         return ToolResult(False, str(e))
+    finally:
+        with _gradle_lock:
+            if _active_gradle.get(key) is not None and _active_gradle[key].poll() is not None:
+                _active_gradle.pop(key, None)
+            elif key in _active_gradle and _active_gradle[key].poll() is not None:
+                _active_gradle.pop(key, None)
 
 
 def dispatch_tool(
@@ -286,6 +495,7 @@ def dispatch_tool(
     project_id: str,
     name: str,
     tool_input: dict,
+    cancel_check: CancelCheck | None = None,
 ) -> ToolResult:
     if name == "list_dir":
         return list_dir(workspace, tool_input.get("path", "."))
@@ -293,12 +503,35 @@ def dispatch_tool(
         return read_file(workspace, tool_input["path"])
     if name == "write_file":
         return write_file(workspace, tool_input["path"], tool_input["content"])
+    if name == "str_replace":
+        return str_replace(
+            workspace,
+            tool_input["path"],
+            tool_input.get("old_string", ""),
+            tool_input.get("new_string", ""),
+            replace_all=bool(tool_input.get("replace_all", False)),
+        )
+    if name == "glob":
+        return glob_files(
+            workspace,
+            tool_input.get("pattern", ""),
+            tool_input.get("path", "app/src"),
+        )
+    if name == "grep":
+        return grep_files(
+            workspace,
+            tool_input.get("query", ""),
+            tool_input.get("path", "app/src"),
+            case_insensitive=bool(tool_input.get("case_insensitive", False)),
+            max_hits=int(tool_input.get("max_hits", 50) or 50),
+        )
     if name == "run_gradle":
         return run_gradle(
             workspace,
             user_id,
             project_id,
             tool_input.get("task", "assembleDebug"),
+            cancel_check=cancel_check,
         )
     return ToolResult(False, f"未知工具: {name}")
 
@@ -319,6 +552,35 @@ BASE_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "glob",
+        "description": "按文件名模式查找可读文件。pattern 支持 * ?，例如 **/*.kt 或 strings.xml",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "glob 模式"},
+                "path": {
+                    "type": "string",
+                    "description": "搜索根路径，默认 app/src",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "在可读源码中按正则搜索内容，返回 path:line: 文本",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "正则或普通文本"},
+                "path": {"type": "string", "description": "搜索根路径，默认 app/src"},
+                "case_insensitive": {"type": "boolean"},
+                "max_hits": {"type": "integer", "description": "最多返回条数，默认 50"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "read_file",
         "description": "读取工程内文本文件",
         "input_schema": {
@@ -333,8 +595,22 @@ BASE_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "str_replace",
+        "description": "精确替换文件中的一段文本（优先于整文件写入）。old_string 必须在文件中唯一，除非 replace_all=true",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
         "name": "write_file",
-        "description": "写入工程内文件（覆盖）。仅限 app/src/main 下源码资源及 app/build.gradle.kts",
+        "description": "写入工程内文件（覆盖整文件）。仅在新建文件或大范围重写时使用；小改动请用 str_replace",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -346,7 +622,7 @@ BASE_TOOL_DEFINITIONS = [
     },
     {
         "name": "run_gradle",
-        "description": "在工程目录执行 Gradle。常用 task: assembleDebug",
+        "description": "在工程目录执行 Gradle。常用 task: assembleDebug。每个任务结束前必须成功执行 assembleDebug",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -363,7 +639,21 @@ BASE_TOOL_DEFINITIONS = [
 
 
 def get_tool_definitions(settings=None) -> list[dict]:
-    return list(BASE_TOOL_DEFINITIONS)
+    tools = list(BASE_TOOL_DEFINITIONS)
+    if settings is not None:
+        max_retries = getattr(settings, "max_gradle_retries", 3)
+        for tool in tools:
+            if tool["name"] == "run_gradle":
+                tool = dict(tool)
+                tool["description"] = (
+                    f"在工程目录执行 Gradle。常用 task: assembleDebug。"
+                    f"编译失败后最多再尝试 {max_retries} 次修复构建。"
+                )
+                # replace in list
+                idx = next(i for i, t in enumerate(tools) if t["name"] == "run_gradle")
+                tools[idx] = tool
+                break
+    return tools
 
 
 TOOL_DEFINITIONS = BASE_TOOL_DEFINITIONS

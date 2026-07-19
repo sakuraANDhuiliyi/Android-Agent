@@ -4,6 +4,11 @@ import json
 import time
 from typing import Any, Callable
 
+from agent.compact import (
+    build_session_prior_messages,
+    compact_anthropic_messages,
+    compact_openai_messages,
+)
 from agent.config import Settings
 from agent.model_fallback import should_try_next_model
 from agent.prompts import get_system_prompt
@@ -42,9 +47,11 @@ def run_agent(
     user_prompt: str,
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    prior_turns: list[dict[str, Any]] | None = None,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
+    prior_messages = build_session_prior_messages(prior_turns or [])
 
     for index, current_settings in enumerate(provider_chain):
         if cancel_check:
@@ -76,7 +83,10 @@ def run_agent(
                 user_prompt,
                 on_event,
                 cancel_check,
+                prior_messages,
             )
+        except CancellationRequested:
+            raise
         except Exception as exc:
             errors.append(f"{current_settings.provider}: {exc}")
             if index == len(provider_chain) - 1:
@@ -104,6 +114,7 @@ def _run_agent_with_provider(
     user_prompt: str,
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
+    prior_messages: list[dict[str, Any]],
 ) -> str:
     system_prompt = get_system_prompt(settings)
 
@@ -117,6 +128,7 @@ def _run_agent_with_provider(
             system_prompt,
             on_event,
             cancel_check,
+            prior_messages,
         )
     return _run_openai_compatible(
         settings,
@@ -127,6 +139,7 @@ def _run_agent_with_provider(
         system_prompt,
         on_event,
         cancel_check,
+        prior_messages,
     )
 
 
@@ -248,6 +261,7 @@ def _run_openai_compatible(
     system_prompt: str,
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
+    prior_messages: list[dict[str, Any]],
 ) -> str:
     try:
         from openai import OpenAI
@@ -259,12 +273,17 @@ def _run_openai_compatible(
         client_kwargs["base_url"] = settings.base_url
     client = OpenAI(**client_kwargs)
 
-    messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for item in prior_messages:
+        if item.get("role") in {"user", "assistant"} and item.get("content"):
+            messages.append({"role": item["role"], "content": item["content"]})
+    messages.append({"role": "user", "content": user_prompt})
+
     final_text_parts: list[str] = []
     active_model = settings.model
+    gradle_failures = 0
+    max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
+    compact_max = int(getattr(settings, "compact_max_chars", 80_000))
 
     total_turns = _total_turns(settings)
     for turn in range(1, total_turns + 1):
@@ -273,6 +292,10 @@ def _run_openai_compatible(
             cancel_check()
         turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
         _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
+
+        messages, did_compact = compact_openai_messages(messages, max_chars=compact_max)
+        if did_compact:
+            _emit(on_event, "compact", "已压缩早期上下文以控制 Token")
 
         response, active_model = _chat_completion_with_fallback(
             client,
@@ -345,6 +368,35 @@ def _run_openai_compatible(
                 tool_input = json.loads(tool_call.function.arguments or "{}")
             except json.JSONDecodeError:
                 tool_input = {}
+
+            # Enforce gradle retry budget before executing another failed assembleDebug cycle
+            if (
+                tool_call.function.name == "run_gradle"
+                and tool_input.get("task", "assembleDebug") == "assembleDebug"
+                and gradle_failures >= max_gradle_retries
+            ):
+                result_output = (
+                    f"已达到 assembleDebug 失败重试上限 ({max_gradle_retries})，请停止继续构建，"
+                    "总结当前错误并结束本任务。"
+                )
+                _emit(
+                    on_event,
+                    "tool_result",
+                    f"   → FAIL: {result_output[:120]}",
+                    name="run_gradle",
+                    ok=False,
+                    preview=result_output,
+                    duration_ms=0,
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result_output,
+                    }
+                )
+                continue
+
             started = time.monotonic()
             result = dispatch_tool(
                 workspace,
@@ -352,6 +404,7 @@ def _run_openai_compatible(
                 project_id,
                 tool_call.function.name,
                 tool_input,
+                cancel_check=cancel_check,
             )
             preview = _format_tool_output(result.output)
             if len(preview) > 2000:
@@ -365,9 +418,17 @@ def _run_openai_compatible(
                 result_msg,
                 name=tool_call.function.name,
                 ok=result.ok,
+                input=tool_input,
                 preview=preview,
                 duration_ms=round((time.monotonic() - started) * 1000),
             )
+            if (
+                tool_call.function.name == "run_gradle"
+                and tool_input.get("task", "assembleDebug") == "assembleDebug"
+                and not result.ok
+            ):
+                gradle_failures += 1
+
             messages.append(
                 {
                     "role": "tool",
@@ -375,6 +436,44 @@ def _run_openai_compatible(
                     "content": _format_tool_output(result.output),
                 }
             )
+
+            if settings.auto_build_after_edit and tool_call.function.name in {"write_file", "str_replace"} and result.ok:
+                auto_result = dispatch_tool(
+                    workspace,
+                    user_id,
+                    project_id,
+                    "run_gradle",
+                    {"task": "assembleDebug"},
+                    cancel_check=cancel_check,
+                )
+                auto_preview = _format_tool_output(auto_result.output)
+                if len(auto_preview) > 2000:
+                    auto_preview = auto_preview[:2000] + "\n... (输出已截断)"
+                _emit(
+                    on_event,
+                    "tool_call",
+                    "🔧 run_gradle(auto_build_after_edit)",
+                    name="run_gradle",
+                    input={"task": "assembleDebug", "auto": True},
+                )
+                _emit(
+                    on_event,
+                    "tool_result",
+                    f"   → {'OK' if auto_result.ok else 'FAIL'}: {auto_preview.splitlines()[0][:120]}",
+                    name="run_gradle",
+                    ok=auto_result.ok,
+                    preview=auto_preview,
+                    duration_ms=0,
+                    auto=True,
+                )
+                if not auto_result.ok:
+                    gradle_failures += 1
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"[auto_build_after_edit]\n{_format_tool_output(auto_result.output)}",
+                    }
+                )
     else:
         final_text_parts.append("(已达最大轮次上限)")
 
@@ -390,6 +489,7 @@ def _run_anthropic(
     system_prompt: str,
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
+    prior_messages: list[dict[str, Any]],
 ) -> str:
     try:
         import anthropic
@@ -401,10 +501,18 @@ def _run_anthropic(
         client_kwargs["base_url"] = settings.base_url
     client = anthropic.Anthropic(**client_kwargs)
 
-    messages: list[dict] = [{"role": "user", "content": user_prompt}]
+    messages: list[dict] = []
+    for item in prior_messages:
+        if item.get("role") in {"user", "assistant"} and item.get("content"):
+            messages.append({"role": item["role"], "content": item["content"]})
+    messages.append({"role": "user", "content": user_prompt})
+
     final_text_parts: list[str] = []
     tool_definitions = get_tool_definitions(settings)
     active_model = settings.model
+    gradle_failures = 0
+    max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
+    compact_max = int(getattr(settings, "compact_max_chars", 80_000))
 
     total_turns = _total_turns(settings)
     for turn in range(1, total_turns + 1):
@@ -413,6 +521,10 @@ def _run_anthropic(
             cancel_check()
         turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
         _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
+
+        messages, did_compact = compact_anthropic_messages(messages, max_chars=compact_max)
+        if did_compact:
+            _emit(on_event, "compact", "已压缩早期上下文以控制 Token")
 
         response, active_model = _anthropic_message_with_fallback(
             client,
@@ -464,13 +576,43 @@ def _run_anthropic(
         for tool_use in tool_uses:
             if cancel_check:
                 cancel_check()
+            tool_input = tool_use.input if isinstance(tool_use.input, dict) else {}
+            if (
+                tool_use.name == "run_gradle"
+                and tool_input.get("task", "assembleDebug") == "assembleDebug"
+                and gradle_failures >= max_gradle_retries
+            ):
+                result_output = (
+                    f"已达到 assembleDebug 失败重试上限 ({max_gradle_retries})，请停止继续构建，"
+                    "总结当前错误并结束本任务。"
+                )
+                _emit(
+                    on_event,
+                    "tool_result",
+                    f"   → FAIL: {result_output[:120]}",
+                    name="run_gradle",
+                    ok=False,
+                    preview=result_output,
+                    duration_ms=0,
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": result_output,
+                        "is_error": True,
+                    }
+                )
+                continue
+
             started = time.monotonic()
             result = dispatch_tool(
                 workspace,
                 user_id,
                 project_id,
                 tool_use.name,
-                tool_use.input,
+                tool_input,
+                cancel_check=cancel_check,
             )
             preview = _format_tool_output(result.output)
             if len(preview) > 2000:
@@ -487,6 +629,12 @@ def _run_anthropic(
                 preview=preview,
                 duration_ms=round((time.monotonic() - started) * 1000),
             )
+            if (
+                tool_use.name == "run_gradle"
+                and tool_input.get("task", "assembleDebug") == "assembleDebug"
+                and not result.ok
+            ):
+                gradle_failures += 1
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -495,6 +643,44 @@ def _run_anthropic(
                     "is_error": not result.ok,
                 }
             )
+
+            if settings.auto_build_after_edit and tool_use.name in {"write_file", "str_replace"} and result.ok:
+                auto_result = dispatch_tool(
+                    workspace,
+                    user_id,
+                    project_id,
+                    "run_gradle",
+                    {"task": "assembleDebug"},
+                    cancel_check=cancel_check,
+                )
+                auto_preview = _format_tool_output(auto_result.output)
+                _emit(
+                    on_event,
+                    "tool_call",
+                    "🔧 run_gradle(auto_build_after_edit)",
+                    name="run_gradle",
+                    input={"task": "assembleDebug", "auto": True},
+                )
+                _emit(
+                    on_event,
+                    "tool_result",
+                    f"   → {'OK' if auto_result.ok else 'FAIL'}",
+                    name="run_gradle",
+                    ok=auto_result.ok,
+                    preview=auto_preview[:2000],
+                    duration_ms=0,
+                    auto=True,
+                )
+                if not auto_result.ok:
+                    gradle_failures += 1
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": f"{tool_use.id}_auto_build",
+                        "content": _format_tool_output(auto_result.output),
+                        "is_error": not auto_result.ok,
+                    }
+                )
 
         messages.append({"role": "user", "content": tool_results})
     else:

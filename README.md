@@ -9,6 +9,16 @@ Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可�
 - Agent 必须执行 `assembleDebug`，成功任务保留任务级 APK 和构建日志。
 - 手机端支持任务提交、轮询、停止、历史恢复、调试事件、APK 下载与安装。
 
+## 多对话（Cursor 式）
+
+每个 Android 项目下可开多个独立 **Conversation（对话）**，各自保留 Agent 上下文：
+
+- `GET/POST /api/projects/{id}/conversations` — 列表 / 新建
+- `GET/PATCH/DELETE /api/conversations/{id}` — 详情 / 改标题 / 归档
+- `POST /api/conversations/{id}/ask` — 在该对话中提问（多轮连续）
+- 同一项目同时只跑一个 turn（workspace 锁）；未调用 `assembleDebug` 的追问也可成功
+- 旧版 `POST /api/projects/{id}/ask` 仍可用，内部自动挂到默认对话
+
 ## 设备初始化与目录隔离
 
 App 首次使用时填写服务器地址并点击“初始化设备连接”。服务端会生成唯一的 `user_id` 和随机访问 Token：
