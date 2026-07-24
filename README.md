@@ -46,6 +46,21 @@ python3 -m agent serve
 
 手机连接时使用电脑的局域网 IP，例如 `http://192.168.1.100:8000`。无 Token 时 API 同样默认使用 `local` 用户；需要隔离时再走注册或配置 Token。
 
+## 网络搜索（Tavily）
+
+在 `config.yaml` 配置后，Agent 可调用 `web_search`：
+
+```yaml
+tavily_api_key: "tvly-你的密钥"
+```
+
+也可使用环境变量 `TAVILY_API_KEY`。Key 申请：https://tavily.com
+
+## 文件下载（需用户确认）
+
+Agent 可调用 `download_file` 将 http/https 资源保存到工程内（推荐 `downloads/`）。
+**每次下载都会暂停并弹出确认框，默认拒绝；只有你点「允许下载」后才会真正开始下载。**
+
 ## 桌面端（Electron + Monaco）
 
 Cursor 式三栏桌面编辑器：左侧文件树、中间 Monaco、右侧 AI 占位（暂未接 Agent）。

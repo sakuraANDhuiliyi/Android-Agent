@@ -127,12 +127,31 @@ class TaskStore:
     def recover_interrupted(self) -> None:
         now = time.time()
         with self._connect() as conn:
-            conn.execute(
-                """UPDATE tasks SET status='failed', finished_at=?,
-                   error_message='Agent 服务重启，任务执行已中断'
-                   WHERE status IN ('queued', 'running')""",
-                (now,),
-            )
+            rows = conn.execute(
+                """SELECT id, status FROM tasks
+                   WHERE status IN ('queued', 'running', 'awaiting_approval')"""
+            ).fetchall()
+            for row in rows:
+                if row["status"] == "awaiting_approval":
+                    msg = "Agent 服务重启，等待中的下载确认已失效，请重新发送需求"
+                else:
+                    msg = "Agent 服务重启，任务执行已中断"
+                conn.execute(
+                    """UPDATE tasks SET status='failed', finished_at=?, error_message=?
+                       WHERE id=?""",
+                    (now, msg, row["id"]),
+                )
+                conn.execute(
+                    """INSERT INTO task_events(task_id,type,message,payload,created_at)
+                       VALUES(?,?,?,?,?)""",
+                    (
+                        row["id"],
+                        "failed",
+                        msg,
+                        json.dumps({"message": msg, "error": msg}, ensure_ascii=False),
+                        now,
+                    ),
+                )
 
     def create_conversation(
         self,
@@ -299,7 +318,7 @@ class TaskStore:
         with self._connect() as conn:
             cursor = conn.execute(
                 """UPDATE tasks SET cancel_requested=1
-                   WHERE id=? AND user_id=? AND status IN ('queued','running')""",
+                   WHERE id=? AND user_id=? AND status IN ('queued','running','awaiting_approval')""",
                 (task_id, user_id),
             )
         return cursor.rowcount > 0

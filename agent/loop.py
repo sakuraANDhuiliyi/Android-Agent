@@ -10,8 +10,18 @@ from agent.compact import (
     compact_openai_messages,
 )
 from agent.config import Settings
-from agent.model_fallback import should_try_next_model
+from agent.honesty import (
+    EDIT_TOOLS,
+    download_tool_nudge_message,
+    honesty_nudge_message,
+    prompt_expects_file_edit,
+    text_asks_download_permission,
+    text_awaits_user_action,
+    text_claims_file_edit,
+)
+from agent.model_fallback import should_try_next_model, should_try_next_provider
 from agent.prompts import get_system_prompt
+from agent.stream import StreamedCompletion, stream_anthropic_message, stream_openai_chat
 from agent.tools import dispatch_tool, get_tool_definitions
 
 EventCallback = Callable[[str, Any], None]
@@ -48,6 +58,8 @@ def run_agent(
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
     prior_turns: list[dict[str, Any]] | None = None,
+    task_id: str | None = None,
+    set_status: Callable[[str], None] | None = None,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
@@ -84,24 +96,31 @@ def run_agent(
                 on_event,
                 cancel_check,
                 prior_messages,
+                task_id=task_id,
+                set_status=set_status,
             )
         except CancellationRequested:
             raise
         except Exception as exc:
             errors.append(f"{current_settings.provider}: {exc}")
-            if index == len(provider_chain) - 1:
-                break
-            retry_msg = (
-                f"提供商 {current_settings.provider} 不可用，"
-                f"尝试 {provider_chain[index + 1].provider}..."
-            )
-            _emit(
-                on_event,
-                "provider_switch",
-                retry_msg,
-                from_provider=current_settings.provider,
-                error=str(exc),
-            )
+            can_fallback = should_try_next_provider(exc) and index < len(provider_chain) - 1
+            if can_fallback:
+                retry_msg = (
+                    f"提供商 {current_settings.provider} 不可用，"
+                    f"尝试 {provider_chain[index + 1].provider}..."
+                )
+                _emit(
+                    on_event,
+                    "provider_switch",
+                    retry_msg,
+                    from_provider=current_settings.provider,
+                    error=str(exc),
+                )
+                continue
+            # Tool/internal bugs (e.g. KeyError 'path') are not provider outages
+            if not should_try_next_provider(exc):
+                raise RuntimeError(f"{current_settings.provider} 任务失败: {exc}") from exc
+            break
 
     raise RuntimeError("所有提供商均不可用:\n" + "\n".join(errors))
 
@@ -115,6 +134,9 @@ def _run_agent_with_provider(
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
     prior_messages: list[dict[str, Any]],
+    *,
+    task_id: str | None = None,
+    set_status: Callable[[str], None] | None = None,
 ) -> str:
     system_prompt = get_system_prompt(settings)
 
@@ -129,6 +151,8 @@ def _run_agent_with_provider(
             on_event,
             cancel_check,
             prior_messages,
+            task_id=task_id,
+            set_status=set_status,
         )
     return _run_openai_compatible(
         settings,
@@ -140,6 +164,8 @@ def _run_agent_with_provider(
         on_event,
         cancel_check,
         prior_messages,
+        task_id=task_id,
+        set_status=set_status,
     )
 
 
@@ -183,13 +209,31 @@ def _chat_completion_with_fallback(
     model_candidates: list[str],
     active_model: str,
     on_event: EventCallback | None,
+    cancel_check: CancelCheck | None = None,
     **kwargs: Any,
 ):
     errors: list[str] = []
     start_index = model_candidates.index(active_model) if active_model in model_candidates else 0
     for model_name in model_candidates[start_index:]:
         try:
-            response = client.chat.completions.create(model=model_name, **kwargs)
+            try:
+                response = stream_openai_chat(
+                    client,
+                    model=model_name,
+                    on_event=on_event,
+                    cancel_check=cancel_check,
+                    **kwargs,
+                )
+            except CancellationRequested:
+                raise
+            except Exception as stream_exc:
+                # Fall back to non-streaming if the provider rejects streams
+                _emit(
+                    on_event,
+                    "session",
+                    f"流式输出不可用，回退普通模式: {stream_exc}",
+                )
+                response = client.chat.completions.create(model=model_name, **kwargs)
             if model_name != active_model:
                 switch_msg = f"已切换对话模型: {active_model} → {model_name}"
                 _emit(
@@ -200,6 +244,8 @@ def _chat_completion_with_fallback(
                     to_model=model_name,
                 )
             return response, model_name
+        except CancellationRequested:
+            raise
         except Exception as exc:
             errors.append(f"{model_name}: {exc}")
             if model_name == model_candidates[-1] or not should_try_next_model(exc):
@@ -220,13 +266,30 @@ def _anthropic_message_with_fallback(
     model_candidates: list[str],
     active_model: str,
     on_event: EventCallback | None,
+    cancel_check: CancelCheck | None = None,
     **kwargs: Any,
 ):
     errors: list[str] = []
     start_index = model_candidates.index(active_model) if active_model in model_candidates else 0
     for model_name in model_candidates[start_index:]:
         try:
-            response = client.messages.create(model=model_name, **kwargs)
+            try:
+                response = stream_anthropic_message(
+                    client,
+                    model=model_name,
+                    on_event=on_event,
+                    cancel_check=cancel_check,
+                    **kwargs,
+                )
+            except CancellationRequested:
+                raise
+            except Exception as stream_exc:
+                _emit(
+                    on_event,
+                    "session",
+                    f"流式输出不可用，回退普通模式: {stream_exc}",
+                )
+                response = client.messages.create(model=model_name, **kwargs)
             if model_name != active_model:
                 switch_msg = f"已切换对话模型: {active_model} → {model_name}"
                 _emit(
@@ -237,6 +300,8 @@ def _anthropic_message_with_fallback(
                     to_model=model_name,
                 )
             return response, model_name
+        except CancellationRequested:
+            raise
         except Exception as exc:
             errors.append(f"{model_name}: {exc}")
             if model_name == model_candidates[-1] or not should_try_next_model(exc):
@@ -262,6 +327,9 @@ def _run_openai_compatible(
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
     prior_messages: list[dict[str, Any]],
+    *,
+    task_id: str | None = None,
+    set_status: Callable[[str], None] | None = None,
 ) -> str:
     try:
         from openai import OpenAI
@@ -283,7 +351,12 @@ def _run_openai_compatible(
     active_model = settings.model
     gradle_failures = 0
     max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
-    compact_max = int(getattr(settings, "compact_max_chars", 80_000))
+    compact_max = int(getattr(settings, "compact_max_chars", 2_500_000))
+    successful_edits = 0
+    honesty_nudges = 0
+    max_honesty_nudges = 2
+
+    max_output = max(1024, int(getattr(settings, "max_output_tokens", 65_536)))
 
     total_turns = _total_turns(settings)
     for turn in range(1, total_turns + 1):
@@ -302,9 +375,10 @@ def _run_openai_compatible(
             settings.model_candidates,
             active_model,
             on_event,
+            cancel_check,
             messages=messages,
             tools=_openai_tools(settings),
-            max_tokens=8096,
+            max_tokens=max_output,
         )
 
         choice = response.choices[0]
@@ -318,11 +392,18 @@ def _run_openai_compatible(
                 "total_tokens": getattr(usage, "total_tokens", None),
             })
         message = choice.message
+        turn_text = ""
+        streamed = isinstance(response, StreamedCompletion)
         if message.content:
             text = message.content.strip()
             if text:
+                turn_text = text
                 final_text_parts.append(text)
-                _emit(on_event, "text", message.content, content=text)
+                if streamed:
+                    _emit(on_event, "text", None, content=text, streamed=True)
+                    print(text)
+                else:
+                    _emit(on_event, "text", message.content, content=text, streamed=False)
 
         tool_calls = message.tool_calls or []
         for tool_call in tool_calls:
@@ -343,6 +424,46 @@ def _run_openai_compatible(
             )
 
         if not tool_calls:
+            if (
+                text_asks_download_permission(turn_text)
+                and honesty_nudges < max_honesty_nudges
+                and turn < total_turns
+            ):
+                honesty_nudges += 1
+                if final_text_parts and final_text_parts[-1] == turn_text:
+                    final_text_parts.pop()
+                nudge = download_tool_nudge_message()
+                _emit(on_event, "honesty_nudge", nudge, kind="download_permission")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                    }
+                )
+                messages.append({"role": "user", "content": nudge})
+                continue
+            needs_real_edit = (
+                successful_edits == 0
+                and not text_awaits_user_action(turn_text)
+                and (
+                    prompt_expects_file_edit(user_prompt)
+                    or text_claims_file_edit(turn_text)
+                )
+            )
+            if needs_real_edit and honesty_nudges < max_honesty_nudges and turn < total_turns:
+                honesty_nudges += 1
+                if final_text_parts and final_text_parts[-1] == turn_text:
+                    final_text_parts.pop()
+                nudge = honesty_nudge_message(successful_edits=successful_edits)
+                _emit(on_event, "honesty_nudge", nudge, successful_edits=successful_edits)
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                    }
+                )
+                messages.append({"role": "user", "content": nudge})
+                continue
             break
 
         messages.append(
@@ -405,7 +526,13 @@ def _run_openai_compatible(
                 tool_call.function.name,
                 tool_input,
                 cancel_check=cancel_check,
+                settings=settings,
+                on_event=on_event,
+                task_id=task_id,
+                set_status=set_status,
             )
+            if tool_call.function.name in EDIT_TOOLS and result.ok:
+                successful_edits += 1
             preview = _format_tool_output(result.output)
             if len(preview) > 2000:
                 preview = preview[:2000] + "\n... (输出已截断)"
@@ -445,6 +572,10 @@ def _run_openai_compatible(
                     "run_gradle",
                     {"task": "assembleDebug"},
                     cancel_check=cancel_check,
+                    settings=settings,
+                    on_event=on_event,
+                    task_id=task_id,
+                    set_status=set_status,
                 )
                 auto_preview = _format_tool_output(auto_result.output)
                 if len(auto_preview) > 2000:
@@ -490,6 +621,9 @@ def _run_anthropic(
     on_event: EventCallback | None,
     cancel_check: CancelCheck | None,
     prior_messages: list[dict[str, Any]],
+    *,
+    task_id: str | None = None,
+    set_status: Callable[[str], None] | None = None,
 ) -> str:
     try:
         import anthropic
@@ -512,7 +646,11 @@ def _run_anthropic(
     active_model = settings.model
     gradle_failures = 0
     max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
-    compact_max = int(getattr(settings, "compact_max_chars", 80_000))
+    compact_max = int(getattr(settings, "compact_max_chars", 2_500_000))
+    max_output = max(1024, int(getattr(settings, "max_output_tokens", 65_536)))
+    successful_edits = 0
+    honesty_nudges = 0
+    max_honesty_nudges = 2
 
     total_turns = _total_turns(settings)
     for turn in range(1, total_turns + 1):
@@ -531,15 +669,16 @@ def _run_anthropic(
             settings.model_candidates,
             active_model,
             on_event,
-            max_tokens=8096,
+            cancel_check,
+            max_tokens=max_output,
             system=system_prompt,
             tools=tool_definitions,
             messages=messages,
         )
         usage = getattr(response, "usage", None)
         if usage:
-            input_tokens = getattr(usage, "input_tokens", None)
-            output_tokens = getattr(usage, "output_tokens", None)
+            input_tokens = getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None)
+            output_tokens = getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None)
             _emit(on_event, "usage", provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -548,12 +687,19 @@ def _run_anthropic(
 
         assistant_content = []
         tool_uses = []
+        turn_text = ""
+        streamed = isinstance(response, StreamedCompletion)
         for block in response.content:
             if block.type == "text":
                 text = block.text.strip()
                 if text:
+                    turn_text = f"{turn_text}\n{text}".strip() if turn_text else text
                     final_text_parts.append(text)
-                    _emit(on_event, "text", block.text, content=text)
+                    if streamed:
+                        _emit(on_event, "text", None, content=text, streamed=True)
+                        print(text)
+                    else:
+                        _emit(on_event, "text", block.text, content=text, streamed=False)
                 assistant_content.append(block)
             elif block.type == "tool_use":
                 tool_uses.append(block)
@@ -570,6 +716,42 @@ def _run_anthropic(
         messages.append({"role": "assistant", "content": assistant_content})
 
         if response.stop_reason != "tool_use":
+            if (
+                text_asks_download_permission(turn_text)
+                and honesty_nudges < max_honesty_nudges
+                and turn < total_turns
+            ):
+                honesty_nudges += 1
+                text_blocks = sum(
+                    1 for b in response.content if b.type == "text" and (b.text or "").strip()
+                )
+                for _ in range(text_blocks):
+                    if final_text_parts:
+                        final_text_parts.pop()
+                nudge = download_tool_nudge_message()
+                _emit(on_event, "honesty_nudge", nudge, kind="download_permission")
+                messages.append({"role": "user", "content": nudge})
+                continue
+            needs_real_edit = (
+                successful_edits == 0
+                and not text_awaits_user_action(turn_text)
+                and (
+                    prompt_expects_file_edit(user_prompt)
+                    or text_claims_file_edit(turn_text)
+                )
+            )
+            if needs_real_edit and honesty_nudges < max_honesty_nudges and turn < total_turns:
+                honesty_nudges += 1
+                text_blocks = sum(
+                    1 for b in response.content if b.type == "text" and (b.text or "").strip()
+                )
+                for _ in range(text_blocks):
+                    if final_text_parts:
+                        final_text_parts.pop()
+                nudge = honesty_nudge_message(successful_edits=successful_edits)
+                _emit(on_event, "honesty_nudge", nudge, successful_edits=successful_edits)
+                messages.append({"role": "user", "content": nudge})
+                continue
             break
 
         tool_results = []
@@ -613,7 +795,13 @@ def _run_anthropic(
                 tool_use.name,
                 tool_input,
                 cancel_check=cancel_check,
+                settings=settings,
+                on_event=on_event,
+                task_id=task_id,
+                set_status=set_status,
             )
+            if tool_use.name in EDIT_TOOLS and result.ok:
+                successful_edits += 1
             preview = _format_tool_output(result.output)
             if len(preview) > 2000:
                 preview = preview[:2000] + "\n... (输出已截断)"
@@ -652,6 +840,10 @@ def _run_anthropic(
                     "run_gradle",
                     {"task": "assembleDebug"},
                     cancel_check=cancel_check,
+                    settings=settings,
+                    on_event=on_event,
+                    task_id=task_id,
+                    set_status=set_status,
                 )
                 auto_preview = _format_tool_output(auto_result.output)
                 _emit(

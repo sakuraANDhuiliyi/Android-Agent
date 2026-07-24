@@ -23,8 +23,10 @@ from agent.jobs import (
     get_project_session,
     job_to_dict,
     list_conversations,
+    list_job_approvals,
     list_jobs,
     request_cancel,
+    resolve_job_approval,
     start_ask_job,
     update_conversation,
 )
@@ -53,6 +55,10 @@ class AskRequest(BaseModel):
     continue_session: bool = True
     reset_session: bool = False
     conversation_id: Optional[str] = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approved: bool
 
 
 class CreateConversationRequest(BaseModel):
@@ -170,6 +176,7 @@ def create_app(
             "model_candidates": settings.model_candidates,
             "provider_fallbacks": [item.provider for item in settings.provider_fallbacks],
             "api_key_configured": bool(settings.api_key),
+            "tavily_configured": bool(settings.tavily_api_key),
             "lan_ip": _guess_lan_ip(),
             "port": settings.server_port,
         }
@@ -381,6 +388,25 @@ def create_app(
         request_cancel(job_id, user_id)
         return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
 
+    @app.get("/api/jobs/{job_id}/approvals")
+    def get_job_approvals(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        pending = list_job_approvals(job_id, user_id)
+        if pending is None:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        return {"job_id": job_id, "approvals": pending}
+
+    @app.post("/api/jobs/{job_id}/approvals/{approval_id}")
+    def decide_job_approval(
+        job_id: str,
+        approval_id: str,
+        body: ApprovalDecisionRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = resolve_job_approval(job_id, approval_id, user_id, approved=body.approved)
+        if not result:
+            raise HTTPException(status_code=404, detail="待确认请求不存在或已处理")
+        return {"approval": result}
+
     @app.get("/api/jobs/{job_id}/apk")
     def download_task_apk(job_id: str, user_id: str = Depends(current_user)) -> FileResponse:
         job = get_job(job_id, user_id=user_id)
@@ -578,7 +604,7 @@ def create_app(
                     )
                     break
 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.05)
         except WebSocketDisconnect:
             return
 

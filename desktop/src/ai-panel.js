@@ -17,6 +17,7 @@
     aiMessages: document.getElementById("aiMessages"),
     aiEmpty: document.getElementById("aiEmpty"),
     aiContext: document.getElementById("aiContext"),
+    approvalDock: document.getElementById("approvalDock"),
     promptInput: document.getElementById("promptInput"),
     btnSend: document.getElementById("btnSend"),
     btnStop: document.getElementById("btnStop"),
@@ -47,8 +48,10 @@
     conversationId: null,
     currentJobId: null,
     watcher: null,
+    liveWatching: false,
     running: false,
     sawTextForJob: false,
+    streamActive: false,
     assistantMsgEl: null,
     assistantTextEl: null,
     contextFile: null,
@@ -266,6 +269,16 @@
     ensureAssistantMessage();
     const current = state.assistantTextEl.textContent || "";
     state.assistantTextEl.textContent = current ? `${current}\n${text}` : text;
+    state.streamActive = false;
+    scrollMessages();
+  }
+
+  function appendAssistantDelta(delta) {
+    if (!delta) return;
+    ensureAssistantMessage();
+    state.streamActive = true;
+    state.sawTextForJob = true;
+    state.assistantTextEl.textContent = (state.assistantTextEl.textContent || "") + delta;
     scrollMessages();
   }
 
@@ -347,11 +360,288 @@
       {
         queued: "排队中",
         running: "运行中",
+        awaiting_approval: "等待确认",
         succeeded: "已完成",
         failed: "失败",
         canceled: "已停止",
       }[status] || status || "—"
     );
+  }
+
+  const pendingApprovalPrompts = new Set();
+  const dockedApprovals = new Map(); // approvalId -> { jobId, payload }
+
+  function clearApprovalDock() {
+    dockedApprovals.clear();
+    pendingApprovalPrompts.clear();
+    if (!els.approvalDock) return;
+    els.approvalDock.innerHTML = "";
+    els.approvalDock.hidden = true;
+  }
+
+  function renderApprovalDock() {
+    if (!els.approvalDock) return;
+    els.approvalDock.innerHTML = "";
+    if (!dockedApprovals.size) {
+      els.approvalDock.hidden = true;
+      return;
+    }
+    els.approvalDock.hidden = false;
+
+    for (const [approvalId, item] of dockedApprovals) {
+      const card = document.createElement("div");
+      card.className = "approval-dock-card";
+      card.dataset.approvalId = approvalId;
+
+      const title = document.createElement("div");
+      title.className = "approval-title";
+      title.textContent = "需要你确认下载";
+      card.appendChild(title);
+
+      const meta = document.createElement("div");
+      meta.className = "approval-meta";
+      meta.innerHTML =
+        `<div><span>URL</span><code>${escapeHtml(item.url || "")}</code></div>` +
+        `<div><span>保存到</span><code>${escapeHtml(item.path || "")}</code></div>`;
+      card.appendChild(meta);
+
+      const hint = document.createElement("p");
+      hint.className = "approval-hint";
+      hint.textContent = "任务已暂停。请选择允许或拒绝后继续。";
+      card.appendChild(hint);
+
+      const actions = document.createElement("div");
+      actions.className = "approval-actions";
+      const btnAllow = document.createElement("button");
+      btnAllow.type = "button";
+      btnAllow.className = "primary-btn";
+      btnAllow.textContent = "允许下载";
+      const btnDeny = document.createElement("button");
+      btnDeny.type = "button";
+      btnDeny.className = "ghost-btn";
+      btnDeny.textContent = "拒绝";
+
+      const setBusy = (busy) => {
+        btnAllow.disabled = busy;
+        btnDeny.disabled = busy;
+      };
+
+      const decide = async (approved) => {
+        setBusy(true);
+        try {
+          await client.resolveApproval(item.jobId, approvalId, approved);
+          dockedApprovals.delete(approvalId);
+          pendingApprovalPrompts.delete(`${item.jobId}:${approvalId}`);
+          renderApprovalDock();
+          appendStatusChip(approved ? "已允许下载" : "已拒绝下载", approved ? "ok" : "err");
+          markApprovalCardResolved({
+            approval_id: approvalId,
+            decision: approved ? "approved" : "rejected",
+          });
+        } catch (err) {
+          setBusy(false);
+          appendStatusChip(`确认失败: ${err.message}`, "err");
+          toast(err.message);
+        }
+      };
+
+      btnAllow.addEventListener("click", () => decide(true));
+      btnDeny.addEventListener("click", () => decide(false));
+      actions.appendChild(btnAllow);
+      actions.appendChild(btnDeny);
+      card.appendChild(actions);
+      els.approvalDock.appendChild(card);
+    }
+  }
+
+  function upsertPendingApproval(event) {
+    const approvalId = event.approval_id;
+    const jobId = event.job_id || state.currentJobId;
+    if (!approvalId || !jobId) return;
+    const key = `${jobId}:${approvalId}`;
+    if (dockedApprovals.has(approvalId)) {
+      renderApprovalDock();
+      return;
+    }
+    dockedApprovals.set(approvalId, {
+      jobId,
+      url: event.url || (event.payload && event.payload.url) || "",
+      path: event.path || (event.payload && event.payload.path) || "",
+      max_bytes: event.max_bytes,
+      kind: event.kind || "download_file",
+    });
+    pendingApprovalPrompts.add(key);
+    renderApprovalDock();
+
+    // Also leave a marker in the chat transcript (non-interactive; actions are in the dock)
+    if (!els.aiMessages.querySelector(`.approval-card[data-approval-id="${approvalId}"]`)) {
+      appendApprovalCard(event, { interactive: false });
+    }
+    appendStatusChip("请在下方确认条选择：允许 / 拒绝下载", "running");
+    scrollMessages();
+    els.approvalDock?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }
+
+  function appendApprovalCard(event, { interactive }) {
+    clearEmpty();
+    const approvalId = event.approval_id;
+    const jobId = event.job_id || state.currentJobId;
+    const card = document.createElement("div");
+    card.className = "approval-card";
+    card.dataset.approvalId = approvalId || "";
+    card.dataset.jobId = jobId || "";
+
+    const title = document.createElement("div");
+    title.className = "approval-title";
+    title.textContent = interactive ? "需要你确认：允许下载文件？" : "下载确认请求";
+    card.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "approval-meta";
+    meta.innerHTML =
+      `<div><span>URL</span><code>${escapeHtml(event.url || "")}</code></div>` +
+      `<div><span>保存到</span><code>${escapeHtml(event.path || "")}</code></div>`;
+    card.appendChild(meta);
+
+    const hint = document.createElement("p");
+    hint.className = "approval-hint";
+    hint.textContent = interactive
+      ? "也可使用下方固定确认条操作。"
+      : "请到输入框上方的黄色确认条操作。";
+    card.appendChild(hint);
+
+    if (interactive && approvalId && jobId) {
+      const actions = document.createElement("div");
+      actions.className = "approval-actions";
+      const btnAllow = document.createElement("button");
+      btnAllow.type = "button";
+      btnAllow.className = "primary-btn";
+      btnAllow.textContent = "允许下载";
+      const btnDeny = document.createElement("button");
+      btnDeny.type = "button";
+      btnDeny.className = "ghost-btn";
+      btnDeny.textContent = "拒绝";
+      const decide = async (approved) => {
+        btnAllow.disabled = true;
+        btnDeny.disabled = true;
+        try {
+          await client.resolveApproval(jobId, approvalId, approved);
+          dockedApprovals.delete(approvalId);
+          renderApprovalDock();
+          card.classList.add(approved ? "approved" : "rejected");
+          hint.textContent = approved ? "已允许" : "已拒绝";
+          actions.remove();
+        } catch (err) {
+          btnAllow.disabled = false;
+          btnDeny.disabled = false;
+          toast(err.message);
+        }
+      };
+      btnAllow.addEventListener("click", () => decide(true));
+      btnDeny.addEventListener("click", () => decide(false));
+      actions.appendChild(btnAllow);
+      actions.appendChild(btnDeny);
+      card.appendChild(actions);
+    } else {
+      card.classList.add("historical");
+    }
+
+    els.aiMessages.appendChild(card);
+    scrollMessages();
+  }
+
+  function markApprovalCardResolved(event) {
+    const approvalId = event.approval_id;
+    if (!approvalId) return;
+    dockedApprovals.delete(approvalId);
+    renderApprovalDock();
+    const card = els.aiMessages.querySelector(`.approval-card[data-approval-id="${approvalId}"]`);
+    if (!card) return;
+    const decision = event.decision || "";
+    card.classList.add(decision === "approved" ? "approved" : "rejected");
+    const hint = card.querySelector(".approval-hint");
+    if (hint) {
+      const labels = {
+        approved: "已允许下载",
+        rejected: "已拒绝下载",
+        timeout: "确认超时，未下载",
+        canceled: "任务取消，下载中止",
+      };
+      hint.textContent = labels[decision] || `结果: ${decision}`;
+    }
+    card.querySelector(".approval-actions")?.remove();
+  }
+
+  async function syncPendingApprovals(jobId) {
+    if (!jobId || !state.connected) return;
+    try {
+      const data = await client.listApprovals(jobId);
+      const pending = data.approvals || [];
+      for (const item of pending) {
+        upsertPendingApproval({
+          approval_id: item.id,
+          job_id: jobId,
+          kind: item.kind,
+          ...(item.payload || {}),
+        });
+      }
+      const liveIds = new Set(pending.map((p) => p.id));
+      for (const id of [...dockedApprovals.keys()]) {
+        if (!liveIds.has(id)) dockedApprovals.delete(id);
+      }
+      renderApprovalDock();
+
+      // Orphaned wait: job says awaiting_approval but server has no live approval
+      if (!pending.length) {
+        const jobData = await client.job(jobId);
+        const job = jobData.job;
+        if (job?.status === "awaiting_approval") {
+          showOrphanApprovalDock(jobId, job);
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function showOrphanApprovalDock(jobId, job) {
+    if (!els.approvalDock) return;
+    const events = job.events || [];
+    let lastReq = null;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i].type === "approval_required") {
+        lastReq = events[i];
+        break;
+      }
+      if (events[i].type === "approval_resolved") break;
+    }
+    els.approvalDock.hidden = false;
+    els.approvalDock.innerHTML = "";
+    const card = document.createElement("div");
+    card.className = "approval-dock-card";
+    card.innerHTML =
+      `<div class="approval-title">下载确认已失效</div>` +
+      `<p class="approval-hint">任务仍在等待确认，但确认通道已断开（常见于服务重启）。` +
+      `${lastReq?.path ? `<br>上次请求保存到：<code>${escapeHtml(lastReq.path)}</code>` : ""}` +
+      `</p>`;
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    const btnStop = document.createElement("button");
+    btnStop.type = "button";
+    btnStop.className = "danger-btn";
+    btnStop.textContent = "停止并重试";
+    btnStop.addEventListener("click", async () => {
+      try {
+        await client.cancel(jobId);
+        clearApprovalDock();
+        appendStatusChip("已停止失效任务，请重新发送需求", "err");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    actions.appendChild(btnStop);
+    card.appendChild(actions);
+    els.approvalDock.appendChild(card);
   }
 
   function eventKey(event) {
@@ -372,22 +662,33 @@
       case "plan":
       case "turn":
       case "auto_continue":
+        // Cursor-like: keep the transcript continuous — skip turn banners
+        break;
       case "model_switch":
       case "provider_switch":
         appendStatusChip(event.message || event.type);
         break;
+      case "text_delta":
+        appendAssistantDelta(event.content || event.delta || event.message || "");
+        break;
       case "text":
         state.sawTextForJob = true;
-        appendAssistantText(event.content || event.message || "");
+        if (event.streamed || state.streamActive) {
+          // Already rendered via text_delta; just finalize the bubble
+          state.streamActive = false;
+        } else {
+          appendAssistantText(event.content || event.message || "");
+        }
         break;
       case "tool_call":
       case "tool_result":
+        state.streamActive = false;
         appendToolCard(event);
         break;
       case "usage": {
         const u = event.usage || {};
-        appendStatusChip(
-          `Token ${u.input_tokens ?? "?"} → ${u.output_tokens ?? "?"} (Σ ${u.total_tokens ?? "?"})`,
+        window.EditorApp?.setStatus?.(
+          `Token 输入 ${u.input_tokens ?? "?"} · 输出 ${u.output_tokens ?? "?"} · 合计 ${u.total_tokens ?? "?"}`,
         );
         break;
       }
@@ -403,6 +704,20 @@
       case "canceled":
       case "cancel_requested":
         appendStatusChip(event.message || "已停止", "err");
+        break;
+      case "honesty_nudge":
+        appendStatusChip(event.message || "系统要求真实改文件", "err");
+        break;
+      case "approval_required":
+        if (event.kind === "download_file" || !event.kind) {
+          upsertPendingApproval(event);
+        } else {
+          appendStatusChip(event.message || "等待用户确认", "running");
+        }
+        break;
+      case "approval_resolved":
+        markApprovalCardResolved(event);
+        appendStatusChip(event.message || `确认结果: ${event.decision || ""}`);
         break;
       default:
         if (event.message) appendStatusChip(event.message);
@@ -425,6 +740,7 @@
       state.watcher.close();
       state.watcher = null;
     }
+    state.liveWatching = false;
   }
 
   async function refreshOpenFilesAfterJob(job) {
@@ -446,30 +762,43 @@
     stopWatcher();
     state.currentJobId = jobId;
     state.sawTextForJob = false;
+    state.liveWatching = true;
     setRunning(true);
+    // Immediately pull any pending approvals (covers missed WS events / resume)
+    syncPendingApprovals(jobId);
     state.watcher = client.watchJob(jobId, async (payload) => {
       if (payload.kind === "event" && payload.event) {
         handleEvent(payload.event);
       }
       if (payload.kind === "job" && payload.job) {
-        /* stats reserved */
+        if (payload.job.status === "awaiting_approval") {
+          await syncPendingApprovals(jobId);
+        }
       }
       if (payload.kind === "done") {
         // Ignore stale done callbacks after the user switched conversations
         if (state.currentJobId !== jobId) return;
         stopWatcher();
         setRunning(false);
+        clearApprovalDock();
         const status = payload.status;
         try {
           const data = await client.job(jobId);
           if (state.currentJobId !== jobId) return;
           if (data.job?.changed_files?.length) appendChanges(data.job.changed_files);
           const finalText = data.job?.result || data.job?.final_message || payload.result;
-          if (finalText && status === "succeeded" && !state.sawTextForJob) {
-            appendAssistantText(finalText);
+          if (finalText && status === "succeeded") {
+            if (!state.sawTextForJob) {
+              appendAssistantText(finalText);
+            } else {
+              const noteMatch = String(finalText).match(/【系统(?:校验|说明)】[\s\S]*/);
+              if (noteMatch) {
+                appendAssistantText(noteMatch[0].trim());
+              }
+            }
           }
           if (status === "succeeded") {
-            appendStatusChip("任务成功", "ok");
+            appendStatusChip("本轮结束", "ok");
           } else if (status === "failed") {
             appendStatusChip(`任务失败: ${payload.error || data.job?.error || data.job?.error_message || ""}`, "err");
           } else if (status === "canceled") {
@@ -485,7 +814,7 @@
           }
         } catch (_) {
           if (state.currentJobId !== jobId) return;
-          if (status === "succeeded") appendStatusChip("任务成功", "ok");
+          if (status === "succeeded") appendStatusChip("本轮结束", "ok");
           else if (status === "failed") appendStatusChip(`任务失败: ${payload.error || ""}`, "err");
           else if (status === "canceled") appendStatusChip("任务已停止", "err");
         }
@@ -724,7 +1053,9 @@
     if (!conversationId || !state.selectedProjectId || !state.connected) return;
     try {
       const data = await client.jobs(state.selectedProjectId, conversationId);
-      const active = (data.jobs || []).find((j) => j.status === "queued" || j.status === "running");
+      const active = (data.jobs || []).find(
+        (j) => j.status === "queued" || j.status === "running" || j.status === "awaiting_approval",
+      );
       if (!active) return;
       state.seenEventIds = new Set();
       state.assistantMsgEl = null;
@@ -816,7 +1147,7 @@
       for (const event of job.events || []) handleEvent(event);
       if (job.result || job.final_message) appendAssistantText(job.result || job.final_message);
       if (job.changed_files?.length) appendChanges(job.changed_files);
-      if (job.status === "queued" || job.status === "running") {
+      if (job.status === "queued" || job.status === "running" || job.status === "awaiting_approval") {
         watchJob(job.id);
       } else {
         appendStatusChip(statusLabel(job.status), job.status === "succeeded" ? "ok" : "err");

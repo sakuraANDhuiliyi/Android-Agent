@@ -21,8 +21,8 @@ PROVIDER_DEFAULTS = {
         "base_url_env": "ANTHROPIC_BASE_URL",
     },
     "deepseek": {
-        "model": "deepseek-chat",
-        "model_fallbacks": [],
+        "model": "deepseek-v4-pro",
+        "model_fallbacks": ["deepseek-v4-flash"],
         "base_url": "https://api.deepseek.com",
         "api_key_env": "DEEPSEEK_API_KEY",
         "base_url_env": "DEEPSEEK_BASE_URL",
@@ -51,11 +51,13 @@ class Settings:
     max_auto_continuations: int
     max_gradle_retries: int
     compact_max_chars: int
+    max_output_tokens: int
     base_url: str | None
     auto_build_after_edit: bool
     server_host: str
     server_port: int
     api_token: str
+    tavily_api_key: str = ""
     users: list[UserAccount] = field(default_factory=list)
     provider_fallbacks: list["Settings"] = field(default_factory=list)
 
@@ -150,11 +152,13 @@ def _build_settings(
         max_auto_continuations=int(shared["max_auto_continuations"]),
         max_gradle_retries=int(shared["max_gradle_retries"]),
         compact_max_chars=int(shared["compact_max_chars"]),
+        max_output_tokens=int(shared["max_output_tokens"]),
         base_url=_resolve_base_url(provider, file_data, is_primary=is_primary),
         auto_build_after_edit=bool(shared["auto_build_after_edit"]),
         server_host=str(shared["server_host"]),
         server_port=int(shared["server_port"]),
         api_token=str(shared["api_token"]),
+        tavily_api_key=str(shared.get("tavily_api_key", "") or ""),
         users=list(shared["users"]),
         provider_fallbacks=[],
     )
@@ -238,11 +242,21 @@ def load_settings() -> Settings:
         "max_turns": int(file_data.get("max_turns", 15)),
         "max_auto_continuations": int(file_data.get("max_auto_continuations", 2)),
         "max_gradle_retries": int(file_data.get("max_gradle_retries", 3)),
-        "compact_max_chars": int(file_data.get("compact_max_chars", 80_000)),
+        "compact_max_chars": int(file_data.get("compact_max_chars", 2_500_000)),
+        # DeepSeek V4 max output is 384K; agent default leaves headroom for thinking + tools
+        "max_output_tokens": max(
+            1024,
+            min(int(file_data.get("max_output_tokens", 65_536)), 384_000),
+        ),
         "auto_build_after_edit": bool(file_data.get("auto_build_after_edit", False)),
         "server_host": str(file_data.get("server_host", "0.0.0.0")),
         "server_port": int(file_data.get("server_port", 8000)),
         "api_token": legacy_api_token,
+        "tavily_api_key": (
+            os.environ.get("TAVILY_API_KEY")
+            or file_data.get("tavily_api_key")
+            or ""
+        ).strip(),
         "users": users,
     }
 
@@ -287,6 +301,23 @@ def provider_option_dict(item: Settings, *, is_default: bool = False) -> dict[st
     }
 
 
+def _model_option(
+    item: Settings,
+    model_name: str,
+    *,
+    is_default: bool = False,
+) -> dict[str, Any]:
+    return {
+        "id": f"{item.provider}/{model_name}",
+        "provider": item.provider,
+        "model": model_name,
+        "model_candidates": [model_name],
+        "label": f"{item.provider} / {model_name}",
+        "configured": bool(item.api_key),
+        "is_default": is_default,
+    }
+
+
 def models_catalog(settings: Settings) -> dict[str, Any]:
     models: list[dict[str, Any]] = [
         {
@@ -300,11 +331,29 @@ def models_catalog(settings: Settings) -> dict[str, Any]:
         }
     ]
     for item in list_configured_providers(settings):
-        models.append(
-            provider_option_dict(item, is_default=item.provider == settings.provider)
-        )
+        candidates = item.model_candidates or [item.model]
+        if len(candidates) == 1:
+            models.append(
+                _model_option(
+                    item,
+                    candidates[0],
+                    is_default=item.provider == settings.provider
+                    and candidates[0] == settings.model,
+                )
+            )
+        else:
+            for model_name in candidates:
+                models.append(
+                    _model_option(
+                        item,
+                        model_name,
+                        is_default=item.provider == settings.provider
+                        and model_name == settings.model,
+                    )
+                )
     return {
         "default_provider": settings.provider,
+        "default_model": settings.model,
         "models": models,
     }
 
@@ -314,22 +363,53 @@ def resolve_job_settings(
     provider: str | None,
     *,
     auto_fallback: bool = False,
+    model: str | None = None,
 ) -> Settings:
-    if not provider or provider == "auto":
-        if auto_fallback:
-            return base
-        return replace(base, provider_fallbacks=[])
+    """Resolve provider/model for a job.
+
+    ``provider`` may be:
+    - None / \"auto\"
+    - provider name (e.g. \"deepseek\")
+    - catalog id \"provider/model\" (e.g. \"deepseek/deepseek-v4-pro\")
+    """
+    selected_model = (model or "").strip() or None
+    provider_name = (provider or "").strip() or None
+
+    if provider_name and "/" in provider_name and provider_name != "auto":
+        maybe_provider, maybe_model = provider_name.split("/", 1)
+        provider_name = maybe_provider.strip() or None
+        if not selected_model:
+            selected_model = maybe_model.strip() or None
+
+    if not provider_name or provider_name == "auto":
+        selected = base if auto_fallback else replace(base, provider_fallbacks=[])
+        if selected_model:
+            candidates = unique_models(selected_model, selected.model_candidates)
+            selected = replace(
+                selected,
+                model=selected_model,
+                model_candidates=candidates,
+            )
+        return selected
 
     for item in list_configured_providers(base):
-        if item.provider == provider:
-            selected = replace(item, provider_fallbacks=[])
-            if auto_fallback:
-                fallbacks = [
-                    replace(fallback, provider_fallbacks=[])
-                    for fallback in base.provider_fallbacks
-                    if fallback.provider != provider and fallback.api_key
-                ]
-                selected = replace(selected, provider_fallbacks=fallbacks)
-            return selected
+        if item.provider != provider_name:
+            continue
+        selected = replace(item, provider_fallbacks=[])
+        if selected_model:
+            candidates = unique_models(selected_model, item.model_candidates)
+            selected = replace(
+                selected,
+                model=selected_model,
+                model_candidates=candidates,
+            )
+        if auto_fallback:
+            fallbacks = [
+                replace(fallback, provider_fallbacks=[])
+                for fallback in base.provider_fallbacks
+                if fallback.provider != provider_name and fallback.api_key
+            ]
+            selected = replace(selected, provider_fallbacks=fallbacks)
+        return selected
 
-    raise ValueError(f"未配置的提供商: {provider}")
+    raise ValueError(f"未配置的提供商: {provider_name}")

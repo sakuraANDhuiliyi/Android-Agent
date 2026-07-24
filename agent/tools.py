@@ -489,6 +489,200 @@ def run_gradle(
                 _active_gradle.pop(key, None)
 
 
+def web_search(
+    query: str,
+    *,
+    api_key: str,
+    max_results: int = 5,
+    include_answer: bool = True,
+    search_depth: str = "basic",
+) -> ToolResult:
+    """Search the web via Tavily Search API."""
+    query = (query or "").strip()
+    if not query:
+        return ToolResult(False, "query 不能为空")
+    if not api_key:
+        return ToolResult(
+            False,
+            "未配置 Tavily API Key。请在 config.yaml 设置 tavily_api_key，或设置环境变量 TAVILY_API_KEY",
+        )
+
+    max_results = max(1, min(int(max_results or 5), 10))
+    depth = search_depth if search_depth in {"basic", "advanced"} else "basic"
+
+    try:
+        import httpx
+    except ImportError:
+        return ToolResult(False, "缺少 httpx 依赖，请执行 pip install httpx")
+
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "include_answer": bool(include_answer),
+        "search_depth": depth,
+    }
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post("https://api.tavily.com/search", json=payload)
+        if response.status_code >= 400:
+            detail = response.text[:500]
+            return ToolResult(False, f"Tavily 请求失败 HTTP {response.status_code}: {detail}")
+        data = response.json()
+    except Exception as exc:
+        return ToolResult(False, f"Tavily 请求异常: {exc}")
+
+    lines: list[str] = [f"查询: {data.get('query', query)}"]
+    answer = data.get("answer")
+    if answer:
+        lines.append(f"摘要: {answer}")
+    results = data.get("results") or []
+    if not results:
+        lines.append("（无搜索结果）")
+    else:
+        lines.append(f"结果 ({len(results)}):")
+        for index, item in enumerate(results, start=1):
+            title = item.get("title") or "(无标题)"
+            url = item.get("url") or ""
+            content = (item.get("content") or "").strip()
+            if len(content) > 500:
+                content = content[:500] + "…"
+            score = item.get("score")
+            score_text = f" score={score:.3f}" if isinstance(score, (int, float)) else ""
+            lines.append(f"{index}. {title}{score_text}")
+            if url:
+                lines.append(f"   URL: {url}")
+            if content:
+                lines.append(f"   {content}")
+    return ToolResult(True, "\n".join(lines))
+
+
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+
+def _validate_download_url(url: str) -> str:
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    if not raw:
+        raise ValueError("url 不能为空")
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("仅允许 http/https 下载")
+    if not parsed.netloc:
+        raise ValueError("无效的 URL")
+    return raw
+
+
+def download_file(
+    workspace: Path,
+    url: str,
+    dest_path: str,
+    *,
+    user_id: str,
+    task_id: str | None,
+    on_event=None,
+    set_status=None,
+    cancel_check: CancelCheck | None = None,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
+    timeout_sec: float = 300.0,
+) -> ToolResult:
+    """Download a remote file into the workspace after explicit user approval."""
+    from agent.approvals import request_user_approval
+
+    try:
+        url = _validate_download_url(url)
+    except ValueError as exc:
+        return ToolResult(False, str(exc))
+
+    rel = _normalize_rel(dest_path or "")
+    if not rel or rel == ".":
+        return ToolResult(False, "必须指定保存路径 path（相对工程根，例如 downloads/icon.png）")
+    if ".." in rel.split("/"):
+        return ToolResult(False, "路径非法")
+
+    # Prefer downloads/ ; still allow other non-escape relative paths under workspace
+    try:
+        target = _resolve_in_workspace(workspace, rel)
+    except PermissionError as exc:
+        return ToolResult(False, str(exc))
+
+    if target.exists() and target.is_dir():
+        return ToolResult(False, f"目标是目录，请指定文件路径: {rel}")
+
+    if not task_id:
+        return ToolResult(
+            False,
+            "download_file 必须在任务上下文中运行，且需要用户明确确认后才能下载",
+        )
+
+    decision = request_user_approval(
+        job_id=task_id,
+        user_id=user_id,
+        kind="download_file",
+        payload={
+            "message": f"请求下载文件到 {rel}（请在对话确认卡片中选择允许或拒绝）",
+            "url": url,
+            "path": rel,
+            "max_bytes": int(max_bytes),
+        },
+        on_event=on_event,
+        set_status=set_status,
+        timeout_sec=max(timeout_sec, 600.0),
+        cancel_check=cancel_check,
+    )
+    if decision != "approved":
+        reason = {
+            "rejected": "用户拒绝了此次下载",
+            "timeout": "等待用户确认超时（未下载）",
+            "canceled": "任务已取消，下载中止",
+        }.get(decision, f"未获批准: {decision}")
+        return ToolResult(False, reason)
+
+    try:
+        import httpx
+    except ImportError:
+        return ToolResult(False, "缺少 httpx 依赖，请执行 pip install httpx")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+            if response.status_code >= 400:
+                return ToolResult(
+                    False,
+                    f"下载失败 HTTP {response.status_code}: {url}",
+                )
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > max_bytes:
+                return ToolResult(
+                    False,
+                    f"文件过大（Content-Length={content_length}），上限 {max_bytes} 字节",
+                )
+            size = 0
+            with target.open("wb") as out:
+                for chunk in response.iter_bytes():
+                    if cancel_check:
+                        cancel_check()
+                    if not chunk:
+                        continue
+                    size += len(chunk)
+                    if size > max_bytes:
+                        out.close()
+                        target.unlink(missing_ok=True)
+                        return ToolResult(False, f"下载中止：超过大小上限 {max_bytes} 字节")
+                    out.write(chunk)
+        return ToolResult(True, f"已下载 {size} 字节 -> {rel}")
+    except Exception as exc:
+        if target.exists() and target.is_file():
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        if exc.__class__.__name__ == "CancellationRequested":
+            raise
+        return ToolResult(False, f"下载异常: {exc}")
+
+
 def dispatch_tool(
     workspace: Path,
     user_id: str,
@@ -496,17 +690,65 @@ def dispatch_tool(
     name: str,
     tool_input: dict,
     cancel_check: CancelCheck | None = None,
+    settings=None,
+    on_event=None,
+    task_id: str | None = None,
+    set_status=None,
+) -> ToolResult:
+    try:
+        return _dispatch_tool_inner(
+            workspace,
+            user_id,
+            project_id,
+            name,
+            tool_input or {},
+            cancel_check=cancel_check,
+            settings=settings,
+            on_event=on_event,
+            task_id=task_id,
+            set_status=set_status,
+        )
+    except Exception as exc:
+        # Avoid circular import with agent.loop.CancellationRequested
+        if exc.__class__.__name__ == "CancellationRequested":
+            raise
+        # Tool arg / IO bugs must not kill the whole agent as "provider unavailable"
+        return ToolResult(False, f"工具 {name} 执行异常: {exc}")
+
+
+def _dispatch_tool_inner(
+    workspace: Path,
+    user_id: str,
+    project_id: str,
+    name: str,
+    tool_input: dict,
+    cancel_check: CancelCheck | None = None,
+    settings=None,
+    on_event=None,
+    task_id: str | None = None,
+    set_status=None,
 ) -> ToolResult:
     if name == "list_dir":
         return list_dir(workspace, tool_input.get("path", "."))
     if name == "read_file":
-        return read_file(workspace, tool_input["path"])
+        path = tool_input.get("path")
+        if not path:
+            return ToolResult(False, "缺少必填参数 path（相对工程根的文件路径）")
+        return read_file(workspace, str(path))
     if name == "write_file":
-        return write_file(workspace, tool_input["path"], tool_input["content"])
+        path = tool_input.get("path")
+        if not path:
+            return ToolResult(False, "缺少必填参数 path（例如 app/src/main/java/.../GameView.kt）")
+        if "content" not in tool_input:
+            return ToolResult(False, "缺少必填参数 content（文件完整内容）")
+        return write_file(workspace, str(path), tool_input.get("content") or "")
     if name == "str_replace":
+        path = tool_input.get("path")
+        if not path:
+            return ToolResult(False, "缺少必填参数 path")
         return str_replace(
             workspace,
-            tool_input["path"],
+            str(path),
             tool_input.get("old_string", ""),
             tool_input.get("new_string", ""),
             replace_all=bool(tool_input.get("replace_all", False)),
@@ -531,6 +773,28 @@ def dispatch_tool(
             user_id,
             project_id,
             tool_input.get("task", "assembleDebug"),
+            cancel_check=cancel_check,
+        )
+    if name == "web_search":
+        api_key = ""
+        if settings is not None:
+            api_key = getattr(settings, "tavily_api_key", "") or ""
+        return web_search(
+            tool_input.get("query", ""),
+            api_key=api_key,
+            max_results=int(tool_input.get("max_results", 5) or 5),
+            include_answer=bool(tool_input.get("include_answer", True)),
+            search_depth=str(tool_input.get("search_depth", "basic") or "basic"),
+        )
+    if name == "download_file":
+        return download_file(
+            workspace,
+            tool_input.get("url", ""),
+            tool_input.get("path", ""),
+            user_id=user_id,
+            task_id=task_id,
+            on_event=on_event,
+            set_status=set_status,
             cancel_check=cancel_check,
         )
     return ToolResult(False, f"未知工具: {name}")
@@ -637,6 +901,56 @@ BASE_TOOL_DEFINITIONS = [
     },
 ]
 
+WEB_SEARCH_TOOL_DEFINITION = {
+    "name": "web_search",
+    "description": (
+        "使用 Tavily 在互联网上搜索实时信息（文档、API、错误解决方案、库用法等）。"
+        "当本地工程信息不足、需要查最新资料时调用。返回摘要与若干条带 URL 的结果。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜索关键词或自然语言问题"},
+            "max_results": {
+                "type": "integer",
+                "description": "返回条数，1-10，默认 5",
+            },
+            "include_answer": {
+                "type": "boolean",
+                "description": "是否包含 Tavily 生成的简短摘要，默认 true",
+            },
+            "search_depth": {
+                "type": "string",
+                "enum": ["basic", "advanced"],
+                "description": "basic 更快；advanced 更深入（消耗更多额度）",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+DOWNLOAD_FILE_TOOL_DEFINITION = {
+    "name": "download_file",
+    "description": (
+        "从 HTTP/HTTPS URL 下载文件到工程目录。"
+        "【强制】调用后任务会暂停，并在对话界面显示确认卡片（允许/拒绝）；"
+        "仅当用户点击允许后才会真正下载。用户拒绝或超时则不会下载。"
+        "不要改用纯文字索要权限——必须调用本工具才会出现确认卡片。"
+        "优先保存到 downloads/ 下。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "要下载的 http/https URL"},
+            "path": {
+                "type": "string",
+                "description": "保存路径（相对工程根），例如 downloads/logo.png",
+            },
+        },
+        "required": ["url", "path"],
+    },
+}
+
 
 def get_tool_definitions(settings=None) -> list[dict]:
     tools = list(BASE_TOOL_DEFINITIONS)
@@ -649,10 +963,14 @@ def get_tool_definitions(settings=None) -> list[dict]:
                     f"在工程目录执行 Gradle。常用 task: assembleDebug。"
                     f"编译失败后最多再尝试 {max_retries} 次修复构建。"
                 )
-                # replace in list
                 idx = next(i for i, t in enumerate(tools) if t["name"] == "run_gradle")
                 tools[idx] = tool
                 break
+        if getattr(settings, "tavily_api_key", ""):
+            tools.append(dict(WEB_SEARCH_TOOL_DEFINITION))
+        tools.append(dict(DOWNLOAD_FILE_TOOL_DEFINITION))
+    else:
+        tools.append(dict(DOWNLOAD_FILE_TOOL_DEFINITION))
     return tools
 
 

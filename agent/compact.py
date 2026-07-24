@@ -37,84 +37,109 @@ def _content_chars(content: Any) -> int:
     return len(str(content))
 
 
+def _shrink_openai_message(message: dict[str, Any]) -> bool:
+    """Compress bulky tool payloads in-place. Returns True if modified."""
+    changed = False
+    role = message.get("role")
+    if role == "tool":
+        content = message.get("content") or ""
+        if isinstance(content, str) and len(content) > 400:
+            message["content"] = content[:200] + "\n... (历史工具输出已压缩) ..."
+            changed = True
+    elif role == "assistant" and message.get("tool_calls"):
+        new_calls = []
+        for call in message["tool_calls"]:
+            call = dict(call)
+            fn = dict(call.get("function") or {})
+            args = fn.get("arguments") or ""
+            if len(args) > 300:
+                fn["arguments"] = args[:150] + "...(compressed)"
+                changed = True
+            call["function"] = fn
+            new_calls.append(call)
+        message["tool_calls"] = new_calls
+    return changed
+
+
+def _has_compact_marker(message: dict[str, Any] | None) -> bool:
+    if not message:
+        return False
+    return "上下文已压缩" in str(message.get("content") or "")
+
+
 def compact_openai_messages(
     messages: list[dict[str, Any]],
     *,
-    max_chars: int = 80_000,
+    max_chars: int = 2_500_000,
+    keep_recent: int = 8,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Fold early tool outputs when transcript grows too large."""
-    if estimate_message_chars(messages) <= max_chars:
+    """Fold early tool outputs when transcript grows too large.
+
+    Only the oldest messages are trimmed; the newest ``keep_recent`` turns stay intact.
+    """
+    before = estimate_message_chars(messages)
+    if before <= max_chars:
         return messages, False
 
-    compacted = [dict(message) for message in messages]
-    # Keep system + newest half; compress older tool results.
-    keep_tail = max(6, len(compacted) // 2)
-    head = compacted[:-keep_tail]
-    tail = compacted[-keep_tail:]
-
+    result = [dict(message) for message in messages]
+    protect = max(2, min(keep_recent, max(0, len(result) - 1)))
     changed = False
-    for message in head:
-        role = message.get("role")
-        if role == "tool":
-            content = message.get("content") or ""
-            if isinstance(content, str) and len(content) > 400:
-                message["content"] = content[:200] + "\n... (历史工具输出已压缩) ..."
-                changed = True
-        elif role == "assistant" and message.get("tool_calls"):
-            # Drop bulky arguments from old tool calls
-            new_calls = []
-            for call in message["tool_calls"]:
-                call = dict(call)
-                fn = dict(call.get("function") or {})
-                args = fn.get("arguments") or ""
-                if len(args) > 300:
-                    fn["arguments"] = args[:150] + "...(compressed)"
-                    changed = True
-                call["function"] = fn
-                new_calls.append(call)
-            message["tool_calls"] = new_calls
 
-    result = head + tail
-    # If still too large, drop oldest non-system messages until under budget.
-    while len(result) > 3 and estimate_message_chars(result) > max_chars:
-        # Never drop index 0 if system
+    # Compress everything except the newest protect messages
+    for message in result[:-protect] if protect else result:
+        if _shrink_openai_message(message):
+            changed = True
+
+    # Still too large: drop oldest non-system messages (keep working under budget)
+    marker_inserted = False
+    while len(result) > protect + 1 and estimate_message_chars(result) > max_chars:
         drop_at = 1 if result and result[0].get("role") == "system" else 0
-        if drop_at >= len(result) - 2:
+        if drop_at >= len(result) - protect:
             break
         result.pop(drop_at)
         changed = True
-        if result and result[0].get("role") == "system" and len(result) > 1:
-            # Insert a boundary marker once
-            if result[1].get("role") != "user" or "上下文已压缩" not in str(result[1].get("content", "")):
-                result.insert(
-                    1,
-                    {
-                        "role": "user",
-                        "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。",
-                    },
-                )
-                changed = True
-                break
+        if (
+            not marker_inserted
+            and result
+            and result[0].get("role") == "system"
+            and not _has_compact_marker(result[1] if len(result) > 1 else None)
+        ):
+            result.insert(
+                1,
+                {
+                    "role": "user",
+                    "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。",
+                },
+            )
+            marker_inserted = True
+            changed = True
 
-    return result, changed
+    after = estimate_message_chars(result)
+    if after >= before and not changed:
+        return messages, False
+    return result, after < before or marker_inserted
 
 
 def compact_anthropic_messages(
     messages: list[dict[str, Any]],
     *,
-    max_chars: int = 80_000,
+    max_chars: int = 2_500_000,
+    keep_recent: int = 8,
 ) -> tuple[list[dict[str, Any]], bool]:
-    if estimate_message_chars(messages) <= max_chars:
+    before = estimate_message_chars(messages)
+    if before <= max_chars:
         return messages, False
 
-    compacted = []
+    result = [dict(message) for message in messages]
+    protect = max(2, min(keep_recent, max(0, len(result) - 1)))
     changed = False
-    for index, message in enumerate(messages):
-        item = dict(message)
+    cutoff = max(0, len(result) - protect)
+
+    for index, item in enumerate(result):
+        if index >= cutoff:
+            continue
         content = item.get("content")
-        # Keep the last few messages intact
-        near_end = index >= max(0, len(messages) - 4)
-        if isinstance(content, list) and not near_end:
+        if isinstance(content, list):
             new_blocks = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -125,25 +150,30 @@ def compact_anthropic_messages(
                         changed = True
                 new_blocks.append(block)
             item["content"] = new_blocks
-        compacted.append(item)
 
-    while len(compacted) > 2 and estimate_message_chars(compacted) > max_chars:
-        compacted.pop(0)
+    marker_inserted = False
+    while len(result) > protect and estimate_message_chars(result) > max_chars:
+        result.pop(0)
         changed = True
-        if compacted and not (
-            isinstance(compacted[0].get("content"), str)
-            and "上下文已压缩" in compacted[0].get("content", "")
+        if not marker_inserted and not (
+            result
+            and isinstance(result[0].get("content"), str)
+            and "上下文已压缩" in result[0].get("content", "")
         ):
-            compacted.insert(
+            result.insert(
                 0,
                 {
                     "role": "user",
                     "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。",
                 },
             )
-            break
+            marker_inserted = True
+            changed = True
 
-    return compacted, changed
+    after = estimate_message_chars(result)
+    if after >= before and not changed:
+        return messages, False
+    return result, after < before or marker_inserted
 
 
 def build_session_prior_messages(

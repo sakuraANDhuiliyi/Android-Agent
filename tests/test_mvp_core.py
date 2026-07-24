@@ -8,14 +8,24 @@ from unittest.mock import patch
 
 from agent.compact import build_session_prior_messages, compact_openai_messages, estimate_message_chars
 from agent.database import TaskStore
+from agent.honesty import (
+    prompt_expects_file_edit,
+    sanitize_final_answer,
+    text_claims_file_edit,
+)
 from agent.tools import (
+    dispatch_tool,
+    get_tool_definitions,
     glob_files,
     grep_files,
     is_writable_path,
     str_replace,
     summarize_build_log,
+    web_search,
     write_file,
 )
+from agent.model_fallback import should_try_next_provider
+from agent.stream import _DeltaFlusher
 from agent.loop import _total_turns, run_agent
 from agent.changes import compare_snapshots, snapshot_workspace
 from agent import jobs as jobs_mod
@@ -292,6 +302,197 @@ class ConversationStoreTests(unittest.TestCase):
         return task or store.get_task(task_id, user_id)
 
 
+class HonestyTests(unittest.TestCase):
+    def test_prompt_expects_edit(self) -> None:
+        self.assertTrue(prompt_expects_file_edit("请创建一个跑酷游戏"))
+        self.assertTrue(prompt_expects_file_edit("帮我修改 MainActivity"))
+        self.assertFalse(prompt_expects_file_edit("什么样的提示词比较好"))
+
+    def test_claims_edit(self) -> None:
+        self.assertTrue(text_claims_file_edit("改造完成！游戏已经改好了"))
+        self.assertFalse(text_claims_file_edit("本轮未改任何文件，仅说明方案"))
+        self.assertFalse(text_claims_file_edit("已请求下载，请在对话中确认是否允许"))
+
+    def test_sanitize_blocks_fake_success(self) -> None:
+        out = sanitize_final_answer(
+            "✅ 改造完成，已更新 GameView.kt",
+            changed_files=[],
+            successful_edits=0,
+            user_prompt="参考神庙逃亡重新设计",
+        )
+        self.assertIn("系统校验", out)
+        self.assertIn("未检测到任何文件改动", out)
+
+    def test_sanitize_appends_real_changes(self) -> None:
+        out = sanitize_final_answer(
+            "已写入布局",
+            changed_files=[{"path": "app/src/main/res/layout/activity_main.xml", "change": "modified"}],
+            successful_edits=1,
+            user_prompt="改一下布局",
+        )
+        self.assertIn("本轮实际改动", out)
+        self.assertIn("activity_main.xml", out)
+
+    def test_sanitize_user_rejected_download_is_not_deception(self) -> None:
+        out = sanitize_final_answer(
+            "用户拒绝了下载，本轮未改任何文件",
+            changed_files=[],
+            successful_edits=0,
+            user_prompt="下载素材并改造游戏",
+            approval_decisions=["rejected"],
+        )
+        self.assertIn("系统说明", out)
+        self.assertIn("未批准下载", out)
+        self.assertNotIn("系统校验", out)
+
+    def test_sanitize_waiting_for_permission(self) -> None:
+        out = sanitize_final_answer(
+            "请确认是否允许下载 icon.png",
+            changed_files=[],
+            successful_edits=0,
+            user_prompt="下载一个图标",
+        )
+        self.assertIn("系统说明", out)
+        self.assertNotIn("请勿当作已落地的代码改动", out)
+
+
+class WebSearchTests(unittest.TestCase):
+    def test_web_search_requires_key(self) -> None:
+        result = web_search("android viewbinding", api_key="")
+        self.assertFalse(result.ok)
+        self.assertIn("Tavily", result.output)
+
+    def test_web_search_tool_registered_when_configured(self) -> None:
+        without = get_tool_definitions(SimpleNamespace(max_gradle_retries=3, tavily_api_key=""))
+        self.assertFalse(any(t["name"] == "web_search" for t in without))
+        self.assertTrue(any(t["name"] == "download_file" for t in without))
+        with_key = get_tool_definitions(SimpleNamespace(max_gradle_retries=3, tavily_api_key="tvly-test"))
+        self.assertTrue(any(t["name"] == "web_search" for t in with_key))
+
+    def test_web_search_formats_results(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {
+                    "query": "viewbinding",
+                    "answer": "Use ActivityMainBinding",
+                    "results": [
+                        {
+                            "title": "View Binding",
+                            "url": "https://developer.android.com/topic/libraries/view-binding",
+                            "content": "View binding generates a binding class",
+                            "score": 0.95,
+                        }
+                    ],
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def post(self, url, json=None):
+                self.url = url
+                self.json = json
+                return FakeResponse()
+
+        with patch("httpx.Client", FakeClient):
+            result = web_search("viewbinding", api_key="tvly-test", max_results=3)
+        self.assertTrue(result.ok)
+        self.assertIn("View Binding", result.output)
+        self.assertIn("developer.android.com", result.output)
+        self.assertIn("摘要:", result.output)
+
+
+class DownloadFileTests(unittest.TestCase):
+    def test_rejects_non_http_url(self) -> None:
+        from agent.tools import download_file
+
+        with tempfile.TemporaryDirectory() as temp:
+            result = download_file(
+                Path(temp),
+                "file:///etc/passwd",
+                "downloads/x.txt",
+                user_id="local",
+                task_id="task1",
+            )
+        self.assertFalse(result.ok)
+        self.assertIn("http", result.output.lower())
+
+    def test_requires_user_approval(self) -> None:
+        from agent.approvals import resolve_approval
+        from agent.tools import download_file
+
+        events: list[tuple[str, dict]] = []
+
+        def on_event(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+            if event_type == "approval_required":
+                resolve_approval(payload["approval_id"], "local", approved=False)
+
+        with tempfile.TemporaryDirectory() as temp:
+            result = download_file(
+                Path(temp),
+                "https://example.com/a.png",
+                "downloads/a.png",
+                user_id="local",
+                task_id="task1",
+                on_event=on_event,
+                timeout_sec=5,
+            )
+        self.assertFalse(result.ok)
+        self.assertIn("拒绝", result.output)
+        self.assertTrue(any(t == "approval_required" for t, _ in events))
+        self.assertTrue(any(t == "approval_resolved" for t, _ in events))
+
+    def test_downloads_after_approval(self) -> None:
+        from agent.approvals import resolve_approval
+        from agent.tools import download_file
+
+        class FakeStreamResponse:
+            status_code = 200
+            headers = {"content-length": "4"}
+
+            def iter_bytes(self):
+                yield b"data"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_stream(*args, **kwargs):
+            return FakeStreamResponse()
+
+        def on_event(event_type: str, payload: dict) -> None:
+            if event_type == "approval_required":
+                resolve_approval(payload["approval_id"], "local", approved=True)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch("httpx.stream", fake_stream):
+                result = download_file(
+                    root,
+                    "https://example.com/a.bin",
+                    "downloads/a.bin",
+                    user_id="local",
+                    task_id="task1",
+                    on_event=on_event,
+                    timeout_sec=5,
+                )
+            self.assertTrue(result.ok, result.output)
+            self.assertTrue((root / "downloads" / "a.bin").is_file())
+            self.assertEqual((root / "downloads" / "a.bin").read_bytes(), b"data")
+
+
 class ToolSafetyTests(unittest.TestCase):
     def test_write_whitelist(self) -> None:
         self.assertTrue(is_writable_path("app/src/main/res/layout/main.xml"))
@@ -303,6 +504,32 @@ class ToolSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             result = write_file(Path(temp), "../agent/api.py", "bad")
             self.assertFalse(result.ok)
+
+    def test_missing_path_does_not_raise_keyerror(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = dispatch_tool(
+                Path(temp),
+                "local",
+                "project",
+                "write_file",
+                {"content": "package demo"},
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("path", str(result.output).lower())
+
+            result2 = dispatch_tool(
+                Path(temp),
+                "local",
+                "project",
+                "read_file",
+                {},
+            )
+            self.assertFalse(result2.ok)
+            self.assertIn("path", str(result2.output).lower())
+
+    def test_keyerror_path_is_not_provider_outage(self) -> None:
+        self.assertFalse(should_try_next_provider(KeyError("path")))
+        self.assertTrue(should_try_next_provider(ConnectionError("connection reset")))
 
     def test_str_replace_and_grep_glob(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -352,9 +579,19 @@ class CompactTests(unittest.TestCase):
             {"role": "assistant", "content": "a4"},
         ]
         before = estimate_message_chars(messages)
-        compacted, changed = compact_openai_messages(messages, max_chars=2000)
+        compacted, changed = compact_openai_messages(messages, max_chars=2000, keep_recent=2)
         self.assertTrue(changed)
         self.assertLess(estimate_message_chars(compacted), before)
+
+    def test_compact_skips_when_under_budget(self) -> None:
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        compacted, changed = compact_openai_messages(messages, max_chars=2_500_000)
+        self.assertFalse(changed)
+        self.assertEqual(compacted, messages)
 
     def test_prior_messages_from_turns(self) -> None:
         prior = build_session_prior_messages(
@@ -393,6 +630,16 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         # cancel_check is still the last positional before prior was added — check kwargs/args
         self.assertIs(provider_loop.call_args.args[6], check)
+
+    def test_delta_flusher_coalesces(self) -> None:
+        events: list[tuple[str, dict]] = []
+        flusher = _DeltaFlusher(lambda t, p: events.append((t, p)), min_chars=5, max_interval=10.0)
+        flusher.push("ab")
+        self.assertEqual(events, [])
+        flusher.push("cdef")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "text_delta")
+        self.assertEqual(events[0][1]["content"], "abcdef")
 
 
 if __name__ == "__main__":

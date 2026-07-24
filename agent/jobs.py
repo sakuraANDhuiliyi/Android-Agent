@@ -6,9 +6,11 @@ import time
 import uuid
 from typing import Any
 
+from agent.approvals import get_pending_approvals, reject_job_approvals, resolve_approval
 from agent.changes import compare_snapshots, snapshot_workspace
 from agent.config import Settings, load_settings
 from agent.database import TaskStore
+from agent.honesty import sanitize_final_answer
 from agent.loop import CancellationRequested, run_agent
 from agent.paths import latest_apk_path, user_builds_dir, workspace_path
 from agent.project import load_project_meta
@@ -46,11 +48,35 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def resolve_job_approval(
+    job_id: str,
+    approval_id: str,
+    user_id: str,
+    *,
+    approved: bool,
+) -> dict[str, Any] | None:
+    job = get_job(job_id, user_id=user_id)
+    if not job:
+        return None
+    result = resolve_approval(approval_id, user_id, approved=approved)
+    if not result or result.get("job_id") != job_id:
+        return None
+    return result
+
+
+def list_job_approvals(job_id: str, user_id: str) -> list[dict[str, Any]] | None:
+    job = get_job(job_id, user_id=user_id)
+    if not job:
+        return None
+    return get_pending_approvals(job_id, user_id)
+
+
 def request_cancel(job_id: str, user_id: str) -> bool:
     job = _store.get_task(job_id, user_id)
     changed = _store.request_cancel(job_id, user_id)
     if changed:
         _store.add_event(job_id, "cancel_requested", {"message": "已请求停止任务"})
+        reject_job_approvals(job_id, user_id, reason="canceled")
         if job:
             cancel_gradle(job["user_id"], job["project_id"])
     return changed
@@ -182,6 +208,7 @@ def _run_job(
     task_started = time.time()
     build_state = {"attempted": False, "succeeded": False}
     token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    edit_state: dict[str, Any] = {"successful_edits": 0, "approval_decisions": []}
     _store.update_task(task_id, status="running", started_at=time.time())
     _store.add_event(
         task_id,
@@ -207,11 +234,25 @@ def _run_job(
     def check_cancel() -> None:
         if _store.is_cancel_requested(task_id):
             cancel_gradle(user_id, project_id)
+            reject_job_approvals(task_id, user_id, reason="canceled")
             raise CancellationRequested("用户已请求停止任务")
+
+    def set_status(status: str) -> None:
+        _store.update_task(task_id, status=status)
 
     def on_event(event_type: str, data: Any) -> None:
         payload = data if isinstance(data, dict) else {"message": str(data)}
         _store.add_event(task_id, event_type, payload)
+        if (
+            event_type == "tool_result"
+            and payload.get("name") in {"write_file", "str_replace"}
+            and payload.get("ok")
+        ):
+            edit_state["successful_edits"] += 1
+        if event_type == "approval_resolved":
+            decision = payload.get("decision")
+            if decision:
+                edit_state["approval_decisions"].append(str(decision))
         if event_type == "tool_result" and payload.get("name") == "run_gradle":
             task_name = (payload.get("input") or {}).get("task") or "assembleDebug"
             # Only assembleDebug counts toward the success gate
@@ -243,6 +284,8 @@ def _run_job(
             on_event=on_event,
             cancel_check=check_cancel,
             prior_turns=prior_turns,
+            task_id=task_id,
+            set_status=set_status,
         )
         check_cancel()
 
@@ -259,6 +302,10 @@ def _run_job(
                 "run_gradle",
                 {"task": "assembleDebug"},
                 cancel_check=check_cancel,
+                settings=settings,
+                on_event=on_event,
+                task_id=task_id,
+                set_status=set_status,
             )
             build_state["attempted"] = True
             build_state["succeeded"] = result.ok
@@ -287,6 +334,16 @@ def _run_job(
         logs = sorted(
             (user_builds_dir(user_id) / project_id).glob("*.log"),
             key=lambda p: p.stat().st_mtime,
+        )
+        # Snapshot early so honesty check can use real disk changes
+        after_preview = snapshot_workspace(workspace)
+        changed_preview, _diff_preview = compare_snapshots(workspace, before, after_preview)
+        answer = sanitize_final_answer(
+            answer,
+            changed_files=changed_preview,
+            successful_edits=edit_state["successful_edits"],
+            user_prompt=prompt,
+            approval_decisions=edit_state["approval_decisions"],
         )
         _store.update_task(
             task_id,

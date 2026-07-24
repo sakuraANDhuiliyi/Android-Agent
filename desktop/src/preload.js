@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("agentDesktop", {
+  confirmDownload: (payload) => ipcRenderer.invoke("dialog:confirm-download", payload),
   getDefaultWorkspace: () => ipcRenderer.invoke("app:get-default-workspace"),
   getRepoRoot: () => ipcRenderer.invoke("app:get-repo-root"),
   openFolderDialog: () => ipcRenderer.invoke("dialog:open-folder"),

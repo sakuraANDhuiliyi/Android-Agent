@@ -403,6 +403,27 @@ function registerIpc() {
   ipcMain.handle("app:get-default-workspace", () => defaultWorkspace());
   ipcMain.handle("app:get-repo-root", () => repoRoot());
 
+  ipcMain.handle("dialog:confirm-download", async (_event, payload = {}) => {
+    const url = payload.url || "";
+    const savePath = payload.path || "";
+    const maxBytes = payload.max_bytes;
+    const sizeHint =
+      typeof maxBytes === "number"
+        ? `\n大小上限: ${(maxBytes / (1024 * 1024)).toFixed(0)} MB`
+        : "";
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["允许下载", "拒绝"],
+      defaultId: 1,
+      cancelId: 1,
+      title: "确认下载文件",
+      message: "Agent 请求从网络下载文件",
+      detail: `URL:\n${url}\n\n保存到工程:\n${savePath}${sizeHint}\n\n默认拒绝。仅在你确认来源可信时选择「允许下载」。`,
+      noLink: true,
+    });
+    return result.response === 0;
+  });
+
   ipcMain.handle("dialog:open-folder", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ["openDirectory"],

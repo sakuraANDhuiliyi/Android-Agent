@@ -124,6 +124,17 @@
       });
     }
 
+    resolveApproval(jobId, approvalId, approved) {
+      return this.request(
+        `/api/jobs/${encodeURIComponent(jobId)}/approvals/${encodeURIComponent(approvalId)}`,
+        { method: "POST", body: { approved: Boolean(approved) } },
+      );
+    }
+
+    listApprovals(jobId) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/approvals`);
+    }
+
     /**
      * Stream job events over WebSocket; falls back to caller polling on failure.
      * @param {string} jobId
@@ -172,7 +183,11 @@
               lastCount += 1;
             }
             onEvent({ kind: "job", job });
-            if (job.status !== "queued" && job.status !== "running") {
+            if (
+              job.status !== "queued" &&
+              job.status !== "running" &&
+              job.status !== "awaiting_approval"
+            ) {
               markDone({
                 kind: "done",
                 status: job.status,
@@ -184,7 +199,7 @@
           } catch (err) {
             onEvent({ kind: "error", error: err.message });
           }
-        }, 1000);
+        }, 200);
       };
 
       try {
@@ -220,12 +235,15 @@
       };
 
       ws.onerror = () => {
-        if (!closed && !finished && !pollTimer) startPoll();
+        /* poll below covers gaps */
       };
 
       ws.onclose = () => {
-        if (!closed && !finished && !pollTimer) startPoll();
+        /* keep polling until finished */
       };
+
+      // Always poll in parallel so approval / late events are never missed
+      startPoll();
 
       return {
         close() {

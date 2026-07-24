@@ -47,3 +47,35 @@ def should_try_next_model(exc: Exception) -> bool:
     ):
         return True
     return False
+
+
+def should_try_next_provider(exc: Exception) -> bool:
+    """Only switch providers for transport/API outages — not tool or logic bugs."""
+    if isinstance(exc, (KeyError, TypeError, ValueError, AttributeError)):
+        return False
+    text = str(exc).lower()
+    # Bare KeyError message is often just 'path' / "path"
+    if text in {"'path'", '"path"', "path", "'content'", '"content"', "content"}:
+        return False
+    if any(
+        token in text
+        for token in (
+            "connection",
+            "timeout",
+            "timed out",
+            "broken pipe",
+            "connection reset",
+            "connecterror",
+            "network",
+            "503",
+            "502",
+            "429",
+            "rate limit",
+            "overloaded",
+            "temporarily unavailable",
+            "api connection",
+            "ssl",
+        )
+    ):
+        return True
+    return False
