@@ -181,7 +181,10 @@ def build_session_prior_messages(
     *,
     max_turns: int = 6,
 ) -> list[dict[str, Any]]:
-    """Build provider-agnostic prior user/assistant messages from saved turns."""
+    """Build prior messages for legacy direct callers.
+
+    Canonical Agent jobs rebuild history from conversation_events instead.
+    """
     messages: list[dict[str, Any]] = []
     for turn in turns[-max_turns:]:
         user = (turn.get("user") or "").strip()

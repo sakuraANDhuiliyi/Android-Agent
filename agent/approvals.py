@@ -13,6 +13,10 @@ EmitFn = Callable[[str, dict[str, Any]], None]
 StatusFn = Callable[[str], None]
 
 
+class ApprovalEventPersistenceError(RuntimeError):
+    """Raised when a durable approval event cannot be recorded."""
+
+
 @dataclass
 class ApprovalRequest:
     id: str
@@ -35,6 +39,7 @@ def request_user_approval(
     user_id: str,
     kind: str,
     payload: dict[str, Any],
+    tool_call_id: str | None = None,
     on_event: EmitFn | None = None,
     set_status: StatusFn | None = None,
     timeout_sec: float = 300.0,
@@ -56,17 +61,27 @@ def request_user_approval(
         _pending[approval_id] = req
 
     message = payload.get("message") or f"等待用户确认: {kind}"
+    request = {k: v for k, v in payload.items() if k != "message"}
     if on_event:
-        on_event(
-            "approval_required",
-            {
-                "message": message,
-                "approval_id": approval_id,
-                "job_id": job_id,
-                "kind": kind,
-                **{k: v for k, v in payload.items() if k != "message"},
-            },
-        )
+        try:
+            on_event(
+                "approval_required",
+                {
+                    "message": message,
+                    "approval_id": approval_id,
+                    "job_id": job_id,
+                    "kind": kind,
+                    "tool_call_id": tool_call_id,
+                    "request": request,
+                    **request,
+                },
+            )
+        except Exception as exc:
+            with _lock:
+                _pending.pop(approval_id, None)
+            raise ApprovalEventPersistenceError(
+                f"approval_required 写入失败: {exc}"
+            ) from exc
     if set_status:
         set_status("awaiting_approval")
 
@@ -102,19 +117,27 @@ def request_user_approval(
             if decision != "canceled":
                 set_status("running")
             # canceled: job will end via CancellationRequested / cancel path
-        if on_event:
-            on_event(
-                "approval_resolved",
-                {
-                    "message": f"用户确认结果: {decision}",
-                    "approval_id": approval_id,
-                    "job_id": job_id,
-                    "kind": kind,
-                    "decision": decision,
-                },
-            )
-        with _lock:
-            _pending.pop(approval_id, None)
+        try:
+            if on_event:
+                try:
+                    on_event(
+                        "approval_resolved",
+                        {
+                            "message": f"用户确认结果: {decision}",
+                            "approval_id": approval_id,
+                            "job_id": job_id,
+                            "kind": kind,
+                            "tool_call_id": tool_call_id,
+                            "decision": decision,
+                        },
+                    )
+                except Exception as exc:
+                    raise ApprovalEventPersistenceError(
+                        f"approval_resolved 写入失败: {exc}"
+                    ) from exc
+        finally:
+            with _lock:
+                _pending.pop(approval_id, None)
     return req.decision or "timeout"
 
 

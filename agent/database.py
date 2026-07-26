@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -9,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from agent.paths import DATA_DIR
+from agent.redaction import redact_sensitive_value
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStore:
@@ -18,6 +23,7 @@ class TaskStore:
         self._lock = threading.RLock()
         self._init_db()
         self._migrate_legacy_sessions()
+        self._migrate_legacy_conversation_turns()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -51,7 +57,9 @@ class TaskStore:
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
                     input_tokens INTEGER,
                     output_tokens INTEGER,
-                    total_tokens INTEGER
+                    total_tokens INTEGER,
+                    recovery_of_task_id TEXT,
+                    recovery_attempt INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_user_project
                     ON tasks(user_id, project_id, created_at DESC);
@@ -84,13 +92,86 @@ class TaskStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_conversations_project
                     ON conversations(user_id, project_id, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL
+                        REFERENCES conversations(id) ON DELETE CASCADE,
+                    task_id TEXT UNIQUE,
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN (
+                            'queued',
+                            'running',
+                            'awaiting_approval',
+                            'succeeded',
+                            'failed',
+                            'canceled',
+                            'interrupted'
+                        )
+                    ),
+                    provider TEXT,
+                    model TEXT,
+                    created_at REAL NOT NULL,
+                    started_at REAL,
+                    finished_at REAL,
+                    error_message TEXT,
+                    schema_version INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation_created
+                    ON conversation_turns(conversation_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_conversation_turns_task
+                    ON conversation_turns(task_id);
+                CREATE INDEX IF NOT EXISTS idx_conversation_turns_user_project
+                    ON conversation_turns(user_id, project_id);
+                CREATE TABLE IF NOT EXISTS conversation_events (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL
+                        REFERENCES conversations(id) ON DELETE CASCADE,
+                    turn_id TEXT NOT NULL
+                        REFERENCES conversation_turns(id) ON DELETE CASCADE,
+                    task_id TEXT,
+                    seq INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    role TEXT,
+                    context_visible INTEGER NOT NULL DEFAULT 0
+                        CHECK (context_visible IN (0, 1)),
+                    provider TEXT,
+                    model TEXT,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    event_key TEXT,
+                    created_at REAL NOT NULL,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(conversation_id, seq),
+                    UNIQUE(conversation_id, event_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_conversation_events_conversation_seq
+                    ON conversation_events(conversation_id, seq);
+                CREATE INDEX IF NOT EXISTS idx_conversation_events_turn_seq
+                    ON conversation_events(turn_id, seq);
+                CREATE INDEX IF NOT EXISTS idx_conversation_events_task
+                    ON conversation_events(task_id);
+                CREATE INDEX IF NOT EXISTS idx_conversation_events_type
+                    ON conversation_events(event_type);
                 """
             )
             cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
             if "conversation_id" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN conversation_id TEXT")
+            if "recovery_of_task_id" not in cols:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN recovery_of_task_id TEXT"
+                )
+            if "recovery_attempt" not in cols:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN recovery_attempt INTEGER NOT NULL DEFAULT 0"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, created_at DESC)"
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_tasks_recovery
+                   ON tasks(recovery_of_task_id, recovery_attempt)"""
             )
 
     def _migrate_legacy_sessions(self) -> None:
@@ -124,8 +205,230 @@ class TaskStore:
                     ),
                 )
 
-    def recover_interrupted(self) -> None:
+    def _migrate_legacy_conversation_turns(self) -> None:
+        with self._connect() as conn:
+            conversations = conn.execute(
+                """SELECT c.id, c.user_id, c.project_id, c.turns_json,
+                          c.created_at,
+                          EXISTS(
+                              SELECT 1 FROM conversation_events AS e
+                              WHERE e.conversation_id=c.id
+                          ) AS has_events
+                   FROM conversations AS c
+                   ORDER BY c.created_at, c.id"""
+            ).fetchall()
+        for conversation in conversations:
+            if conversation["has_events"]:
+                continue
+            try:
+                raw_turns = json.loads(conversation["turns_json"] or "[]")
+                if not isinstance(raw_turns, list):
+                    raise ValueError("turns_json must decode to a list")
+                legacy_turns = self._normalize_legacy_turns(conversation, raw_turns)
+                if legacy_turns:
+                    self._import_legacy_turns(conversation, legacy_turns)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping legacy turns migration for conversation %s: %s",
+                    conversation["id"],
+                    exc,
+                )
+
+    @staticmethod
+    def _normalize_legacy_turns(
+        conversation: sqlite3.Row,
+        raw_turns: list[Any],
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        base_time = float(conversation["created_at"] or time.time())
+        for index, raw_turn in enumerate(raw_turns):
+            if not isinstance(raw_turn, dict):
+                logger.warning(
+                    "Skipping malformed legacy turn %s in conversation %s: expected object",
+                    index,
+                    conversation["id"],
+                )
+                continue
+            timestamp = raw_turn.get("ts")
+            if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+                timestamp = base_time + index * 0.000001
+            changed_files = raw_turn.get("changed_files") or []
+            if not isinstance(changed_files, list):
+                logger.warning(
+                    "Ignoring malformed changed_files in legacy turn %s of conversation %s",
+                    index,
+                    conversation["id"],
+                )
+                changed_files = []
+            user = raw_turn.get("user", "")
+            assistant = raw_turn.get("assistant", "")
+            normalized.append(
+                {
+                    "legacy_index": index,
+                    "user": user if isinstance(user, str) else str(user),
+                    "assistant": (
+                        assistant if isinstance(assistant, str) else str(assistant)
+                    ),
+                    "changed_files": changed_files,
+                    "created_at": float(timestamp),
+                }
+            )
+        return normalized
+
+    def _import_legacy_turns(
+        self,
+        conversation: sqlite3.Row,
+        legacy_turns: list[dict[str, Any]],
+    ) -> None:
+        from agent.conversation_events import (
+            ConversationEventType as EventType,
+            serialize_event_payload,
+        )
+
+        conversation_id = conversation["id"]
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """SELECT 1 FROM conversation_events
+                   WHERE conversation_id=? LIMIT 1""",
+                (conversation_id,),
+            ).fetchone()
+            if existing:
+                return
+
+            seq = 0
+            for legacy_turn in legacy_turns:
+                index = legacy_turn["legacy_index"]
+                created_at = legacy_turn["created_at"]
+                turn_id = self._legacy_stable_id(
+                    conversation_id, index, "conversation_turn"
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO conversation_turns
+                       (id, conversation_id, task_id, user_id, project_id, status,
+                        provider, model, created_at, started_at, finished_at,
+                        error_message, schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        turn_id,
+                        conversation_id,
+                        None,
+                        conversation["user_id"],
+                        conversation["project_id"],
+                        "succeeded",
+                        None,
+                        None,
+                        created_at,
+                        created_at,
+                        created_at,
+                        None,
+                        1,
+                    ),
+                )
+                user_message_id = self._legacy_stable_id(
+                    conversation_id, index, "user_message"
+                )
+                assistant_message_id = self._legacy_stable_id(
+                    conversation_id, index, "assistant_message"
+                )
+                event_specs = [
+                    (
+                        EventType.USER_MESSAGE,
+                        "user",
+                        True,
+                        {
+                            "message_id": user_message_id,
+                            "content": [
+                                {"type": "text", "text": legacy_turn["user"]}
+                            ],
+                            "source": "legacy",
+                            "legacy_imported": True,
+                        },
+                    ),
+                    (
+                        EventType.ASSISTANT_MESSAGE,
+                        "assistant",
+                        True,
+                        {
+                            "message_id": assistant_message_id,
+                            "text_blocks": [
+                                {
+                                    "block_index": 0,
+                                    "type": "text",
+                                    "text": legacy_turn["assistant"],
+                                }
+                            ],
+                            "finish_reason": "stop",
+                            "is_final": True,
+                            "streamed": False,
+                            "legacy_imported": True,
+                        },
+                    ),
+                ]
+                if legacy_turn["changed_files"]:
+                    event_specs.append(
+                        (
+                            EventType.CHANGES,
+                            None,
+                            True,
+                            {
+                                "changed_files": legacy_turn["changed_files"],
+                                "legacy_imported": True,
+                            },
+                        )
+                    )
+                event_specs.append(
+                    (
+                        EventType.TURN_COMPLETED,
+                        None,
+                        False,
+                        {"status": "succeeded", "legacy_imported": True},
+                    )
+                )
+                for event_type, role, context_visible, payload in event_specs:
+                    seq += 1
+                    event_id = self._legacy_stable_id(
+                        conversation_id, index, f"event:{event_type}"
+                    )
+                    event_key = (
+                        f"legacy:{conversation_id}:{index}:{event_type}"
+                    )
+                    conn.execute(
+                        """INSERT OR IGNORE INTO conversation_events
+                           (id, conversation_id, turn_id, task_id, seq,
+                            event_type, role, context_visible, provider, model,
+                            payload_json, event_key, created_at, schema_version)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            event_id,
+                            conversation_id,
+                            turn_id,
+                            None,
+                            seq,
+                            event_type,
+                            role,
+                            int(context_visible),
+                            None,
+                            None,
+                            serialize_event_payload(payload),
+                            event_key,
+                            created_at,
+                            1,
+                        ),
+                    )
+
+    @staticmethod
+    def _legacy_stable_id(
+        conversation_id: str,
+        turn_index: int,
+        kind: str,
+    ) -> str:
+        value = f"android-agent:legacy:{conversation_id}:{turn_index}:{kind}"
+        return uuid.uuid5(uuid.NAMESPACE_URL, value).hex
+
+    def recover_interrupted(self) -> list[dict[str, Any]]:
         now = time.time()
+        recovered: list[dict[str, Any]] = []
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, status FROM tasks
@@ -152,6 +455,126 @@ class TaskStore:
                         now,
                     ),
                 )
+
+        from agent.conversation_events import (
+            ConversationEventStore,
+            ConversationEventType as EventType,
+        )
+
+        event_store = ConversationEventStore(self)
+        with self._connect() as conn:
+            turns = conn.execute(
+                """SELECT t.*, j.prompt AS original_prompt,
+                          j.cancel_requested AS task_cancel_requested,
+                          j.recovery_of_task_id,
+                          COALESCE(j.recovery_attempt, 0) AS recovery_attempt
+                   FROM conversation_turns AS t
+                   LEFT JOIN tasks AS j ON j.id=t.task_id
+                   WHERE t.status IN ('queued', 'running', 'awaiting_approval')
+                   ORDER BY t.created_at, t.id"""
+            ).fetchall()
+
+        for row in turns:
+            turn = dict(row)
+            turn_id = turn["id"]
+            conversation_id = turn["conversation_id"]
+            task_id = turn.get("task_id")
+            prior_status = turn["status"]
+            message = (
+                "Agent 服务重启，等待中的下载确认已失效"
+                if prior_status == "awaiting_approval"
+                else "Agent 服务重启，任务执行已中断"
+            )
+            events = event_store.list_turn_events(
+                turn_id,
+                user_id=turn["user_id"],
+            )
+            calls: dict[str, dict[str, Any]] = {}
+            completed_call_ids: set[str] = set()
+            for event in events:
+                payload = event.get("payload") or {}
+                tool_call_id = payload.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    continue
+                if event["event_type"] == EventType.TOOL_CALL:
+                    calls.setdefault(tool_call_id, event)
+                elif event["event_type"] == EventType.TOOL_RESULT:
+                    if tool_call_id in calls:
+                        completed_call_ids.add(tool_call_id)
+                    else:
+                        logger.warning(
+                            "Ignoring orphan tool_result %s while recovering turn %s",
+                            tool_call_id,
+                            turn_id,
+                        )
+
+            for tool_call_id, call_event in calls.items():
+                if tool_call_id in completed_call_ids:
+                    continue
+                call_payload = call_event.get("payload") or {}
+                event_store.append_event_idempotent(
+                    conversation_id,
+                    turn_id,
+                    EventType.TOOL_RESULT,
+                    f"recovery:{turn_id}:tool_result:{tool_call_id}",
+                    {
+                        "tool_call_id": tool_call_id,
+                        "name": str(call_payload.get("name") or ""),
+                        "ok": False,
+                        "model_output": "工具调用因 Agent 服务中断，未完成执行。",
+                        "structured_output": None,
+                        "duration_ms": None,
+                        "error_type": "service_interrupted",
+                        "interrupted": True,
+                    },
+                    task_id=task_id,
+                    context_visible=True,
+                )
+
+            event_store.append_event_idempotent(
+                conversation_id,
+                turn_id,
+                EventType.TURN_INTERRUPTED,
+                f"recovery:{turn_id}:interrupted",
+                {
+                    "message": message,
+                    "previous_status": prior_status,
+                },
+                task_id=task_id,
+                context_visible=False,
+            )
+            event_store.update_turn_status(
+                turn_id,
+                "interrupted",
+                user_id=turn["user_id"],
+                finished_at=now,
+                error_message=message,
+            )
+            if (
+                task_id
+                and not bool(turn.get("task_cancel_requested"))
+                and int(turn.get("recovery_attempt") or 0) < 3
+            ):
+                recovered.append(
+                    {
+                        "conversation_id": conversation_id,
+                        "interrupted_turn_id": turn_id,
+                        "original_task_id": task_id,
+                        "recovery_root_task_id": (
+                            turn.get("recovery_of_task_id") or task_id
+                        ),
+                        "recovery_attempt": int(
+                            turn.get("recovery_attempt") or 0
+                        )
+                        + 1,
+                        "user_id": turn["user_id"],
+                        "project_id": turn["project_id"],
+                        "provider": turn.get("provider"),
+                        "model": turn.get("model"),
+                        "original_prompt": turn.get("original_prompt") or "",
+                    }
+                )
+        return recovered
 
     def create_conversation(
         self,
@@ -233,6 +656,7 @@ class TaskStore:
         return self.create_conversation(user_id, project_id, title="默认对话")
 
     def get_conversation_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Return the legacy final-turn projection for older clients only."""
         conv = self.get_conversation(conversation_id)
         if not conv:
             return []
@@ -247,48 +671,114 @@ class TaskStore:
         changed_files: list | None = None,
         auto_title: bool = True,
     ) -> list[dict[str, Any]]:
+        """Compatibility writer that translates one legacy turn into events.
+
+        New Agent jobs write canonical events directly and never call this method.
+        """
         conv = self.get_conversation(conversation_id)
         if not conv:
             raise ValueError(f"对话不存在: {conversation_id}")
-        turns = list(conv.get("turns") or [])
-        turns.append(
-            {
-                "user": user,
-                "assistant": assistant,
-                "changed_files": changed_files or [],
-                "ts": time.time(),
-            }
+        from agent.conversation_events import (
+            ConversationEventStore,
+            ConversationEventType as EventType,
         )
-        trimmed = turns[-24:]
-        updates: dict[str, Any] = {"turns": trimmed}
+
+        event_store = ConversationEventStore(self)
+        now = time.time()
+        turn = event_store.create_turn(
+            conversation_id,
+            conv["user_id"],
+            conv["project_id"],
+            status="succeeded",
+            created_at=now,
+            started_at=now,
+            finished_at=now,
+        )
+        turn_id = turn["id"]
+        event_store.append_event_idempotent(
+            conversation_id,
+            turn_id,
+            EventType.USER_MESSAGE,
+            f"turn:{turn_id}:user_message",
+            {
+                "message_id": uuid.uuid4().hex,
+                "content": [{"type": "text", "text": user}],
+            },
+            role="user",
+            context_visible=True,
+            created_at=now,
+        )
+        event_store.append_event_idempotent(
+            conversation_id,
+            turn_id,
+            EventType.ASSISTANT_MESSAGE,
+            f"turn:{turn_id}:assistant_message",
+            {
+                "message_id": uuid.uuid4().hex,
+                "text_blocks": [
+                    {"block_index": 0, "type": "text", "text": assistant}
+                ],
+                "finish_reason": "stop",
+                "is_final": True,
+                "streamed": False,
+            },
+            role="assistant",
+            context_visible=True,
+            created_at=now,
+        )
+        if changed_files:
+            event_store.append_event_idempotent(
+                conversation_id,
+                turn_id,
+                EventType.CHANGES,
+                f"turn:{turn_id}:changes",
+                {"changed_files": changed_files},
+                context_visible=True,
+                created_at=now,
+            )
+        event_store.append_event_idempotent(
+            conversation_id,
+            turn_id,
+            EventType.TURN_COMPLETED,
+            f"turn:{turn_id}:completed",
+            {"status": "succeeded"},
+            created_at=now,
+        )
         if auto_title and (conv.get("title") in {"新对话", "默认对话", ""}) and user.strip():
-            updates["title"] = user.strip()[:40]
-        self.update_conversation(conversation_id, conv["user_id"], **updates)
-        return trimmed
+            self.update_conversation(
+                conversation_id,
+                conv["user_id"],
+                title=user.strip()[:40],
+            )
+        return event_store.project_legacy_turns(conversation_id)
 
     def create_task(self, task: dict[str, Any]) -> None:
+        safe_task = redact_sensitive_value(task)
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO tasks
-                   (id,user_id,project_id,conversation_id,prompt,status,provider,model,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (id,user_id,project_id,conversation_id,prompt,status,provider,
+                    model,created_at,recovery_of_task_id,recovery_attempt)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    task["id"],
-                    task["user_id"],
-                    task["project_id"],
-                    task.get("conversation_id"),
-                    task["prompt"],
-                    task["status"],
-                    task.get("provider"),
-                    task.get("model"),
-                    task["created_at"],
+                    safe_task["id"],
+                    safe_task["user_id"],
+                    safe_task["project_id"],
+                    safe_task.get("conversation_id"),
+                    safe_task["prompt"],
+                    safe_task["status"],
+                    safe_task.get("provider"),
+                    safe_task.get("model"),
+                    safe_task["created_at"],
+                    safe_task.get("recovery_of_task_id"),
+                    int(safe_task.get("recovery_attempt") or 0),
                 ),
             )
 
     def update_task(self, task_id: str, **values: Any) -> None:
         if not values:
             return
-        encoded = dict(values)
+        encoded = dict(redact_sensitive_value(values))
         if "changed_files" in encoded:
             encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
         columns = ", ".join(f"{key}=?" for key in encoded)
@@ -300,7 +790,8 @@ class TaskStore:
 
     def add_event(self, task_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         created_at = time.time()
-        message = payload.get("message")
+        safe_payload = dict(redact_sensitive_value(payload))
+        message = safe_payload.get("message")
         with self._connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO task_events(task_id,type,message,payload,created_at) VALUES(?,?,?,?,?)",
@@ -308,11 +799,16 @@ class TaskStore:
                     task_id,
                     event_type,
                     message,
-                    json.dumps(payload, ensure_ascii=False, default=str),
+                    json.dumps(safe_payload, ensure_ascii=False, default=str),
                     created_at,
                 ),
             )
-        return {"id": cursor.lastrowid, "type": event_type, "ts": created_at, **payload}
+        return {
+            "id": cursor.lastrowid,
+            "type": event_type,
+            "ts": created_at,
+            **safe_payload,
+        }
 
     def request_cancel(self, task_id: str, user_id: str) -> bool:
         with self._connect() as conn:
@@ -393,27 +889,31 @@ class TaskStore:
                 (user_id, project_id),
             )
         conv = self.get_or_create_default_conversation(user_id, project_id)
-        self.update_conversation(conv["id"], user_id, turns=[])
+        self.update_conversation(conv["id"], user_id, status="archived")
+        self.create_conversation(user_id, project_id, title="默认对话")
 
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
-        task = dict(row)
+        task = dict(redact_sensitive_value(dict(row)))
         task["cancel_requested"] = bool(task["cancel_requested"])
         task["changed_files"] = json.loads(task["changed_files"] or "[]")
         return task
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> dict[str, Any]:
-        payload = json.loads(row["payload"] or "{}")
+        payload = redact_sensitive_value(
+            json.loads(row["payload"] or "{}")
+        )
         return {"id": row["id"], "type": row["type"], "ts": row["created_at"], **payload}
 
-    @staticmethod
-    def _row_to_conversation(row: sqlite3.Row) -> dict[str, Any]:
+    def _row_to_conversation(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        try:
-            item["turns"] = json.loads(item.pop("turns_json", None) or "[]")
-        except json.JSONDecodeError:
-            item["turns"] = []
+        item.pop("turns_json", None)
+        from agent.conversation_events import ConversationEventStore
+
+        item["turns"] = ConversationEventStore(self).project_legacy_turns(
+            item["id"]
+        )
         item["turn_count"] = len(item["turns"])
         return item

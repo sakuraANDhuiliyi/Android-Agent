@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
+from agent.conversation_events import ConversationEventError
 from agent.database import TaskStore
 from agent.jobs import (
     clear_project_session,
@@ -23,6 +24,7 @@ from agent.jobs import (
     get_project_session,
     job_to_dict,
     list_conversations,
+    list_conversation_events,
     list_job_approvals,
     list_jobs,
     request_cancel,
@@ -39,6 +41,7 @@ from agent.paths import (
     workspace_path,
 )
 from agent.project import delete_project, init_project, list_projects, load_project_meta
+from agent.redaction import redact_sensitive_text
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
 from agent.users import UserStore
 
@@ -79,6 +82,43 @@ class ConversationAskRequest(BaseModel):
 class WriteFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
     content: str = Field(default="")
+
+
+_PRIVATE_EVENT_FIELDS = frozenset(
+    {
+        "apikey",
+        "apitoken",
+        "authorization",
+        "proxyauthorization",
+        "xapikey",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "secret",
+        "clientsecret",
+        "password",
+        "deepseekapikey",
+        "anthropicapikey",
+        "tavilyapikey",
+    }
+)
+
+
+def _public_event_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _public_event_value(nested)
+            for key, nested in value.items()
+            if "".join(
+                char for char in str(key).lower() if char.isalnum()
+            )
+            not in _PRIVATE_EVENT_FIELDS
+        }
+    if isinstance(value, list):
+        return [_public_event_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -128,8 +168,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.user_store = user_store or UserStore()
-    if task_store is not None:
-        configure_task_store(task_store)
+    configure_task_store(task_store, settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -285,6 +324,42 @@ def create_app(
         if not conv:
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
         return conv
+
+    @app.get("/api/conversations/{conversation_id}/events")
+    def get_conversation_events(
+        conversation_id: str,
+        after_seq: Optional[int] = None,
+        limit: int = Query(default=200, ge=1, le=500),
+        context_only: bool = False,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            events = list_conversation_events(
+                conversation_id,
+                user_id,
+                after_seq=after_seq,
+                limit=limit + 1,
+                context_only=context_only,
+            )
+        except ConversationEventError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Conversation Event 数据读取失败",
+            ) from exc
+        if events is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"对话不存在: {conversation_id}",
+            )
+        has_more = len(events) > limit
+        page = events[:limit]
+        next_after_seq = page[-1]["seq"] if page else after_seq
+        return {
+            "conversation_id": conversation_id,
+            "events": [_public_event_value(event) for event in page],
+            "next_after_seq": next_after_seq,
+            "has_more": has_more,
+        }
 
     @app.patch("/api/conversations/{conversation_id}")
     def patch_conversation(

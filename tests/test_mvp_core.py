@@ -225,7 +225,7 @@ class ConversationStoreTests(unittest.TestCase):
                 task = self._wait_task(store, job["id"], "u", locks=locks)
             self.assertEqual(task["status"], "succeeded")
 
-    def test_prior_turns_stay_in_conversation(self) -> None:
+    def test_canonical_history_stays_in_conversation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             builds = root / "builds"
@@ -237,7 +237,7 @@ class ConversationStoreTests(unittest.TestCase):
             captured: list = []
 
             def fake_agent(*_args, **kwargs):
-                captured.append(list(kwargs.get("prior_turns") or []))
+                captured.append(list(kwargs.get("conversation_events") or []))
                 return "ok"
 
             locks: set = set()
@@ -255,7 +255,13 @@ class ConversationStoreTests(unittest.TestCase):
                     "u", "p", "继续", self._settings(), conversation_id=b["id"]
                 )
                 self._wait_task(store, job["id"], "u", locks=locks)
-            self.assertEqual(captured[0], [])
+            self.assertFalse(
+                any(
+                    event.get("payload", {}).get("content")
+                    == [{"type": "text", "text": "只在 A"}]
+                    for event in captured[0]
+                )
+            )
 
             locks2: set = set()
             with (
@@ -272,7 +278,13 @@ class ConversationStoreTests(unittest.TestCase):
                     "u", "p", "继续 A", self._settings(), conversation_id=a["id"]
                 )
                 self._wait_task(store, job2["id"], "u", locks=locks2)
-            self.assertEqual(captured[1][0]["user"], "只在 A")
+            self.assertTrue(
+                any(
+                    event.get("payload", {}).get("content")
+                    == [{"type": "text", "text": "只在 A"}]
+                    for event in captured[1]
+                )
+            )
 
     @staticmethod
     def _wait_task(

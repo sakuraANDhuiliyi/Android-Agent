@@ -19,6 +19,37 @@ Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可�
 - 同一项目同时只跑一个 turn（workspace 锁）；未调用 `assembleDebug` 的追问也可成功
 - 旧版 `POST /api/projects/{id}/ask` 仍可用，内部自动挂到默认对话
 
+## Conversation Event 模型
+
+每个 Agent 轮次写入 `conversation_turns`，轮次内的消息、模型响应、工具调用和结果按严格递增的 `seq` 追加到 `conversation_events`。新会话上下文以这些不可变事件为权威来源，可重建 OpenAI-compatible 或 Anthropic 消息，并保留完整工具调用链。
+
+主要规范事件包括：
+
+- 消息与工具：`user_message`、`assistant_message`、`tool_call`、`tool_result`
+- 生命周期：`turn_started`、`turn_completed`、`turn_failed`、`turn_canceled`、`turn_interrupted`
+- 运行信息：`usage`、`provider_switch`、`model_switch`、`changes`
+- 审批：`approval_required`、`approval_resolved`
+- 上下文：`context_checkpoint`、可见的 `system_note` / `recovery_note`
+
+旧数据库中的 `conversations.turns_json` 会在启动时幂等迁移为规范事件；字段仍保留，仅用于迁移和旧客户端的最终问答投影。`task_events` 继续承担 UI 日志、流式 delta 和 WebSocket 推送，`conversation_events` 则承担持久化、跨轮上下文和恢复，两者职责不同。
+
+规范事件支持游标查询：
+
+```http
+GET /api/conversations/{conversation_id}/events?after_seq=0&limit=200&context_only=false
+Authorization: Bearer <token>
+```
+
+`limit` 范围为 1-500，结果按 `seq` 升序返回，并提供 `next_after_seq` 与 `has_more`。接口严格校验 Conversation 所属用户并过滤凭证字段。
+
+当较早历史超过 200 个新增事件或约 120,000 字符时，服务会追加结构化 `context_checkpoint`，提取用户意图、最终结果、工具成败和改动文件，同时保留最近 4 个 Turn 的完整事件。checkpoint 只改变模型上下文边界，不删除数据库事件；任务内 compact 仍作为单次请求超限时的最后保护。
+
+服务重启时，未完成工具会先得到 `service_interrupted` 合成失败结果，再创建新的恢复 Task/Turn 自动继续模型推理，最多连续恢复 3 次。只读工具允许重新调用；如果模型再次请求中断前相同的 `write_file`、`str_replace` 或 `run_gradle`，必须重新经过 `recovery_tool_replay` 审批。下载工具仍沿用每次下载必审的规则。
+
+规范事件写入、历史读取、Job/WebSocket 输出和事件查询 API 会识别并脱敏 Bearer Token、JWT、常见 API Key 前缀、URL 用户信息以及 `api_key=...` 等自由文本形式。结构化凭证字段继续拒绝写入。自由文本检测属于防泄漏保护而非密码保险库，无法保证识别所有私有密钥格式。
+
+当前仍未实现跨 Conversation 长期记忆和通用持久化消息队列；自动恢复队列仅覆盖服务启动时发现的中断 Agent Task。
+
 ## 设备初始化与目录隔离
 
 App 首次使用时填写服务器地址并点击“初始化设备连接”。服务端会生成唯一的 `user_id` 和随机访问 Token：

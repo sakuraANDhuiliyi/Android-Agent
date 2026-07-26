@@ -581,6 +581,7 @@ def download_file(
     *,
     user_id: str,
     task_id: str | None,
+    tool_call_id: str | None = None,
     on_event=None,
     set_status=None,
     cancel_check: CancelCheck | None = None,
@@ -620,6 +621,7 @@ def download_file(
         job_id=task_id,
         user_id=user_id,
         kind="download_file",
+        tool_call_id=tool_call_id,
         payload={
             "message": f"请求下载文件到 {rel}（请在对话确认卡片中选择允许或拒绝）",
             "url": url,
@@ -693,6 +695,7 @@ def dispatch_tool(
     settings=None,
     on_event=None,
     task_id: str | None = None,
+    tool_call_id: str | None = None,
     set_status=None,
 ) -> ToolResult:
     try:
@@ -706,11 +709,15 @@ def dispatch_tool(
             settings=settings,
             on_event=on_event,
             task_id=task_id,
+            tool_call_id=tool_call_id,
             set_status=set_status,
         )
     except Exception as exc:
         # Avoid circular import with agent.loop.CancellationRequested
-        if exc.__class__.__name__ == "CancellationRequested":
+        if exc.__class__.__name__ in {
+            "CancellationRequested",
+            "ApprovalEventPersistenceError",
+        }:
             raise
         # Tool arg / IO bugs must not kill the whole agent as "provider unavailable"
         return ToolResult(False, f"工具 {name} 执行异常: {exc}")
@@ -726,6 +733,7 @@ def _dispatch_tool_inner(
     settings=None,
     on_event=None,
     task_id: str | None = None,
+    tool_call_id: str | None = None,
     set_status=None,
 ) -> ToolResult:
     if name == "list_dir":
@@ -793,6 +801,7 @@ def _dispatch_tool_inner(
             tool_input.get("path", ""),
             user_id=user_id,
             task_id=task_id,
+            tool_call_id=tool_call_id,
             on_event=on_event,
             set_status=set_status,
             cancel_check=cancel_check,

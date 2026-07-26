@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Callable
 
 from agent.compact import (
-    build_session_prior_messages,
     compact_anthropic_messages,
     compact_openai_messages,
 )
+from agent.approvals import (
+    ApprovalEventPersistenceError,
+    request_user_approval,
+)
+from agent.conversation_context import build_provider_messages
+from agent.conversation_events import ConversationEventType as EventType
 from agent.config import Settings
 from agent.honesty import (
     EDIT_TOOLS,
@@ -22,7 +28,7 @@ from agent.honesty import (
 from agent.model_fallback import should_try_next_model, should_try_next_provider
 from agent.prompts import get_system_prompt
 from agent.stream import StreamedCompletion, stream_anthropic_message, stream_openai_chat
-from agent.tools import dispatch_tool, get_tool_definitions
+from agent.tools import ToolResult, dispatch_tool, get_tool_definitions
 
 EventCallback = Callable[[str, Any], None]
 CancelCheck = Callable[[], None]
@@ -57,13 +63,15 @@ def run_agent(
     user_prompt: str,
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
-    prior_turns: list[dict[str, Any]] | None = None,
     task_id: str | None = None,
     set_status: Callable[[str], None] | None = None,
+    conversation_events: list[dict[str, Any]] | None = None,
+    turn_id: str | None = None,
+    recovery_replays: list[dict[str, Any]] | None = None,
+    recovery_mode: bool = False,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
-    prior_messages = build_session_prior_messages(prior_turns or [])
 
     for index, current_settings in enumerate(provider_chain):
         if cancel_check:
@@ -79,7 +87,7 @@ def run_agent(
             )
             _emit(
                 on_event,
-                "provider_switch",
+                EventType.PROVIDER_SWITCH,
                 switch_msg,
                 from_provider=provider_chain[index - 1].provider,
                 to_provider=current_settings.provider,
@@ -87,6 +95,16 @@ def run_agent(
             )
 
         try:
+            if conversation_events is not None:
+                prior_messages = build_provider_messages(
+                    conversation_events,
+                    current_settings.provider,
+                    current_user_prompt=user_prompt,
+                )
+                append_user_prompt = False
+            else:
+                prior_messages = []
+                append_user_prompt = True
             return _run_agent_with_provider(
                 current_settings,
                 workspace,
@@ -98,6 +116,10 @@ def run_agent(
                 prior_messages,
                 task_id=task_id,
                 set_status=set_status,
+                append_user_prompt=append_user_prompt,
+                turn_id=turn_id,
+                recovery_replays=recovery_replays,
+                recovery_mode=recovery_mode,
             )
         except CancellationRequested:
             raise
@@ -111,7 +133,7 @@ def run_agent(
                 )
                 _emit(
                     on_event,
-                    "provider_switch",
+                    EventType.PROVIDER_SWITCH,
                     retry_msg,
                     from_provider=current_settings.provider,
                     error=str(exc),
@@ -137,6 +159,10 @@ def _run_agent_with_provider(
     *,
     task_id: str | None = None,
     set_status: Callable[[str], None] | None = None,
+    append_user_prompt: bool = True,
+    turn_id: str | None = None,
+    recovery_replays: list[dict[str, Any]] | None = None,
+    recovery_mode: bool = False,
 ) -> str:
     system_prompt = get_system_prompt(settings)
 
@@ -153,6 +179,10 @@ def _run_agent_with_provider(
             prior_messages,
             task_id=task_id,
             set_status=set_status,
+            append_user_prompt=append_user_prompt,
+            turn_id=turn_id,
+            recovery_replays=recovery_replays,
+            recovery_mode=recovery_mode,
         )
     return _run_openai_compatible(
         settings,
@@ -166,6 +196,10 @@ def _run_agent_with_provider(
         prior_messages,
         task_id=task_id,
         set_status=set_status,
+        append_user_prompt=append_user_prompt,
+        turn_id=turn_id,
+        recovery_replays=recovery_replays,
+        recovery_mode=recovery_mode,
     )
 
 
@@ -188,6 +222,159 @@ def _format_tool_output(output: Any) -> str:
     if isinstance(output, str):
         return output
     return json.dumps(output, ensure_ascii=False)
+
+
+def _new_message_id(
+    turn_id: str | None,
+    provider: str,
+    response_index: int,
+) -> str:
+    seed = f"android-agent:{turn_id or uuid.uuid4().hex}:{provider}:{response_index}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, seed).hex
+
+
+def _tool_call_id(
+    provider_id: Any,
+    message_id: str,
+    block_index: int,
+    name: str,
+) -> str:
+    if isinstance(provider_id, str) and provider_id.strip():
+        return provider_id
+    seed = f"android-agent:{message_id}:{block_index}:{name}"
+    return f"call_{uuid.uuid5(uuid.NAMESPACE_URL, seed).hex[:24]}"
+
+
+def _safe_response_id(response: Any) -> str | None:
+    response_id = getattr(response, "id", None)
+    return response_id if isinstance(response_id, str) and response_id else None
+
+
+def _record_assistant_message(
+    on_event: EventCallback | None,
+    *,
+    message_id: str,
+    text_blocks: list[dict[str, Any]],
+    finish_reason: str | None,
+    is_final: bool,
+    streamed: bool,
+    provider: str,
+    model: str,
+    response_id: str | None,
+) -> None:
+    _emit(
+        on_event,
+        EventType.ASSISTANT_MESSAGE,
+        None,
+        message_id=message_id,
+        text_blocks=text_blocks,
+        finish_reason=finish_reason,
+        is_final=is_final,
+        streamed=streamed,
+        provider=provider,
+        model=model,
+        response_id=response_id,
+    )
+
+
+def _tool_result_event_payload(
+    *,
+    tool_call_id: str,
+    name: str,
+    ok: bool,
+    output: Any,
+    duration_ms: int,
+    interrupted: bool = False,
+    error_type: str | None = None,
+) -> dict[str, Any]:
+    model_output = _format_tool_output(output)
+    return {
+        "tool_call_id": tool_call_id,
+        "name": name,
+        "ok": ok,
+        "model_output": model_output,
+        "structured_output": output if not isinstance(output, str) else None,
+        "duration_ms": duration_ms,
+        "error_type": error_type if error_type else None if ok else "ToolExecutionError",
+        "interrupted": interrupted,
+    }
+
+
+_RECOVERY_APPROVAL_TOOLS = frozenset({*EDIT_TOOLS, "run_gradle"})
+
+
+def dispatch_agent_tool(
+    workspace,
+    user_id: str,
+    project_id: str,
+    name: str,
+    tool_input: dict[str, Any],
+    *,
+    cancel_check: CancelCheck | None = None,
+    settings: Settings | None = None,
+    on_event: EventCallback | None = None,
+    task_id: str | None = None,
+    tool_call_id: str | None = None,
+    set_status: Callable[[str], None] | None = None,
+    recovery_replays: list[dict[str, Any]] | None = None,
+    recovery_mode: bool = False,
+) -> ToolResult:
+    replay = next(
+        (
+            item
+            for item in recovery_replays or []
+            if item.get("name") == name
+            and (item.get("input") or {}) == (tool_input or {})
+        ),
+        None,
+    )
+    if recovery_mode and name in _RECOVERY_APPROVAL_TOOLS:
+        if not task_id or not tool_call_id:
+            return ToolResult(
+                False,
+                "恢复任务检测到中断前的有副作用工具调用，但缺少审批上下文。",
+            )
+        decision = request_user_approval(
+            job_id=task_id,
+            user_id=user_id,
+            kind="recovery_tool_replay",
+            tool_call_id=tool_call_id,
+            payload={
+                "message": (
+                    f"恢复任务准备重新执行中断前未完成的工具 {name}，"
+                    "需要重新确认。"
+                ),
+                "name": name,
+                "input": tool_input,
+                "interrupted_tool_call_id": (
+                    replay.get("tool_call_id") if replay else None
+                ),
+            },
+            on_event=on_event,
+            set_status=set_status,
+            cancel_check=cancel_check,
+        )
+        if decision != "approved":
+            return ToolResult(
+                False,
+                f"恢复工具重放未获批准: {decision}",
+            )
+        if recovery_replays is not None and replay is not None:
+            recovery_replays.remove(replay)
+
+    return dispatch_tool(
+        workspace,
+        user_id,
+        project_id,
+        name,
+        tool_input,
+        cancel_check=cancel_check,
+        settings=settings,
+        on_event=on_event,
+        task_id=task_id,
+        tool_call_id=tool_call_id,
+        set_status=set_status,
+    )
 
 
 def _openai_tools(settings: Settings) -> list[dict]:
@@ -238,7 +425,7 @@ def _chat_completion_with_fallback(
                 switch_msg = f"已切换对话模型: {active_model} → {model_name}"
                 _emit(
                     on_event,
-                    "model_switch",
+                    EventType.MODEL_SWITCH,
                     switch_msg,
                     from_model=active_model,
                     to_model=model_name,
@@ -253,7 +440,7 @@ def _chat_completion_with_fallback(
             retry_msg = f"模型 {model_name} 不可用，尝试备用模型..."
             _emit(
                 on_event,
-                "model_switch",
+                EventType.MODEL_SWITCH,
                 retry_msg,
                 from_model=model_name,
                 error=str(exc),
@@ -294,7 +481,7 @@ def _anthropic_message_with_fallback(
                 switch_msg = f"已切换对话模型: {active_model} → {model_name}"
                 _emit(
                     on_event,
-                    "model_switch",
+                    EventType.MODEL_SWITCH,
                     switch_msg,
                     from_model=active_model,
                     to_model=model_name,
@@ -309,7 +496,7 @@ def _anthropic_message_with_fallback(
             retry_msg = f"模型 {model_name} 不可用，尝试备用模型..."
             _emit(
                 on_event,
-                "model_switch",
+                EventType.MODEL_SWITCH,
                 retry_msg,
                 from_model=model_name,
                 error=str(exc),
@@ -330,6 +517,10 @@ def _run_openai_compatible(
     *,
     task_id: str | None = None,
     set_status: Callable[[str], None] | None = None,
+    append_user_prompt: bool = True,
+    turn_id: str | None = None,
+    recovery_replays: list[dict[str, Any]] | None = None,
+    recovery_mode: bool = False,
 ) -> str:
     try:
         from openai import OpenAI
@@ -342,10 +533,9 @@ def _run_openai_compatible(
     client = OpenAI(**client_kwargs)
 
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
-    for item in prior_messages:
-        if item.get("role") in {"user", "assistant"} and item.get("content"):
-            messages.append({"role": item["role"], "content": item["content"]})
-    messages.append({"role": "user", "content": user_prompt})
+    messages.extend(dict(item) for item in prior_messages)
+    if append_user_prompt:
+        messages.append({"role": "user", "content": user_prompt})
 
     final_text_parts: list[str] = []
     active_model = settings.model
@@ -355,6 +545,7 @@ def _run_openai_compatible(
     successful_edits = 0
     honesty_nudges = 0
     max_honesty_nudges = 2
+    auto_build_count = 0
 
     max_output = max(1024, int(getattr(settings, "max_output_tokens", 65_536)))
 
@@ -386,7 +577,7 @@ def _run_openai_compatible(
         if usage:
             input_tokens = getattr(usage, "prompt_tokens", None)
             output_tokens = getattr(usage, "completion_tokens", None)
-            _emit(on_event, "usage", provider=settings.provider, model=active_model, usage={
+            _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": getattr(usage, "total_tokens", None),
@@ -405,30 +596,55 @@ def _run_openai_compatible(
                 else:
                     _emit(on_event, "text", message.content, content=text, streamed=False)
 
-        tool_calls = message.tool_calls or []
-        for tool_call in tool_calls:
-            if cancel_check:
-                cancel_check()
-            args = tool_call.function.arguments
+        message_id = _new_message_id(turn_id, settings.provider, turn)
+        normalized_tool_calls: list[dict[str, Any]] = []
+        for block_index, tool_call in enumerate(message.tool_calls or [], start=1):
+            arguments = tool_call.function.arguments or "{}"
             try:
-                tool_input = json.loads(args) if args else {}
+                parsed_input = json.loads(arguments)
+                tool_input = parsed_input if isinstance(parsed_input, dict) else {}
             except json.JSONDecodeError:
                 tool_input = {}
-            tool_msg = f"🔧 {tool_call.function.name}({tool_input})"
-            _emit(
-                on_event,
-                "tool_call",
-                tool_msg,
-                name=tool_call.function.name,
-                input=tool_input,
+            name = tool_call.function.name
+            normalized_tool_calls.append(
+                {
+                    "message_id": message_id,
+                    "tool_call_id": _tool_call_id(
+                        getattr(tool_call, "id", None),
+                        message_id,
+                        block_index,
+                        name,
+                    ),
+                    "block_index": block_index,
+                    "name": name,
+                    "input": tool_input,
+                }
             )
 
-        if not tool_calls:
+        def record_assistant(is_final: bool) -> None:
+            _record_assistant_message(
+                on_event,
+                message_id=message_id,
+                text_blocks=(
+                    [{"block_index": 0, "type": "text", "text": turn_text}]
+                    if turn_text
+                    else []
+                ),
+                finish_reason=getattr(choice, "finish_reason", None),
+                is_final=is_final,
+                streamed=streamed,
+                provider=settings.provider,
+                model=active_model,
+                response_id=_safe_response_id(response),
+            )
+
+        if not normalized_tool_calls:
             if (
                 text_asks_download_permission(turn_text)
                 and honesty_nudges < max_honesty_nudges
                 and turn < total_turns
             ):
+                record_assistant(False)
                 honesty_nudges += 1
                 if final_text_parts and final_text_parts[-1] == turn_text:
                     final_text_parts.pop()
@@ -451,6 +667,7 @@ def _run_openai_compatible(
                 )
             )
             if needs_real_edit and honesty_nudges < max_honesty_nudges and turn < total_turns:
+                record_assistant(False)
                 honesty_nudges += 1
                 if final_text_parts and final_text_parts[-1] == turn_text:
                     final_text_parts.pop()
@@ -464,35 +681,49 @@ def _run_openai_compatible(
                 )
                 messages.append({"role": "user", "content": nudge})
                 continue
+            record_assistant(True)
             break
 
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.content,
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
+        record_assistant(False)
+        for tool_call in normalized_tool_calls:
+            if cancel_check:
+                cancel_check()
+            tool_msg = f"🔧 {tool_call['name']}({tool_call['input']})"
+            _emit(
+                on_event,
+                EventType.TOOL_CALL,
+                tool_msg,
+                **tool_call,
+            )
+
+        assistant_runtime_message = {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {
+                    "id": tool_call["tool_call_id"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_call["name"],
+                        "arguments": json.dumps(
+                            tool_call["input"],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
                     }
-                    for tool_call in tool_calls
-                ],
-            }
-        )
+                }
+                for tool_call in normalized_tool_calls
+            ],
+        }
+        messages.append(assistant_runtime_message)
 
-        for tool_call in tool_calls:
-            try:
-                tool_input = json.loads(tool_call.function.arguments or "{}")
-            except json.JSONDecodeError:
-                tool_input = {}
-
+        for tool_call in normalized_tool_calls:
+            tool_input = tool_call["input"]
+            tool_name = tool_call["name"]
+            tool_call_id = tool_call["tool_call_id"]
             # Enforce gradle retry budget before executing another failed assembleDebug cycle
             if (
-                tool_call.function.name == "run_gradle"
+                tool_name == "run_gradle"
                 and tool_input.get("task", "assembleDebug") == "assembleDebug"
                 and gradle_failures >= max_gradle_retries
             ):
@@ -502,55 +733,98 @@ def _run_openai_compatible(
                 )
                 _emit(
                     on_event,
-                    "tool_result",
+                    EventType.TOOL_RESULT,
                     f"   → FAIL: {result_output[:120]}",
-                    name="run_gradle",
-                    ok=False,
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name="run_gradle",
+                        ok=False,
+                        output=result_output,
+                        duration_ms=0,
+                        error_type="RetryLimitExceeded",
+                    ),
+                    input=tool_input,
                     preview=result_output,
-                    duration_ms=0,
                 )
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call_id,
                         "content": result_output,
                     }
                 )
                 continue
 
             started = time.monotonic()
-            result = dispatch_tool(
-                workspace,
-                user_id,
-                project_id,
-                tool_call.function.name,
-                tool_input,
-                cancel_check=cancel_check,
-                settings=settings,
-                on_event=on_event,
-                task_id=task_id,
-                set_status=set_status,
-            )
-            if tool_call.function.name in EDIT_TOOLS and result.ok:
+            error_type = None
+            try:
+                result = dispatch_agent_tool(
+                    workspace,
+                    user_id,
+                    project_id,
+                    tool_name,
+                    tool_input,
+                    cancel_check=cancel_check,
+                    settings=settings,
+                    on_event=on_event,
+                    task_id=task_id,
+                    tool_call_id=tool_call_id,
+                    set_status=set_status,
+                    recovery_replays=recovery_replays,
+                    recovery_mode=recovery_mode,
+                )
+            except CancellationRequested as exc:
+                duration_ms = round((time.monotonic() - started) * 1000)
+                _emit(
+                    on_event,
+                    EventType.TOOL_RESULT,
+                    f"   → INTERRUPTED: {exc}",
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        ok=False,
+                        output=str(exc),
+                        duration_ms=duration_ms,
+                        interrupted=True,
+                        error_type=exc.__class__.__name__,
+                    ),
+                    input=tool_input,
+                    preview=str(exc),
+                )
+                raise
+            except ApprovalEventPersistenceError:
+                raise
+            except Exception as exc:
+                error_type = exc.__class__.__name__
+                result = ToolResult(False, f"工具 {tool_name} 执行异常: {exc}")
+            if tool_name in EDIT_TOOLS and result.ok:
                 successful_edits += 1
-            preview = _format_tool_output(result.output)
+            model_output = _format_tool_output(result.output)
+            preview = model_output
             if len(preview) > 2000:
                 preview = preview[:2000] + "\n... (输出已截断)"
+            first_line = preview.splitlines()[0][:120] if preview else "(空输出)"
             result_msg = (
-                f"   → {'OK' if result.ok else 'FAIL'}: {preview.splitlines()[0][:120]}"
+                f"   → {'OK' if result.ok else 'FAIL'}: {first_line}"
             )
+            duration_ms = round((time.monotonic() - started) * 1000)
             _emit(
                 on_event,
-                "tool_result",
+                EventType.TOOL_RESULT,
                 result_msg,
-                name=tool_call.function.name,
-                ok=result.ok,
+                **_tool_result_event_payload(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    ok=result.ok,
+                    output=result.output,
+                    duration_ms=duration_ms,
+                    error_type=error_type,
+                ),
                 input=tool_input,
                 preview=preview,
-                duration_ms=round((time.monotonic() - started) * 1000),
             )
             if (
-                tool_call.function.name == "run_gradle"
+                tool_name == "run_gradle"
                 and tool_input.get("task", "assembleDebug") == "assembleDebug"
                 and not result.ok
             ):
@@ -559,50 +833,126 @@ def _run_openai_compatible(
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": _format_tool_output(result.output),
+                    "tool_call_id": tool_call_id,
+                    "content": model_output,
                 }
             )
 
-            if settings.auto_build_after_edit and tool_call.function.name in {"write_file", "str_replace"} and result.ok:
-                auto_result = dispatch_tool(
-                    workspace,
-                    user_id,
-                    project_id,
-                    "run_gradle",
-                    {"task": "assembleDebug"},
-                    cancel_check=cancel_check,
-                    settings=settings,
-                    on_event=on_event,
-                    task_id=task_id,
-                    set_status=set_status,
+            if settings.auto_build_after_edit and tool_name in {"write_file", "str_replace"} and result.ok:
+                auto_build_count += 1
+                auto_block_index = (
+                    max(
+                        call["block_index"]
+                        for call in normalized_tool_calls
+                    )
+                    + auto_build_count
                 )
-                auto_preview = _format_tool_output(auto_result.output)
-                if len(auto_preview) > 2000:
-                    auto_preview = auto_preview[:2000] + "\n... (输出已截断)"
+                auto_call_id = _tool_call_id(
+                    None,
+                    message_id,
+                    auto_block_index,
+                    "run_gradle",
+                )
                 _emit(
                     on_event,
-                    "tool_call",
+                    EventType.TOOL_CALL,
                     "🔧 run_gradle(auto_build_after_edit)",
+                    message_id=message_id,
+                    tool_call_id=auto_call_id,
+                    block_index=auto_block_index,
                     name="run_gradle",
                     input={"task": "assembleDebug", "auto": True},
                 )
+                assistant_runtime_message["tool_calls"].append(
+                    {
+                        "id": auto_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "run_gradle",
+                            "arguments": '{"task":"assembleDebug","auto":true}',
+                        },
+                    }
+                )
+                auto_started = time.monotonic()
+                auto_error_type = None
+                try:
+                    auto_result = dispatch_agent_tool(
+                        workspace,
+                        user_id,
+                        project_id,
+                        "run_gradle",
+                        {"task": "assembleDebug"},
+                        cancel_check=cancel_check,
+                        settings=settings,
+                        on_event=on_event,
+                        task_id=task_id,
+                        tool_call_id=auto_call_id,
+                        set_status=set_status,
+                        recovery_replays=recovery_replays,
+                        recovery_mode=recovery_mode,
+                    )
+                except CancellationRequested as exc:
+                    _emit(
+                        on_event,
+                        EventType.TOOL_RESULT,
+                        f"   → INTERRUPTED: {exc}",
+                        **_tool_result_event_payload(
+                            tool_call_id=auto_call_id,
+                            name="run_gradle",
+                            ok=False,
+                            output=str(exc),
+                            duration_ms=round(
+                                (time.monotonic() - auto_started) * 1000
+                            ),
+                            interrupted=True,
+                            error_type=exc.__class__.__name__,
+                        ),
+                        input={"task": "assembleDebug", "auto": True},
+                        preview=str(exc),
+                        auto=True,
+                    )
+                    raise
+                except ApprovalEventPersistenceError:
+                    raise
+                except Exception as exc:
+                    auto_error_type = exc.__class__.__name__
+                    auto_result = ToolResult(
+                        False,
+                        f"工具 run_gradle 执行异常: {exc}",
+                    )
+                auto_preview = _format_tool_output(auto_result.output)
+                if len(auto_preview) > 2000:
+                    auto_preview = auto_preview[:2000] + "\n... (输出已截断)"
+                auto_first_line = (
+                    auto_preview.splitlines()[0][:120]
+                    if auto_preview
+                    else "(空输出)"
+                )
                 _emit(
                     on_event,
-                    "tool_result",
-                    f"   → {'OK' if auto_result.ok else 'FAIL'}: {auto_preview.splitlines()[0][:120]}",
-                    name="run_gradle",
-                    ok=auto_result.ok,
+                    EventType.TOOL_RESULT,
+                    f"   → {'OK' if auto_result.ok else 'FAIL'}: {auto_first_line}",
+                    **_tool_result_event_payload(
+                        tool_call_id=auto_call_id,
+                        name="run_gradle",
+                        ok=auto_result.ok,
+                        output=auto_result.output,
+                        duration_ms=round(
+                            (time.monotonic() - auto_started) * 1000
+                        ),
+                        error_type=auto_error_type,
+                    ),
+                    input={"task": "assembleDebug", "auto": True},
                     preview=auto_preview,
-                    duration_ms=0,
                     auto=True,
                 )
                 if not auto_result.ok:
                     gradle_failures += 1
                 messages.append(
                     {
-                        "role": "user",
-                        "content": f"[auto_build_after_edit]\n{_format_tool_output(auto_result.output)}",
+                        "role": "tool",
+                        "tool_call_id": auto_call_id,
+                        "content": _format_tool_output(auto_result.output),
                     }
                 )
     else:
@@ -624,6 +974,10 @@ def _run_anthropic(
     *,
     task_id: str | None = None,
     set_status: Callable[[str], None] | None = None,
+    append_user_prompt: bool = True,
+    turn_id: str | None = None,
+    recovery_replays: list[dict[str, Any]] | None = None,
+    recovery_mode: bool = False,
 ) -> str:
     try:
         import anthropic
@@ -635,11 +989,9 @@ def _run_anthropic(
         client_kwargs["base_url"] = settings.base_url
     client = anthropic.Anthropic(**client_kwargs)
 
-    messages: list[dict] = []
-    for item in prior_messages:
-        if item.get("role") in {"user", "assistant"} and item.get("content"):
-            messages.append({"role": item["role"], "content": item["content"]})
-    messages.append({"role": "user", "content": user_prompt})
+    messages: list[dict] = [dict(item) for item in prior_messages]
+    if append_user_prompt:
+        messages.append({"role": "user", "content": user_prompt})
 
     final_text_parts: list[str] = []
     tool_definitions = get_tool_definitions(settings)
@@ -651,6 +1003,7 @@ def _run_anthropic(
     successful_edits = 0
     honesty_nudges = 0
     max_honesty_nudges = 2
+    auto_build_count = 0
 
     total_turns = _total_turns(settings)
     for turn in range(1, total_turns + 1):
@@ -679,17 +1032,19 @@ def _run_anthropic(
         if usage:
             input_tokens = getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None)
             output_tokens = getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None)
-            _emit(on_event, "usage", provider=settings.provider, model=active_model, usage={
+            _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": (input_tokens + output_tokens) if input_tokens is not None and output_tokens is not None else None,
             })
 
-        assistant_content = []
-        tool_uses = []
+        assistant_content: list[dict[str, Any]] = []
+        text_blocks: list[dict[str, Any]] = []
+        tool_uses: list[dict[str, Any]] = []
         turn_text = ""
         streamed = isinstance(response, StreamedCompletion)
-        for block in response.content:
+        message_id = _new_message_id(turn_id, settings.provider, turn)
+        for block_index, block in enumerate(response.content):
             if block.type == "text":
                 text = block.text.strip()
                 if text:
@@ -700,27 +1055,61 @@ def _run_anthropic(
                         print(text)
                     else:
                         _emit(on_event, "text", block.text, content=text, streamed=False)
-                assistant_content.append(block)
+                    text_blocks.append(
+                        {
+                            "block_index": block_index,
+                            "type": "text",
+                            "text": text,
+                        }
+                    )
+                assistant_content.append({"type": "text", "text": block.text})
             elif block.type == "tool_use":
-                tool_uses.append(block)
-                assistant_content.append(block)
-                tool_msg = f"🔧 {block.name}({block.input})"
-                _emit(
-                    on_event,
-                    "tool_call",
-                    tool_msg,
-                    name=block.name,
-                    input=block.input,
+                tool_input = block.input if isinstance(block.input, dict) else {}
+                tool_call_id = _tool_call_id(
+                    getattr(block, "id", None),
+                    message_id,
+                    block_index,
+                    block.name,
+                )
+                tool_use = {
+                    "message_id": message_id,
+                    "tool_call_id": tool_call_id,
+                    "block_index": block_index,
+                    "name": block.name,
+                    "input": tool_input,
+                }
+                tool_uses.append(tool_use)
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call_id,
+                        "name": block.name,
+                        "input": tool_input,
+                    }
                 )
 
         messages.append({"role": "assistant", "content": assistant_content})
 
-        if response.stop_reason != "tool_use":
+        def record_assistant(is_final: bool) -> None:
+            _record_assistant_message(
+                on_event,
+                message_id=message_id,
+                text_blocks=text_blocks,
+                finish_reason=getattr(response, "stop_reason", None),
+                is_final=is_final,
+                streamed=streamed,
+                provider=settings.provider,
+                model=active_model,
+                response_id=_safe_response_id(response),
+            )
+
+        if not tool_uses:
             if (
                 text_asks_download_permission(turn_text)
                 and honesty_nudges < max_honesty_nudges
                 and turn < total_turns
             ):
+                record_assistant(False)
                 honesty_nudges += 1
                 text_blocks = sum(
                     1 for b in response.content if b.type == "text" and (b.text or "").strip()
@@ -741,6 +1130,7 @@ def _run_anthropic(
                 )
             )
             if needs_real_edit and honesty_nudges < max_honesty_nudges and turn < total_turns:
+                record_assistant(False)
                 honesty_nudges += 1
                 text_blocks = sum(
                     1 for b in response.content if b.type == "text" and (b.text or "").strip()
@@ -752,15 +1142,25 @@ def _run_anthropic(
                 _emit(on_event, "honesty_nudge", nudge, successful_edits=successful_edits)
                 messages.append({"role": "user", "content": nudge})
                 continue
+            record_assistant(True)
             break
+
+        record_assistant(False)
+        for tool_use in tool_uses:
+            if cancel_check:
+                cancel_check()
+            tool_msg = f"🔧 {tool_use['name']}({tool_use['input']})"
+            _emit(on_event, EventType.TOOL_CALL, tool_msg, **tool_use)
 
         tool_results = []
         for tool_use in tool_uses:
             if cancel_check:
                 cancel_check()
-            tool_input = tool_use.input if isinstance(tool_use.input, dict) else {}
+            tool_input = tool_use["input"]
+            tool_name = tool_use["name"]
+            tool_call_id = tool_use["tool_call_id"]
             if (
-                tool_use.name == "run_gradle"
+                tool_name == "run_gradle"
                 and tool_input.get("task", "assembleDebug") == "assembleDebug"
                 and gradle_failures >= max_gradle_retries
             ):
@@ -770,17 +1170,23 @@ def _run_anthropic(
                 )
                 _emit(
                     on_event,
-                    "tool_result",
+                    EventType.TOOL_RESULT,
                     f"   → FAIL: {result_output[:120]}",
-                    name="run_gradle",
-                    ok=False,
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name="run_gradle",
+                        ok=False,
+                        output=result_output,
+                        duration_ms=0,
+                        error_type="RetryLimitExceeded",
+                    ),
+                    input=tool_input,
                     preview=result_output,
-                    duration_ms=0,
                 )
                 tool_results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": tool_use.id,
+                        "tool_use_id": tool_call_id,
                         "content": result_output,
                         "is_error": True,
                     }
@@ -788,37 +1194,74 @@ def _run_anthropic(
                 continue
 
             started = time.monotonic()
-            result = dispatch_tool(
-                workspace,
-                user_id,
-                project_id,
-                tool_use.name,
-                tool_input,
-                cancel_check=cancel_check,
-                settings=settings,
-                on_event=on_event,
-                task_id=task_id,
-                set_status=set_status,
-            )
-            if tool_use.name in EDIT_TOOLS and result.ok:
+            error_type = None
+            try:
+                result = dispatch_agent_tool(
+                    workspace,
+                    user_id,
+                    project_id,
+                    tool_name,
+                    tool_input,
+                    cancel_check=cancel_check,
+                    settings=settings,
+                    on_event=on_event,
+                    task_id=task_id,
+                    tool_call_id=tool_call_id,
+                    set_status=set_status,
+                    recovery_replays=recovery_replays,
+                    recovery_mode=recovery_mode,
+                )
+            except CancellationRequested as exc:
+                duration_ms = round((time.monotonic() - started) * 1000)
+                _emit(
+                    on_event,
+                    EventType.TOOL_RESULT,
+                    f"   → INTERRUPTED: {exc}",
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        ok=False,
+                        output=str(exc),
+                        duration_ms=duration_ms,
+                        interrupted=True,
+                        error_type=exc.__class__.__name__,
+                    ),
+                    preview=str(exc),
+                )
+                raise
+            except ApprovalEventPersistenceError:
+                raise
+            except Exception as exc:
+                error_type = exc.__class__.__name__
+                result = ToolResult(False, f"工具 {tool_name} 执行异常: {exc}")
+            if tool_name in EDIT_TOOLS and result.ok:
                 successful_edits += 1
-            preview = _format_tool_output(result.output)
+            model_output = _format_tool_output(result.output)
+            preview = model_output
             if len(preview) > 2000:
                 preview = preview[:2000] + "\n... (输出已截断)"
+            first_line = preview.splitlines()[0][:120] if preview else "(空输出)"
             result_msg = (
-                f"   → {'OK' if result.ok else 'FAIL'}: {preview.splitlines()[0][:120]}"
+                f"   → {'OK' if result.ok else 'FAIL'}: {first_line}"
             )
+            duration_ms = round((time.monotonic() - started) * 1000)
             _emit(
                 on_event,
-                "tool_result",
+                EventType.TOOL_RESULT,
                 result_msg,
-                name=tool_use.name,
-                ok=result.ok,
+                **_tool_result_event_payload(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    ok=result.ok,
+                    output=result.output,
+                    duration_ms=duration_ms,
+                    error_type=error_type,
+                ),
+                input=tool_input,
                 preview=preview,
-                duration_ms=round((time.monotonic() - started) * 1000),
             )
             if (
-                tool_use.name == "run_gradle"
+                tool_name == "run_gradle"
                 and tool_input.get("task", "assembleDebug") == "assembleDebug"
                 and not result.ok
             ):
@@ -826,41 +1269,103 @@ def _run_anthropic(
             tool_results.append(
                 {
                     "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": _format_tool_output(result.output),
+                    "tool_use_id": tool_call_id,
+                    "content": model_output,
                     "is_error": not result.ok,
                 }
             )
 
-            if settings.auto_build_after_edit and tool_use.name in {"write_file", "str_replace"} and result.ok:
-                auto_result = dispatch_tool(
-                    workspace,
-                    user_id,
-                    project_id,
+            if settings.auto_build_after_edit and tool_name in {"write_file", "str_replace"} and result.ok:
+                auto_build_count += 1
+                auto_block_index = len(messages[-1]["content"]) + auto_build_count
+                auto_call_id = _tool_call_id(
+                    None,
+                    message_id,
+                    auto_block_index,
                     "run_gradle",
-                    {"task": "assembleDebug"},
-                    cancel_check=cancel_check,
-                    settings=settings,
-                    on_event=on_event,
-                    task_id=task_id,
-                    set_status=set_status,
                 )
-                auto_preview = _format_tool_output(auto_result.output)
                 _emit(
                     on_event,
-                    "tool_call",
+                    EventType.TOOL_CALL,
                     "🔧 run_gradle(auto_build_after_edit)",
+                    message_id=message_id,
+                    tool_call_id=auto_call_id,
+                    block_index=auto_block_index,
                     name="run_gradle",
                     input={"task": "assembleDebug", "auto": True},
                 )
+                messages[-1]["content"].append(
+                    {
+                        "type": "tool_use",
+                        "id": auto_call_id,
+                        "name": "run_gradle",
+                        "input": {"task": "assembleDebug", "auto": True},
+                    }
+                )
+                auto_started = time.monotonic()
+                auto_error_type = None
+                try:
+                    auto_result = dispatch_agent_tool(
+                        workspace,
+                        user_id,
+                        project_id,
+                        "run_gradle",
+                        {"task": "assembleDebug"},
+                        cancel_check=cancel_check,
+                        settings=settings,
+                        on_event=on_event,
+                        task_id=task_id,
+                        tool_call_id=auto_call_id,
+                        set_status=set_status,
+                        recovery_replays=recovery_replays,
+                        recovery_mode=recovery_mode,
+                    )
+                except CancellationRequested as exc:
+                    _emit(
+                        on_event,
+                        EventType.TOOL_RESULT,
+                        f"   → INTERRUPTED: {exc}",
+                        **_tool_result_event_payload(
+                            tool_call_id=auto_call_id,
+                            name="run_gradle",
+                            ok=False,
+                            output=str(exc),
+                            duration_ms=round(
+                                (time.monotonic() - auto_started) * 1000
+                            ),
+                            interrupted=True,
+                            error_type=exc.__class__.__name__,
+                        ),
+                        input={"task": "assembleDebug", "auto": True},
+                        preview=str(exc),
+                        auto=True,
+                    )
+                    raise
+                except ApprovalEventPersistenceError:
+                    raise
+                except Exception as exc:
+                    auto_error_type = exc.__class__.__name__
+                    auto_result = ToolResult(
+                        False,
+                        f"工具 run_gradle 执行异常: {exc}",
+                    )
+                auto_preview = _format_tool_output(auto_result.output)
                 _emit(
                     on_event,
-                    "tool_result",
+                    EventType.TOOL_RESULT,
                     f"   → {'OK' if auto_result.ok else 'FAIL'}",
-                    name="run_gradle",
-                    ok=auto_result.ok,
+                    **_tool_result_event_payload(
+                        tool_call_id=auto_call_id,
+                        name="run_gradle",
+                        ok=auto_result.ok,
+                        output=auto_result.output,
+                        duration_ms=round(
+                            (time.monotonic() - auto_started) * 1000
+                        ),
+                        error_type=auto_error_type,
+                    ),
+                    input={"task": "assembleDebug", "auto": True},
                     preview=auto_preview[:2000],
-                    duration_ms=0,
                     auto=True,
                 )
                 if not auto_result.ok:
@@ -868,7 +1373,7 @@ def _run_anthropic(
                 tool_results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": f"{tool_use.id}_auto_build",
+                        "tool_use_id": auto_call_id,
                         "content": _format_tool_output(auto_result.output),
                         "is_error": not auto_result.ok,
                     }
