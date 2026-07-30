@@ -177,11 +177,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from agent.api import create_app, _guess_lan_ip
     from agent.config import load_settings
+    from agent.jobs import start_worker
 
     settings = load_settings()
     host = args.host or settings.server_host
     port = args.port or settings.server_port
     app = create_app(settings)
+    start_worker(settings)
 
     lan_ip = _guess_lan_ip()
     print("Android Agent API 已启动")

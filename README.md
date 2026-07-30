@@ -7,7 +7,7 @@ Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可�
 - SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
 - 同一项目串行执行，可请求停止，服务重启后中断任务会标记失败。
 - Agent 必须执行 `assembleDebug`，成功任务保留任务级 APK 和构建日志。
-- 手机端支持任务提交、轮询、停止、历史恢复、调试事件、APK 下载与安装。
+- 手机端支持连接/项目、多 Conversation、任务流、审批、steer/follow_up/pause/resume/cancel、Diff/Checkpoint 恢复、构建日志与 APK 下载安装分享；WebSocket 优先并在断线后游标轮询。
 
 ## 多对话（Cursor 式）
 
@@ -48,7 +48,7 @@ Authorization: Bearer <token>
 
 规范事件写入、历史读取、Job/WebSocket 输出和事件查询 API 会识别并脱敏 Bearer Token、JWT、常见 API Key 前缀、URL 用户信息以及 `api_key=...` 等自由文本形式。结构化凭证字段继续拒绝写入。自由文本检测属于防泄漏保护而非密码保险库，无法保证识别所有私有密钥格式。
 
-当前仍未实现跨 Conversation 长期记忆和通用持久化消息队列；自动恢复队列仅覆盖服务启动时发现的中断 Agent Task。
+当前已支持跨 Conversation 的可控项目记忆（候选审批 + 本地 FTS 检索）。通用多实例消息队列仍未实现；自动恢复队列覆盖服务启动时发现的中断 Agent Task。
 
 ## 设备初始化与目录隔离
 
@@ -94,7 +94,7 @@ Agent 可调用 `download_file` 将 http/https 资源保存到工程内（推荐
 
 ## 桌面端（Electron + Monaco）
 
-Cursor 式三栏桌面编辑器：左侧文件树、中间 Monaco、右侧 AI 占位（暂未接 Agent）。
+Cursor 式三栏桌面 IDE：左侧文件树 / 搜索 / 对话 / 任务，中间 Monaco + Diff Editor，右侧 Agent 对话 / Plan / 工具 / 审批，底部集成 xterm.js 终端、问题、输出和构建日志。支持对话管理、上下文 chip、断线重连、审批面板、checkpoint 恢复和响应式窄窗口。
 
 需本机已安装 Node.js 18+。
 
@@ -114,16 +114,55 @@ npm start
 ## 验证与构建
 
 ```bash
-python3 -m unittest discover -s tests -v
-cd android-app && ./gradlew assembleDebug
-cd ../template && ./gradlew assembleDebug
+# Python（含 Eval / 安全审计 / 故障注入 / 性能预算）
+python3 -m pytest tests -q
+
+# Desktop
+cd desktop && npm run check && npm run test:unit && npm run test:screenshot
+
+# Android
+cd android-app && ./gradlew testDebugUnitTest assembleDebug
+
+# 发布门禁（敏感信息扫描 + git diff --check + 上述客户端）
+python3 scripts/release_check.py
+
+# 离线 Eval 套件（16 场景，确定性 fake，无付费模型）
+PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for r in run_all_evals()))"
 ```
 
-手机端 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。
+手机端 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。有模拟器时可另行执行 `./gradlew connectedDebugAndroidTest`（可选 smoke）。
 
-## 迁移到云服务器
+架构说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-代码不依赖本机账号系统。迁移时复制项目代码，并持久化以下三个目录即可：
+## 权限模式与 Workspace trust
+
+- 运行模式：`ask` / `workspace` / `read_only`（见 `agent/permissions.py`）。
+- 项目级 MCP 需用户明确 trust 后才会注册工具。
+- Rules / Skills / Hooks / MCP 配置均受路径沙箱约束；符号链接越界不会被加载。
+
+## Git、Checkpoint 与恢复
+
+- Checkpoint 是内容寻址快照，**不是** Git commit。
+- Dirty workspace 恢复冲突时返回 `error=conflict`，不会静默覆盖。
+- 服务重启会为未完成工具写入 `service_interrupted`，并自动排队恢复 Turn（最多 3 次）。
+
+## 队列、Rules/Skills/MCP/Hooks、Subagent、记忆
+
+- 任务队列：SQLite lease claim + worker heartbeat；同项目主写锁串行。
+- Rules / Skills：预算注入 system prompt；恶意越界文件被拒绝。
+- MCP / Hooks：stdio MCP + 崩溃重连；Hook 不能削弱硬拒绝。
+- Subagent：explore / reviewer / test_runner / implementer；worktree 由服务端分配路径。
+- 项目记忆：候选 → 用户批准 → 检索注入；与 Conversation checkpoint 分离。详见阶段十八。
+
+## 数据备份与迁移
+
+```bash
+./scripts/backup_data.sh                 # 打包 data/ workspaces/ builds/
+python3 scripts/migrate_db.py --backup   # 幂等 schema 确保 + 可选备份
+python3 scripts/scan_secrets.py          # 敏感信息扫描
+```
+
+迁移到云服务器时持久化：
 
 ```text
 data/
@@ -131,4 +170,35 @@ workspaces/
 builds/
 ```
 
-可通过 `AGENT_DATA_DIR` 把账号数据库放到独立持久化磁盘。生产环境应使用 HTTPS，并在反向代理层为 `/api/register` 添加限流。若以后需要多实例部署，可保持 API 不变，将 `UserStore` 的 SQLite 实现替换为云数据库。
+可通过 `AGENT_DATA_DIR` 把账号与任务库放到独立磁盘。生产环境应使用 HTTPS，并为 `/api/register` 限流。
+
+## 桌面打包与 Android 发布
+
+**Desktop（Electron）**
+
+```bash
+cd desktop
+npm install
+npm start          # 开发
+# 发布可用 electron-packager / electron-builder（按目标平台安装对应工具后打包）
+# 产物勿提交仓库；分发前运行 npm run check && npm run test:unit
+```
+
+**Android APK**
+
+```bash
+cd android-app
+./gradlew assembleRelease   # 需本机 keystore / 签名配置
+# 或调试包：
+./gradlew assembleDebug
+# 输出：app/build/outputs/apk/debug/app-debug.apk
+```
+
+## 安全边界与已知限制
+
+- 路径沙箱、命令 argv 隔离、下载 SSRF 基础防护、日志/事件脱敏、用户 IDOR 隔离。
+- 已知限制：密钥自由文本检测非完备；审批超时下限 30s；索引/记忆为单机 SQLite；真实 Gradle 构建依赖本机 SDK；Eval 中构建步骤为 mock。
+
+## 迁移到云服务器
+
+代码不依赖本机账号系统。迁移时复制项目代码，并持久化 `data/`、`workspaces/`、`builds/`。若以后需要多实例部署，可保持 API 不变，将 `UserStore` 的 SQLite 实现替换为云数据库。

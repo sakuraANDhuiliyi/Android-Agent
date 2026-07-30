@@ -1,0 +1,39 @@
+{
+  "stage": 19,
+  "timestamp": 1785408741.0611782,
+  "eval": {
+    "passed": 16,
+    "failed": 0,
+    "total": 16
+  },
+  "python_tests": {
+    "passed": 254,
+    "failed": 0
+  },
+  "perf_budgets": {
+    "index_10k_s": 90.0,
+    "events_page_s": 5.0,
+    "context_plan_s": 5.0,
+    "multi_claim_s": 10.0,
+    "result": "5/5 passed (~21s wall for suite)"
+  },
+  "desktop": {
+    "check": "pass",
+    "unit": "pass",
+    "screenshot": "pass"
+  },
+  "android": {
+    "unit_and_assembleDebug": "pass",
+    "apk": "android-app/app/build/outputs/apk/debug/app-debug.apk",
+    "instrumentation": "skipped_no_emulator"
+  },
+  "secret_scan": "clean",
+  "git_diff_check": "pass",
+  "release_ready": true,
+  "remaining_risks": [
+    "No connectedAndroidTest / emulator smoke in this environment",
+    "Approval timeout floor remains 30s in production",
+    "Secret free-text redaction is best-effort",
+    "Real assembleDebug still requires local Android SDK (evals mock build)"
+  ]
+}

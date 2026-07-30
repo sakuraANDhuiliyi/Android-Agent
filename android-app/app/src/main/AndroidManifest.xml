@@ -24,6 +24,36 @@
         </activity>
 
         <activity
+            android:name=".ProjectDetailActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ConversationActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectDetailActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".DiffActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectDetailActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".BuildLogActivity"
+            android:exported="false"
+            android:parentActivityName=".ConversationActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ApkActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectDetailActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".FileBrowserActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity"

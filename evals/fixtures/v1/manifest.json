@@ -1,0 +1,22 @@
+{
+  "version": "v1",
+  "description": "Stage 19 offline eval scenarios for Android Agent",
+  "scenarios": [
+    {"id": "01_create_page_build", "title": "创建简单 Android 页面并构建"},
+    {"id": "02_fix_kotlin", "title": "修复 Kotlin 编译错误"},
+    {"id": "03_fix_xml", "title": "修复 XML resource 错误"},
+    {"id": "04_multi_turn_tools", "title": "多轮追问保留工具链"},
+    {"id": "05_steer", "title": "中途 steer"},
+    {"id": "06_tool_failure", "title": "工具失败"},
+    {"id": "07_approvals", "title": "审批允许、拒绝、超时和取消"},
+    {"id": "08_model_fallback", "title": "Provider/Model fallback"},
+    {"id": "09_interrupt_stages", "title": "服务在模型/工具/审批/checkpoint 阶段中断"},
+    {"id": "10_git_dirty_restore", "title": "Git dirty workspace 和恢复冲突"},
+    {"id": "11_index_incremental", "title": "代码索引增量更新"},
+    {"id": "12_mcp_crash", "title": "MCP server 崩溃"},
+    {"id": "13_subagent", "title": "Subagent 成功、失败和取消"},
+    {"id": "14_long_history_checkpoint", "title": "八轮以上历史和 checkpoint"},
+    {"id": "15_memory_approve_delete", "title": "项目记忆批准与删除"},
+    {"id": "16_reconnect", "title": "桌面和手机断线重连游标"}
+  ]
+}

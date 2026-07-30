@@ -59,7 +59,12 @@ class TaskStore:
                     output_tokens INTEGER,
                     total_tokens INTEGER,
                     recovery_of_task_id TEXT,
-                    recovery_attempt INTEGER NOT NULL DEFAULT 0
+                    recovery_attempt INTEGER NOT NULL DEFAULT 0,
+                    context_json TEXT,
+                    claim_owner TEXT,
+                    lease_expires_at REAL,
+                    heartbeat_at REAL,
+                    attempt INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_user_project
                     ON tasks(user_id, project_id, created_at DESC);
@@ -99,17 +104,7 @@ class TaskStore:
                     task_id TEXT UNIQUE,
                     user_id TEXT NOT NULL,
                     project_id TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK (
-                        status IN (
-                            'queued',
-                            'running',
-                            'awaiting_approval',
-                            'succeeded',
-                            'failed',
-                            'canceled',
-                            'interrupted'
-                        )
-                    ),
+                    status TEXT NOT NULL,
                     provider TEXT,
                     model TEXT,
                     created_at REAL NOT NULL,
@@ -153,6 +148,45 @@ class TaskStore:
                     ON conversation_events(task_id);
                 CREATE INDEX IF NOT EXISTS idx_conversation_events_type
                     ON conversation_events(event_type);
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    conversation_id TEXT,
+                    turn_id TEXT,
+                    task_id TEXT,
+                    kind TEXT NOT NULL CHECK (kind IN ('before_turn', 'after_turn', 'manual')),
+                    base_revision TEXT,
+                    manifest_json TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_checkpoints_user_project
+                    ON checkpoints(user_id, project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_checkpoints_turn
+                    ON checkpoints(turn_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS task_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    message_key TEXT NOT NULL,
+                    type TEXT NOT NULL CHECK (type IN ('steer', 'follow_up', 'cancel', 'pause', 'resume')),
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    consumed_at REAL,
+                    created_at REAL NOT NULL,
+                    UNIQUE(task_id, message_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_messages_task
+                    ON task_messages(task_id, consumed_at, created_at);
+                CREATE TABLE IF NOT EXISTS task_dependencies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    depends_on_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    created_at REAL NOT NULL,
+                    UNIQUE(task_id, depends_on_task_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_dependencies_task
+                    ON task_dependencies(task_id);
+                CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends
+                    ON task_dependencies(depends_on_task_id);
                 """
             )
             cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -166,12 +200,35 @@ class TaskStore:
                 conn.execute(
                     "ALTER TABLE tasks ADD COLUMN recovery_attempt INTEGER NOT NULL DEFAULT 0"
                 )
+            if "claim_owner" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN claim_owner TEXT")
+            if "lease_expires_at" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN lease_expires_at REAL")
+            if "heartbeat_at" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN heartbeat_at REAL")
+            if "attempt" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+            if "context_json" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN context_json TEXT")
+            if "parent_task_id" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT")
+            if "role" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN role TEXT")
+            if "write_lock_key" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN write_lock_key TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, created_at DESC)"
             )
             conn.execute(
                 """CREATE INDEX IF NOT EXISTS idx_tasks_recovery
                    ON tasks(recovery_of_task_id, recovery_attempt)"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_tasks_write_lock
+                   ON tasks(write_lock_key, status)"""
             )
 
     def _migrate_legacy_sessions(self) -> None:
@@ -432,15 +489,32 @@ class TaskStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, status FROM tasks
-                   WHERE status IN ('queued', 'running', 'awaiting_approval')"""
+                   WHERE status IN ('queued', 'running', 'awaiting_approval', 'paused')"""
             ).fetchall()
             for row in rows:
+                if row["status"] == "queued":
+                    conn.execute(
+                        """UPDATE tasks SET claim_owner=NULL, lease_expires_at=NULL,
+                           heartbeat_at=NULL, attempt=0
+                           WHERE id=?""",
+                        (row["id"],),
+                    )
+                    continue
+                if row["status"] == "paused":
+                    conn.execute(
+                        """UPDATE tasks SET status='queued', claim_owner=NULL,
+                           lease_expires_at=NULL, heartbeat_at=NULL
+                           WHERE id=?""",
+                        (row["id"],),
+                    )
+                    continue
                 if row["status"] == "awaiting_approval":
                     msg = "Agent 服务重启，等待中的下载确认已失效，请重新发送需求"
                 else:
                     msg = "Agent 服务重启，任务执行已中断"
                 conn.execute(
-                    """UPDATE tasks SET status='failed', finished_at=?, error_message=?
+                    """UPDATE tasks SET status='failed', finished_at=?, error_message=?,
+                       claim_owner=NULL, lease_expires_at=NULL, heartbeat_at=NULL
                        WHERE id=?""",
                     (now, msg, row["id"]),
                 )
@@ -470,7 +544,7 @@ class TaskStore:
                           COALESCE(j.recovery_attempt, 0) AS recovery_attempt
                    FROM conversation_turns AS t
                    LEFT JOIN tasks AS j ON j.id=t.task_id
-                   WHERE t.status IN ('queued', 'running', 'awaiting_approval')
+                   WHERE t.status IN ('running', 'awaiting_approval')
                    ORDER BY t.created_at, t.id"""
             ).fetchall()
 
@@ -605,14 +679,16 @@ class TaskStore:
             row = conn.execute(query, params).fetchone()
         return self._row_to_conversation(row) if row else None
 
-    def list_conversations(self, user_id: str, project_id: str) -> list[dict[str, Any]]:
+    def list_conversations(
+        self, user_id: str, project_id: str, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM conversations WHERE user_id=? AND project_id=?"
+        params: tuple[Any, ...] = (user_id, project_id)
+        if not include_archived:
+            query += " AND status!='archived'"
+        query += " ORDER BY updated_at DESC"
         with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT * FROM conversations
-                   WHERE user_id=? AND project_id=? AND status!='archived'
-                   ORDER BY updated_at DESC""",
-                (user_id, project_id),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [self._row_to_conversation(row) for row in rows]
 
     def update_conversation(self, conversation_id: str, user_id: str, **values: Any) -> dict[str, Any] | None:
@@ -637,6 +713,16 @@ class TaskStore:
                 (time.time(), conversation_id, user_id),
             )
         return cursor.rowcount > 0
+
+    def restore_conversation(self, conversation_id: str, user_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE conversations SET status='active', updated_at=? WHERE id=? AND user_id=?",
+                (time.time(), conversation_id, user_id),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get_conversation(conversation_id, user_id)
 
     def get_or_create_default_conversation(self, user_id: str, project_id: str) -> dict[str, Any]:
         with self._connect() as conn:
@@ -754,12 +840,19 @@ class TaskStore:
 
     def create_task(self, task: dict[str, Any]) -> None:
         safe_task = redact_sensitive_value(task)
+        context = safe_task.get("context_json")
+        if context is None and isinstance(safe_task.get("context"), dict):
+            context = safe_task["context"]
+        if isinstance(context, dict):
+            context = json.dumps(context, ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO tasks
                    (id,user_id,project_id,conversation_id,prompt,status,provider,
-                    model,created_at,recovery_of_task_id,recovery_attempt)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    model,created_at,recovery_of_task_id,recovery_attempt,context_json,
+                    claim_owner,lease_expires_at,heartbeat_at,attempt,
+                    parent_task_id,role,write_lock_key)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     safe_task["id"],
                     safe_task["user_id"],
@@ -772,6 +865,14 @@ class TaskStore:
                     safe_task["created_at"],
                     safe_task.get("recovery_of_task_id"),
                     int(safe_task.get("recovery_attempt") or 0),
+                    context,
+                    safe_task.get("claim_owner"),
+                    safe_task.get("lease_expires_at"),
+                    safe_task.get("heartbeat_at"),
+                    int(safe_task.get("attempt") or 0),
+                    safe_task.get("parent_task_id"),
+                    safe_task.get("role"),
+                    safe_task.get("write_lock_key"),
                 ),
             )
 
@@ -781,6 +882,10 @@ class TaskStore:
         encoded = dict(redact_sensitive_value(values))
         if "changed_files" in encoded:
             encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
+        if "context" in encoded:
+            encoded["context_json"] = json.dumps(encoded.pop("context"), ensure_ascii=False)
+        if "context_json" in encoded and isinstance(encoded["context_json"], dict):
+            encoded["context_json"] = json.dumps(encoded["context_json"], ensure_ascii=False)
         columns = ", ".join(f"{key}=?" for key in encoded)
         with self._connect() as conn:
             conn.execute(
@@ -819,10 +924,307 @@ class TaskStore:
             )
         return cursor.rowcount > 0
 
+    def list_child_tasks(self, parent_task_id: str, user_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM tasks WHERE parent_task_id=?"
+        params: list[Any] = [parent_task_id]
+        if user_id is not None:
+            query += " AND user_id=?"
+            params.append(user_id)
+        query += " ORDER BY created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
+    def request_cancel_cascade(self, task_id: str, user_id: str) -> list[str]:
+        """Cancel task and all descendants. Returns cancelled task ids."""
+        cancelled: list[str] = []
+        queue = [task_id]
+        seen: set[str] = set()
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            if self.request_cancel(current, user_id):
+                cancelled.append(current)
+            for child in self.list_child_tasks(current, user_id=user_id):
+                queue.append(child["id"])
+        return cancelled
+
+    def count_active_children(self, parent_task_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n FROM tasks
+                   WHERE parent_task_id=? AND status IN ('queued','running','awaiting_approval')""",
+                (parent_task_id,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     def is_cancel_requested(self, task_id: str) -> bool:
         with self._connect() as conn:
             row = conn.execute("SELECT cancel_requested FROM tasks WHERE id=?", (task_id,)).fetchone()
         return bool(row and row[0])
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        lease_seconds: float = 300.0,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        now = now or time.time()
+        lease_expires = now + lease_seconds
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """SELECT * FROM tasks
+                   WHERE status='queued' OR (status='running' AND lease_expires_at<?)
+                   ORDER BY created_at ASC, id ASC""",
+                (now,),
+            ).fetchall()
+            for row in rows:
+                lock_key = row["write_lock_key"] if "write_lock_key" in row.keys() else None
+                if not lock_key:
+                    # Fallback for legacy rows / read-only without column
+                    try:
+                        ctx = json.loads(row["context_json"] or "{}")
+                    except Exception:
+                        ctx = {}
+                    lock_key = ctx.get("write_lock_key")
+                if lock_key:
+                    conflict = conn.execute(
+                        """SELECT 1 FROM tasks
+                           WHERE write_lock_key=? AND status='running'
+                           AND lease_expires_at>=? AND id!=?""",
+                        (lock_key, now, row["id"]),
+                    ).fetchone()
+                    if conflict:
+                        continue
+                else:
+                    # Legacy main-agent tasks without write_lock_key: keep
+                    # single-writer on (user_id, project_id) for non-child tasks.
+                    role = row["role"] if "role" in row.keys() else None
+                    parent = row["parent_task_id"] if "parent_task_id" in row.keys() else None
+                    if not parent and not role:
+                        conflict = conn.execute(
+                            """SELECT 1 FROM tasks
+                               WHERE project_id=? AND user_id=? AND status='running'
+                               AND lease_expires_at>=? AND id!=?
+                               AND (parent_task_id IS NULL OR parent_task_id='')
+                               AND (write_lock_key IS NULL OR write_lock_key=''
+                                    OR write_lock_key=?)""",
+                            (
+                                row["project_id"],
+                                row["user_id"],
+                                now,
+                                row["id"],
+                                f"main:{row['user_id']}:{row['project_id']}",
+                            ),
+                        ).fetchone()
+                        if conflict:
+                            continue
+                deps = conn.execute(
+                    "SELECT depends_on_task_id FROM task_dependencies WHERE task_id=?",
+                    (row["id"],),
+                ).fetchall()
+                blocked = False
+                for dep in deps:
+                    dep_row = conn.execute(
+                        "SELECT status FROM tasks WHERE id=?",
+                        (dep["depends_on_task_id"],),
+                    ).fetchone()
+                    if not dep_row or dep_row["status"] != "succeeded":
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                attempt = int(row["attempt"] or 0) + 1
+                cursor = conn.execute(
+                    """UPDATE tasks SET status='running', claim_owner=?,
+                       lease_expires_at=?, heartbeat_at=?, attempt=?, started_at=?
+                       WHERE id=? AND (status='queued' OR (status='running' AND lease_expires_at<?))""",
+                    (worker_id, lease_expires, now, attempt, now, row["id"], now),
+                )
+                if cursor.rowcount == 0:
+                    continue
+                conn.execute(
+                    """INSERT INTO task_events(task_id,type,message,payload,created_at)
+                       VALUES(?,?,?,?,?)""",
+                    (
+                        row["id"],
+                        "claimed",
+                        "任务被 worker 认领",
+                        json.dumps({"worker_id": worker_id}, ensure_ascii=False),
+                        now,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM tasks WHERE id=?", (row["id"],)
+                ).fetchone()
+                return self._row_to_task(updated)
+        return None
+
+    def heartbeat_task(self, task_id: str, worker_id: str, lease_seconds: float = 300.0) -> bool:
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE tasks SET heartbeat_at=?, lease_expires_at=?
+                   WHERE id=? AND claim_owner=? AND status='running'""",
+                (now, now + lease_seconds, task_id, worker_id),
+            )
+        return cursor.rowcount > 0
+
+    def release_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        status: str,
+        **values: Any,
+    ) -> bool:
+        encoded = dict(redact_sensitive_value(values))
+        if "changed_files" in encoded:
+            encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
+        encoded["status"] = status
+        encoded["claim_owner"] = None
+        encoded["lease_expires_at"] = None
+        encoded["heartbeat_at"] = None
+        if status in {"succeeded", "failed", "canceled", "interrupted"}:
+            encoded["finished_at"] = time.time()
+        columns = ", ".join(f"{key}=?" for key in encoded)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE tasks SET {columns} WHERE id=? AND claim_owner=?",
+                (*encoded.values(), task_id, worker_id),
+            )
+        return cursor.rowcount > 0
+
+    def add_task_message(
+        self,
+        task_id: str,
+        message_key: str,
+        type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO task_messages
+                   (task_id, message_key, type, payload, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    task_id,
+                    message_key,
+                    type,
+                    json.dumps(payload or {}, ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+            if cursor.rowcount == 0:
+                existing = conn.execute(
+                    "SELECT * FROM task_messages WHERE task_id=? AND message_key=?",
+                    (task_id, message_key),
+                ).fetchone()
+                return self._row_to_message(existing) if existing else {}
+            row = conn.execute(
+                "SELECT * FROM task_messages WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+        return self._row_to_message(row)
+
+    def get_pending_messages(
+        self,
+        task_id: str,
+        types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM task_messages WHERE task_id=? AND consumed_at IS NULL"
+        params: list[Any] = [task_id]
+        if types:
+            query += f" AND type IN ({','.join('?' for _ in types)})"
+            params.extend(types)
+        query += " ORDER BY created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_message(row) for row in rows]
+
+    def consume_message(self, message_id: int, worker_id: str | None = None) -> bool:
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE task_messages SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+                (now, message_id),
+            )
+        return cursor.rowcount > 0
+
+    def pause_task(self, task_id: str, user_id: str) -> bool:
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE tasks SET status='paused', cancel_requested=0
+                   WHERE id=? AND user_id=? AND status IN ('queued','running')""",
+                (task_id, user_id),
+            )
+            if cursor.rowcount > 0:
+                conn.execute(
+                    """INSERT OR IGNORE INTO task_messages
+                       (task_id, message_key, type, payload, created_at)
+                       VALUES (?,?,?,?,?)""",
+                    (task_id, f"pause:{task_id}", "pause", "{}", now),
+                )
+        return cursor.rowcount > 0
+
+    def resume_task(self, task_id: str, user_id: str) -> bool:
+        now = time.time()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE tasks SET status='queued', claim_owner=NULL,
+                   lease_expires_at=NULL, heartbeat_at=NULL
+                   WHERE id=? AND user_id=? AND status='paused'""",
+                (task_id, user_id),
+            )
+            if cursor.rowcount > 0:
+                conn.execute(
+                    """INSERT OR IGNORE INTO task_messages
+                       (task_id, message_key, type, payload, created_at)
+                       VALUES (?,?,?,?,?)""",
+                    (task_id, f"resume:{task_id}", "resume", "{}", now),
+                )
+                conn.execute(
+                    """UPDATE task_messages SET consumed_at=?
+                       WHERE task_id=? AND type='pause' AND consumed_at IS NULL""",
+                    (now, task_id),
+                )
+        return cursor.rowcount > 0
+
+    def add_dependency(self, task_id: str, depends_on_task_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO task_dependencies
+                   (task_id, depends_on_task_id, created_at)
+                   VALUES (?,?,?)""",
+                (task_id, depends_on_task_id, time.time()),
+            )
+
+    def get_dependency_status(self, task_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT depends_on_task_id FROM task_dependencies WHERE task_id=?",
+                (task_id,),
+            ).fetchall()
+            if not rows:
+                return {"blocking": []}
+            blocking: list[str] = []
+            for row in rows:
+                dep_row = conn.execute(
+                    "SELECT id, status FROM tasks WHERE id=?",
+                    (row["depends_on_task_id"],),
+                ).fetchone()
+                if not dep_row or dep_row["status"] != "succeeded":
+                    blocking.append(dep_row["id"] if dep_row else row["depends_on_task_id"])
+        return {"blocking": blocking}
+
+    @staticmethod
+    def _row_to_message(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["payload"] = json.loads(item.get("payload") or "{}")
+        return item
 
     def get_task(self, task_id: str, user_id: str | None = None) -> dict[str, Any] | None:
         query = "SELECT * FROM tasks WHERE id=?"
@@ -898,6 +1300,10 @@ class TaskStore:
         task = dict(redact_sensitive_value(dict(row)))
         task["cancel_requested"] = bool(task["cancel_requested"])
         task["changed_files"] = json.loads(task["changed_files"] or "[]")
+        try:
+            task["context"] = json.loads(task.get("context_json") or "{}")
+        except json.JSONDecodeError:
+            task["context"] = {}
         return task
 
     @staticmethod

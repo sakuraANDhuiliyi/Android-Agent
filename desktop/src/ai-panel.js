@@ -1414,5 +1414,15 @@
     focusComposer,
     onActiveFileChanged,
     onWorkspaceChanged,
+    client,
+    getState: () => state,
+    dispatch: (action) => {
+      if (typeof action === "object" && action) {
+        Object.assign(state, action.patch || {});
+        if (action.patch && action.patch.conversationId !== undefined) {
+          selectConversation(action.patch.conversationId).catch(() => {});
+        }
+      }
+    },
   };
 })();

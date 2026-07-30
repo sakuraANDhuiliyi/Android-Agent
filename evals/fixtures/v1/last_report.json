@@ -1,0 +1,415 @@
+{
+  "fixture_version": "v1",
+  "passed": 16,
+  "failed": 0,
+  "results": [
+    {
+      "scenario_id": "01_create_page_build",
+      "title": "创建简单 Android 页面并构建",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": true,
+        "modified_paths": [
+          "app/src/main/java/com/example/app/SettingsActivity.kt"
+        ],
+        "build_result": "mocked",
+        "tool_calls": 2,
+        "chars_estimate": 47,
+        "tokens_estimate": 11,
+        "wall_time_ms": 21.319583000000016,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "02_fix_kotlin",
+      "title": "修复 Kotlin 编译错误",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": true,
+        "modified_paths": [
+          "app/src/main/java/com/example/app/MainActivity.kt"
+        ],
+        "build_result": "skipped",
+        "tool_calls": 1,
+        "chars_estimate": 67,
+        "tokens_estimate": 16,
+        "wall_time_ms": 3.1396250000000068,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "03_fix_xml",
+      "title": "修复 XML resource 错误",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": true,
+        "modified_paths": [
+          "app/src/main/res/layout/activity_main.xml"
+        ],
+        "build_result": "skipped",
+        "tool_calls": 1,
+        "chars_estimate": 62,
+        "tokens_estimate": 15,
+        "wall_time_ms": 2.122333000000004,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "04_multi_turn_tools",
+      "title": "多轮追问保留工具链",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 2,
+        "chars_estimate": 512,
+        "tokens_estimate": 128,
+        "wall_time_ms": 35.184208,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "message_count": 6
+      }
+    },
+    {
+      "scenario_id": "05_steer",
+      "title": "中途 steer",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 11.489209,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "06_tool_failure",
+      "title": "工具失败",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 1,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 0.9772080000000072,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": [
+          "不允许读取: does/not/exist.kt"
+        ]
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "07_approvals",
+      "title": "审批允许、拒绝、超时和取消",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 218.311417,
+        "approvals": 4,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "decisions": [
+          "approved",
+          "rejected",
+          "canceled",
+          "timeout"
+        ]
+      }
+    },
+    {
+      "scenario_id": "08_model_fallback",
+      "title": "Provider/Model fallback",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 0.8219580000000115,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "models": [
+          "primary",
+          "fallback-a",
+          "fallback-b"
+        ]
+      }
+    },
+    {
+      "scenario_id": "09_interrupt_stages",
+      "title": "服务在模型/工具/审批/checkpoint 阶段中断",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 2807,
+        "tokens_estimate": 701,
+        "wall_time_ms": 62.37341700000004,
+        "approvals": 0,
+        "recoveries": 4,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "stages": [
+          "model",
+          "tool",
+          "approval",
+          "checkpoint"
+        ]
+      }
+    },
+    {
+      "scenario_id": "10_git_dirty_restore",
+      "title": "Git dirty workspace 和恢复冲突",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": true,
+        "modified_paths": [
+          "app/src/main/java/com/example/app/MainActivity.kt"
+        ],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 110.37312500000002,
+        "approvals": 0,
+        "recoveries": 1,
+        "security_violations": 0,
+        "notes": [
+          "{\"status\": true, \"restore\": \"conflict\", \"conflicts\": true}"
+        ]
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "11_index_incremental",
+      "title": "代码索引增量更新",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": true,
+        "modified_paths": [
+          "app/src/main/java/com/example/app/New.kt"
+        ],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 500,
+        "tokens_estimate": 125,
+        "wall_time_ms": 17.983583000000024,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "updated": 1
+      }
+    },
+    {
+      "scenario_id": "12_mcp_crash",
+      "title": "MCP server 崩溃",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 1,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 25.815541000000053,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": [
+          "call returned; relying on unhealthy"
+        ]
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "13_subagent",
+      "title": "Subagent 成功、失败和取消",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 22.795624999999987,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "statuses": {
+          "completed": "completed",
+          "failed": "failed",
+          "canceled": "canceled"
+        }
+      }
+    },
+    {
+      "scenario_id": "14_long_history_checkpoint",
+      "title": "八轮以上历史和 checkpoint",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 10841,
+        "tokens_estimate": 2710,
+        "wall_time_ms": 68.61483300000005,
+        "approvals": 0,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "user_messages": 9
+      }
+    },
+    {
+      "scenario_id": "15_memory_approve_delete",
+      "title": "项目记忆批准与删除",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 0,
+        "tokens_estimate": 0,
+        "wall_time_ms": 11.128249999999952,
+        "approvals": 1,
+        "recoveries": 0,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {}
+    },
+    {
+      "scenario_id": "16_reconnect",
+      "title": "桌面和手机断线重连游标",
+      "fixture_version": "v1",
+      "passed": true,
+      "metrics": {
+        "goal_completed": true,
+        "files_modified": false,
+        "modified_paths": [],
+        "build_result": "skipped",
+        "tool_calls": 0,
+        "chars_estimate": 200,
+        "tokens_estimate": 50,
+        "wall_time_ms": 16.86300000000007,
+        "approvals": 0,
+        "recoveries": 1,
+        "security_violations": 0,
+        "notes": []
+      },
+      "error": null,
+      "details": {
+        "seqs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    }
+  ]
+}

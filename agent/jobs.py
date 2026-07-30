@@ -27,14 +27,19 @@ from agent.paths import latest_apk_path, user_builds_dir, workspace_path
 from agent.project import load_project_meta
 from agent.redaction import redact_sensitive_value
 from agent.tools import ToolResult, cancel_gradle
+from agent.worker import PauseRequested, TaskWorker
+from agent.workspace import WorkspaceRepository
+from agent.subagents import configure_subagent_store, run_subagent_job
 
 
 logger = logging.getLogger(__name__)
 
 
 _store = TaskStore()
-_project_locks: set[tuple[str, str]] = set()
+_worker: TaskWorker | None = None
+_worker_lock = threading.Lock()
 _lock = threading.Lock()
+_project_locks: set[tuple[str, str]] = set()
 
 
 def configure_task_store(
@@ -44,10 +49,40 @@ def configure_task_store(
     global _store
     if store is not None:
         _store = store
+    configure_subagent_store(_store)
     recovered = _store.recover_interrupted()
     if settings is not None:
         _schedule_recovery_jobs(recovered, settings)
     return recovered
+
+
+def start_worker(settings: Settings) -> TaskWorker:
+    global _worker
+    with _worker_lock:
+        if _worker is not None and _worker.store is not _store:
+            # Stop the old worker fully before replacing it, otherwise the old
+            # thread may continue to access a stale store or run_agent patch.
+            _worker.stop(wait=True, timeout=5.0)
+            _worker = None
+        if _worker is not None and _worker._thread is not None and _worker._thread.is_alive():
+            return _worker
+        _worker = TaskWorker(_store, _run_job, settings)
+        _worker.start()
+    return _worker
+
+
+def ensure_worker_started(settings: Settings | None = None) -> TaskWorker:
+    from agent.config import load_settings as _load
+
+    return start_worker(settings or _load())
+
+
+def stop_worker(wait: bool = False, timeout: float | None = None) -> None:
+    global _worker
+    with _worker_lock:
+        if _worker is not None:
+            _worker.stop(wait=wait, timeout=timeout)
+            _worker = None
 
 
 def get_job(job_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
@@ -94,20 +129,65 @@ def list_job_approvals(job_id: str, user_id: str) -> list[dict[str, Any]] | None
 
 def request_cancel(job_id: str, user_id: str) -> bool:
     job = _store.get_task(job_id, user_id)
-    changed = _store.request_cancel(job_id, user_id)
+    cancelled_ids = _store.request_cancel_cascade(job_id, user_id)
+    changed = bool(cancelled_ids)
     if changed:
-        _store.add_event(job_id, "cancel_requested", {"message": "已请求停止任务"})
-        reject_job_approvals(job_id, user_id, reason="canceled")
+        for tid in cancelled_ids:
+            _store.add_event(tid, "cancel_requested", {"message": "已请求停止任务", "cascaded_from": job_id})
+            _store.add_task_message(
+                tid,
+                message_key=f"cancel:{tid}:{time.time()}",
+                type="cancel",
+                payload={"source": "api", "cascaded_from": job_id},
+            )
+            reject_job_approvals(tid, user_id, reason="canceled")
         if job:
             cancel_gradle(job["user_id"], job["project_id"])
     return changed
 
 
+def add_job_message(
+    job_id: str,
+    user_id: str,
+    message_key: str,
+    type: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    job = get_job(job_id, user_id=user_id)
+    if not job:
+        return None
+    if job["status"] in {"succeeded", "failed", "canceled"}:
+        return None
+    return _store.add_task_message(job_id, message_key, type, payload)
+
+
+def list_job_messages(
+    job_id: str,
+    user_id: str,
+    include_consumed: bool = False,
+) -> list[dict[str, Any]] | None:
+    job = get_job(job_id, user_id=user_id)
+    if not job:
+        return None
+    messages = _store.get_pending_messages(job_id)
+    if include_consumed:
+        return messages
+    return [msg for msg in messages if msg.get("consumed_at") is None]
+
+
+def pause_job(job_id: str, user_id: str) -> bool:
+    return _store.pause_task(job_id, user_id)
+
+
+def resume_job(job_id: str, user_id: str) -> bool:
+    return _store.resume_task(job_id, user_id)
+
+
 # —— Conversations ——
 
-def list_conversations(user_id: str, project_id: str) -> list[dict[str, Any]]:
+def list_conversations(user_id: str, project_id: str, include_archived: bool = False) -> list[dict[str, Any]]:
     load_project_meta(user_id, project_id)
-    return _store.list_conversations(user_id, project_id)
+    return _store.list_conversations(user_id, project_id, include_archived=include_archived)
 
 
 def create_conversation(user_id: str, project_id: str, title: str = "新对话") -> dict[str, Any]:
@@ -155,6 +235,10 @@ def delete_conversation(conversation_id: str, user_id: str) -> bool:
     return _store.delete_conversation(conversation_id, user_id)
 
 
+def restore_conversation(conversation_id: str, user_id: str) -> dict[str, Any] | None:
+    return _store.restore_conversation(conversation_id, user_id)
+
+
 def clear_project_session(user_id: str, project_id: str) -> None:
     """Compatibility: create a fresh conversation instead of wiping project memory only."""
     load_project_meta(user_id, project_id)
@@ -174,6 +258,62 @@ def get_project_session(user_id: str, project_id: str) -> dict[str, Any]:
     }
 
 
+# —— Workspace / Git / Checkpoints ——
+
+
+def workspace_status(user_id: str, project_id: str) -> dict[str, Any]:
+    meta = load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    git = repo.git_status()
+    return {
+        "user_id": user_id,
+        "project_id": project_id,
+        "source_kind": meta.get("source_kind"),
+        "source_url": meta.get("source_url"),
+        "default_branch": meta.get("default_branch"),
+        "repo_root": meta.get("repo_root"),
+        "workspace": str(workspace_path(user_id, project_id)),
+        "is_git": repo.is_git(),
+        "git": git,
+    }
+
+
+def workspace_diff(
+    user_id: str,
+    project_id: str,
+    *,
+    turn_id: str | None = None,
+    checkpoint_id: str | None = None,
+) -> dict[str, Any]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    if turn_id:
+        return repo.turn_diff(turn_id)
+    if checkpoint_id:
+        return repo.checkpoint_diff(checkpoint_id)
+    return repo.git_diff()
+
+
+def list_checkpoints(user_id: str, project_id: str) -> list[dict[str, Any]]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    return repo.list_checkpoints()
+
+
+def restore_checkpoint(user_id: str, project_id: str, checkpoint_id: str) -> dict[str, Any]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    return repo.restore_checkpoint(checkpoint_id)
+
+
+def restore_file(
+    user_id: str, project_id: str, checkpoint_id: str, rel_path: str
+) -> dict[str, Any]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    return repo.restore_file(checkpoint_id, rel_path)
+
+
 def start_ask_job(
     user_id: str,
     project_id: str,
@@ -186,11 +326,6 @@ def start_ask_job(
 ) -> dict[str, Any]:
     load_project_meta(user_id, project_id)
     settings = settings or load_settings()
-    key = (user_id, project_id)
-    with _lock:
-        if key in _project_locks:
-            raise RuntimeError("该项目已有任务正在运行")
-        _project_locks.add(key)
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -216,6 +351,7 @@ def start_ask_job(
             )
 
         created_at = time.time()
+        write_lock_key = f"main:{user_id}:{project_id}"
         _store.create_task({
             "id": task_id,
             "user_id": user_id,
@@ -226,6 +362,8 @@ def start_ask_job(
             "provider": settings.provider,
             "model": settings.model,
             "created_at": created_at,
+            "write_lock_key": write_lock_key,
+            "context": {"write_lock_key": write_lock_key},
         })
         task_created = True
         turn = event_store.create_turn(
@@ -264,40 +402,6 @@ def start_ask_job(
                 user_id,
                 title=prompt.strip()[:40],
             )
-        if continue_session and not reset_session:
-            history_events = event_store.list_events(
-                conversation_id,
-                user_id=user_id,
-            )
-        else:
-            history_events = event_store.list_turn_events(
-                turn_id,
-                user_id=user_id,
-            )
-        prior_turn_count = len(
-            {
-                event["turn_id"]
-                for event in history_events
-                if event["turn_id"] != turn_id
-            }
-        )
-        threading.Thread(
-            target=_run_job,
-            args=(
-                task_id,
-                user_id,
-                project_id,
-                conversation_id,
-                turn_id,
-                prompt,
-                settings,
-                history_events,
-                prior_turn_count,
-                None,
-                False,
-            ),
-            daemon=True,
-        ).start()
     except Exception as exc:
         if task_created:
             _store.update_task(
@@ -316,14 +420,11 @@ def start_ask_job(
                     error_message=str(exc),
                 )
             except Exception as status_exc:
-                with _lock:
-                    _project_locks.discard(key)
                 raise RuntimeError(
                     f"任务初始化失败: {exc}; Turn 状态写入失败: {status_exc}"
                 ) from exc
-        with _lock:
-            _project_locks.discard(key)
         raise
+    start_worker(settings)
     return _store.get_task(task_id, user_id) or {}
 
 
@@ -333,7 +434,7 @@ def _schedule_recovery_jobs(
 ) -> None:
     for candidate in recovered:
         try:
-            start_recovery_job(candidate, settings)
+            enqueue_recovery_task(candidate, settings)
         except Exception:
             logger.exception(
                 "Failed to schedule recovery for interrupted task %s",
@@ -341,7 +442,7 @@ def _schedule_recovery_jobs(
             )
 
 
-def start_recovery_job(
+def enqueue_recovery_task(
     recovery: dict[str, Any],
     settings: Settings,
 ) -> dict[str, Any]:
@@ -349,11 +450,6 @@ def start_recovery_job(
     project_id = str(recovery["project_id"])
     conversation_id = str(recovery["conversation_id"])
     load_project_meta(user_id, project_id)
-    key = (user_id, project_id)
-    with _lock:
-        if key in _project_locks:
-            raise RuntimeError("该项目已有任务正在运行，暂不能自动恢复")
-        _project_locks.add(key)
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -369,6 +465,19 @@ def start_recovery_job(
             recovery.get("recovery_root_task_id")
             or recovery["original_task_id"]
         )
+        history_events = event_store.list_events(
+            conversation_id,
+            user_id=user_id,
+        )
+        replay_guard = _recovery_replay_guard(
+            history_events,
+            str(recovery["interrupted_turn_id"]),
+        )
+        context = {
+            "recovery_mode": True,
+            "interrupted_turn_id": str(recovery["interrupted_turn_id"]),
+            "recovery_replays": replay_guard,
+        }
         _store.create_task(
             {
                 "id": task_id,
@@ -382,6 +491,7 @@ def start_recovery_job(
                 "created_at": created_at,
                 "recovery_of_task_id": root_task_id,
                 "recovery_attempt": attempt,
+                "context_json": __import__("json").dumps(context, ensure_ascii=False),
             }
         )
         task_created = True
@@ -416,38 +526,6 @@ def start_recovery_job(
             context_visible=True,
             created_at=created_at,
         )
-        history_events = event_store.list_events(
-            conversation_id,
-            user_id=user_id,
-        )
-        replay_guard = _recovery_replay_guard(
-            history_events,
-            str(recovery["interrupted_turn_id"]),
-        )
-        prior_turn_count = len(
-            {
-                event["turn_id"]
-                for event in history_events
-                if event["turn_id"] != turn_id
-            }
-        )
-        threading.Thread(
-            target=_run_job,
-            args=(
-                task_id,
-                user_id,
-                project_id,
-                conversation_id,
-                turn_id,
-                "",
-                settings,
-                history_events,
-                prior_turn_count,
-                replay_guard,
-                True,
-            ),
-            daemon=True,
-        ).start()
     except Exception as exc:
         if task_created:
             _store.update_task(
@@ -464,10 +542,16 @@ def start_recovery_job(
                 finished_at=time.time(),
                 error_message=str(exc),
             )
-        with _lock:
-            _project_locks.discard(key)
         raise
     return _store.get_task(task_id, user_id) or {}
+
+
+def start_recovery_job(
+    recovery: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    """Compatibility entrypoint that enqueues a recovery task instead of starting a thread."""
+    return enqueue_recovery_task(recovery, settings)
 
 
 def _recovery_replay_guard(
@@ -501,6 +585,113 @@ def _recovery_replay_guard(
     ]
 
 
+def _run_subagent_job_wrapper(
+    task_id: str,
+    user_id: str,
+    project_id: str,
+    conversation_id: str,
+    turn_id: str,
+    prompt: str,
+    settings: Settings,
+) -> None:
+    """Run a child subagent with isolated conversation and optional worktree."""
+    event_store = ConversationEventStore(_store)
+    started_at = time.time()
+    _store.update_task(task_id, status="running", started_at=started_at)
+    event_store.update_turn_status(
+        turn_id, "running", user_id=user_id, started_at=started_at
+    )
+
+    def check_cancel() -> None:
+        if _store.is_cancel_requested(task_id):
+            raise CancellationRequested("用户已请求停止任务")
+
+    def on_event(event_type: str, data: Any) -> None:
+        payload = data if isinstance(data, dict) else {"message": str(data)}
+        _store.add_event(task_id, event_type, payload)
+
+    try:
+        check_cancel()
+        answer = run_subagent_job(
+            task_id,
+            user_id,
+            project_id,
+            conversation_id,
+            turn_id,
+            prompt,
+            settings,
+            on_event=on_event,
+            cancel_check=check_cancel,
+        )
+        finished = time.time()
+        event_store.append_event_idempotent(
+            conversation_id,
+            turn_id,
+            EventType.ASSISTANT_MESSAGE,
+            f"turn:{turn_id}:final_assistant",
+            {
+                "message_id": uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"android-agent:turn:{turn_id}:final"
+                ).hex,
+                "text_blocks": [{"type": "text", "text": answer}],
+                "is_final": True,
+            },
+            role="assistant",
+            context_visible=True,
+            task_id=task_id,
+        )
+        event_store.append_event_idempotent(
+            conversation_id,
+            turn_id,
+            EventType.TURN_COMPLETED,
+            f"turn:{turn_id}:completed",
+            {"status": "succeeded", "result": answer},
+            task_id=task_id,
+        )
+        event_store.update_turn_status(
+            turn_id, "succeeded", user_id=user_id, finished_at=finished
+        )
+        _store.update_task(
+            task_id,
+            status="succeeded",
+            finished_at=finished,
+            final_message=answer,
+        )
+        _store.add_event(task_id, "completed", {"message": "subagent 完成", "result": answer})
+    except CancellationRequested as exc:
+        finished = time.time()
+        event_store.update_turn_status(
+            turn_id,
+            "canceled",
+            user_id=user_id,
+            finished_at=finished,
+            error_message=str(exc),
+        )
+        _store.update_task(
+            task_id,
+            status="canceled",
+            finished_at=finished,
+            error_message=str(exc),
+        )
+        _store.add_event(task_id, "canceled", {"message": str(exc)})
+    except Exception as exc:
+        finished = time.time()
+        event_store.update_turn_status(
+            turn_id,
+            "failed",
+            user_id=user_id,
+            finished_at=finished,
+            error_message=str(exc),
+        )
+        _store.update_task(
+            task_id,
+            status="failed",
+            finished_at=finished,
+            error_message=str(exc),
+        )
+        _store.add_event(task_id, "failed", {"message": "subagent 失败", "error": str(exc)})
+
+
 def _run_job(
     task_id: str,
     user_id: str,
@@ -516,6 +707,20 @@ def _run_job(
 ) -> None:
     if not conversation_id:
         raise RuntimeError("任务缺少 conversation_id")
+
+    task_meta = _store.get_task(task_id, user_id) or {}
+    if task_meta.get("parent_task_id") or task_meta.get("role"):
+        _run_subagent_job_wrapper(
+            task_id,
+            user_id,
+            project_id,
+            conversation_id,
+            turn_id,
+            prompt,
+            settings,
+        )
+        return
+
     event_store = ConversationEventStore(_store)
     workspace = workspace_path(user_id, project_id)
     before = snapshot_workspace(workspace)
@@ -525,11 +730,60 @@ def _run_job(
     edit_state: dict[str, Any] = {"successful_edits": 0, "approval_decisions": []}
     changes_recorded = False
 
+    def create_checkpoint(kind: str, idempotency_key: str) -> dict[str, Any] | None:
+        try:
+            repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+            cp = repo.create_checkpoint(
+                kind,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                task_id=task_id,
+                idempotency_key=idempotency_key,
+            )
+            _store.add_event(
+                task_id,
+                "checkpoint",
+                {
+                    "checkpoint_id": cp["id"],
+                    "kind": kind,
+                    "file_count": cp["file_count"],
+                },
+            )
+            return cp
+        except Exception as exc:
+            logger.warning(
+                "Checkpoint creation failed for %s/%s: %s", user_id, project_id, exc
+            )
+            return None
+
     def check_cancel() -> None:
+        messages = _store.get_pending_messages(task_id, types=["cancel"])
+        for msg in messages:
+            _store.consume_message(msg["id"])
+            cancel_gradle(user_id, project_id)
+            reject_job_approvals(task_id, user_id, reason="canceled")
+            raise CancellationRequested("用户已请求停止任务")
         if _store.is_cancel_requested(task_id):
             cancel_gradle(user_id, project_id)
             reject_job_approvals(task_id, user_id, reason="canceled")
             raise CancellationRequested("用户已请求停止任务")
+
+    def check_pause() -> None:
+        messages = _store.get_pending_messages(task_id, types=["pause"])
+        for msg in messages:
+            _store.consume_message(msg["id"])
+            raise PauseRequested("任务已暂停")
+
+    def get_steers() -> list[str]:
+        messages = _store.get_pending_messages(task_id, types=["steer"])
+        texts: list[str] = []
+        for msg in messages:
+            payload = msg.get("payload") or {}
+            text = payload.get("text") or payload.get("content") or ""
+            if text:
+                texts.append(str(text))
+                _store.consume_message(msg["id"])
+        return texts
 
     def set_status(status: str) -> None:
         _store.update_task(task_id, status=status)
@@ -635,6 +889,14 @@ def _run_job(
             EventType.MODEL_SWITCH,
         }:
             append_canonical(event_type, payload)
+        elif event_type == EventType.SYSTEM_NOTE:
+            kind = payload.get("kind") or "note"
+            append_canonical(
+                event_type,
+                payload,
+                context_visible=False,
+                event_key=f"system_note:{turn_id}:{kind}:{payload.get('skill') or 'rules'}",
+            )
 
         if (
             event_type == EventType.TOOL_RESULT
@@ -762,6 +1024,8 @@ def _run_job(
 
     answer = ""
     try:
+        with _lock:
+            _project_locks.add((user_id, project_id))
         started_at = time.time()
         _store.update_task(task_id, status="running", started_at=started_at)
         event_store.update_turn_status(
@@ -803,7 +1067,11 @@ def _run_job(
             "plan",
             {"message": "理解需求 -> 定位/修改代码 -> 需要时再 assembleDebug"},
         )
+        before_checkpoint = create_checkpoint(
+            "before_turn", idempotency_key=f"before:{turn_id}"
+        )
         check_cancel()
+        check_pause()
         answer = run_agent(
             settings,
             workspace,
@@ -812,6 +1080,8 @@ def _run_job(
             prompt,
             on_event=on_event,
             cancel_check=check_cancel,
+            check_pause=check_pause,
+            get_steers=get_steers,
             task_id=task_id,
             set_status=set_status,
             conversation_events=history_events,
@@ -820,6 +1090,7 @@ def _run_job(
             recovery_mode=recovery_mode,
         )
         check_cancel()
+        check_pause()
 
         if settings.auto_build_after_edit and not build_state["attempted"]:
             message_id = uuid.uuid5(
@@ -852,7 +1123,6 @@ def _run_job(
                 },
             )
             auto_started = time.monotonic()
-            auto_error_type = None
             try:
                 result = dispatch_agent_tool(
                     workspace,
@@ -892,10 +1162,10 @@ def _run_job(
             except ApprovalEventPersistenceError:
                 raise
             except Exception as exc:
-                auto_error_type = exc.__class__.__name__
                 result = ToolResult(
                     False,
                     f"工具 run_gradle 执行异常: {exc}",
+                    error_type=exc.__class__.__name__,
                 )
             build_state["attempted"] = True
             build_state["succeeded"] = result.ok
@@ -921,8 +1191,8 @@ def _run_job(
                         (time.monotonic() - auto_started) * 1000
                     ),
                     "error_type": (
-                        auto_error_type
-                        if auto_error_type
+                        result.error_type
+                        if result.error_type
                         else None if result.ok else "ToolExecutionError"
                     ),
                     "interrupted": False,
@@ -964,6 +1234,54 @@ def _run_job(
             {"status": "succeeded", "result": answer},
             event_key=f"turn:{turn_id}:completed",
         )
+        try:
+            from agent.hooks import run_hooks
+
+            run_hooks(
+                "TurnCompleted",
+                user_id=user_id,
+                workspace=workspace,
+                on_event=on_event,
+            )
+        except Exception:
+            pass
+        try:
+            from agent.memory_extract import generate_candidates_for_turn
+            from agent.memory_store import get_memory_store
+            import agent.paths as paths_mod
+
+            turn_events = event_store.list_turn_events(turn_id, user_id=user_id)
+            mem_store = get_memory_store(paths_mod.DATA_DIR / "agent.db")
+            candidates = generate_candidates_for_turn(
+                user_id=user_id,
+                project_id=project_id,
+                conversation_id=conversation_id,
+                events=turn_events,
+                user_prompt=prompt,
+                final_answer=answer or "",
+                changed_files=changed,
+                store=mem_store,
+            )
+            if candidates:
+                _store.add_event(
+                    task_id,
+                    "memory_candidates",
+                    {
+                        "message": f"生成 {len(candidates)} 条记忆候选",
+                        "count": len(candidates),
+                        "ids": [c["id"] for c in candidates],
+                    },
+                )
+                on_event(
+                    "memory_candidates",
+                    {
+                        "message": f"生成 {len(candidates)} 条记忆候选（需批准）",
+                        "count": len(candidates),
+                        "ids": [c["id"] for c in candidates],
+                    },
+                )
+        except Exception as mem_exc:
+            logger.warning("Memory candidate generation failed: %s", mem_exc)
         event_store.update_turn_status(
             turn_id,
             "succeeded",
@@ -1008,6 +1326,28 @@ def _run_job(
                     f"取消任务时规范事件写入失败: {terminal_exc}"
                 )
             )
+    except PauseRequested as exc:
+        try:
+            record_changes()
+            paused_at = time.time()
+            event_store.update_turn_status(
+                turn_id,
+                "paused",
+                user_id=user_id,
+                finished_at=paused_at,
+                error_message=str(exc),
+            )
+            _store.update_task(
+                task_id,
+                status="paused",
+                finished_at=paused_at,
+                error_message=str(exc),
+            )
+            _store.add_event(task_id, "paused", {"message": str(exc)})
+        except Exception as terminal_exc:
+            mark_failed(
+                RuntimeError(f"暂停任务时规范事件写入失败: {terminal_exc}")
+            )
     except Exception as exc:
         try:
             record_changes()
@@ -1015,6 +1355,18 @@ def _run_job(
             exc = RuntimeError(f"{exc}; changes 写入失败: {changes_exc}")
         mark_failed(exc)
     finally:
+        try:
+            from agent.hooks import run_hooks
+
+            run_hooks(
+                "TaskStopped",
+                user_id=user_id,
+                workspace=workspace,
+                on_event=on_event,
+            )
+        except Exception:
+            pass
+        create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
         logs = sorted(
             (user_builds_dir(user_id) / project_id).glob("*.log"),
             key=lambda path: path.stat().st_mtime,

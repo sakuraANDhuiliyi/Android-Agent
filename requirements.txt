@@ -5,3 +5,6 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 httpx>=0.27.0
+# Official MCP SDK requires Python >= 3.10. On 3.9 the agent uses the built-in
+# stdio JSON-RPC client (initialize / tools.list / tools.call). Install when available:
+# mcp>=1.0; python_version >= "3.10"

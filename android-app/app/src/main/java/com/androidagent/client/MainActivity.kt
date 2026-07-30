@@ -532,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         prefs.selectedProjectId = project.id
         projectAdapter.submitList(projects, project.id)
         appendLog("已选择项目: ${project.name} (${project.id})")
-        loadRecentTasks(project)
+        ProjectDetailActivity.start(this, project)
     }
 
     private fun loadRecentTasks(project: ProjectInfo) {

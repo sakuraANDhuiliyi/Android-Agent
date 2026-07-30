@@ -151,7 +151,7 @@ flowchart LR
 ```text
 # 阶段八：统一 Tool Runtime、权限策略与可取消进程
 
-项目路径：`/Users/sakura/Android Agent`
+项目路径：`/Users/Mac/Android-Agent`
 
 请直接阅读代码并完成本阶段修改，不要只输出方案或伪代码。
 

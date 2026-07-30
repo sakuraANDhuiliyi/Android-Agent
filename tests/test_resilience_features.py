@@ -16,6 +16,7 @@ from agent.database import TaskStore
 from agent.loop import dispatch_agent_tool
 from agent.redaction import REDACTED, redact_sensitive_text
 from agent.tools import ToolResult
+from agent.worker import TaskWorker
 
 
 def recovery_settings() -> SimpleNamespace:
@@ -143,14 +144,6 @@ class AutomaticRecoveryTests(unittest.TestCase):
                 captured["replays"] = kwargs["recovery_replays"]
                 return "恢复完成"
 
-            class SynchronousThread:
-                def __init__(self, *, target, args, daemon):
-                    self.target = target
-                    self.args = args
-
-                def start(self):
-                    self.target(*self.args)
-
             locks: set = set()
             with (
                 patch.object(jobs_mod, "_store", store),
@@ -161,24 +154,27 @@ class AutomaticRecoveryTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", side_effect=fake_agent),
-                patch("agent.jobs.threading.Thread", SynchronousThread),
             ):
                 recovered = jobs_mod.configure_task_store(
                     store,
                     recovery_settings(),
                 )
+                self.assertEqual(len(recovered), 1)
+                original = store.get_task("interrupted-task", "user")
+                self.assertEqual(original["status"], "failed")
+                recovery_tasks = [
+                    task
+                    for task in store.list_tasks("user", "project")
+                    if task.get("recovery_of_task_id") == "interrupted-task"
+                ]
+                self.assertEqual(len(recovery_tasks), 1)
+                worker = TaskWorker(store, jobs_mod._run_job, recovery_settings())
+                worker.run_once()
 
-            self.assertEqual(len(recovered), 1)
-            original = store.get_task("interrupted-task", "user")
-            self.assertEqual(original["status"], "failed")
-            recovery_tasks = [
-                task
-                for task in store.list_tasks("user", "project")
-                if task.get("recovery_of_task_id") == "interrupted-task"
-            ]
-            self.assertEqual(len(recovery_tasks), 1)
-            self.assertEqual(recovery_tasks[0]["status"], "succeeded")
-            self.assertEqual(recovery_tasks[0]["recovery_attempt"], 1)
+            recovery_task = store.get_task(recovery_tasks[0]["id"], "user")
+            self.assertIsNotNone(recovery_task)
+            self.assertEqual(recovery_task["status"], "succeeded")
+            self.assertEqual(recovery_task["recovery_attempt"], 1)
             self.assertEqual(
                 captured["replays"],
                 [

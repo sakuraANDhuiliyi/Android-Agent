@@ -10,10 +10,11 @@
     <string name="refresh_projects">刷新项目</string>
     <string name="new_project">新建项目</string>
     <string name="prompt_hint">描述你想做的 App，例如：做一个计数器</string>
-    <string name="send">发送给 Agent</string>
+    <string name="send">发送</string>
     <string name="stop_task">停止</string>
     <string name="download_apk">下载 APK</string>
     <string name="install_apk">安装 APK</string>
+    <string name="share_apk">分享 APK</string>
     <string name="status_disconnected">未连接</string>
     <string name="status_connected">已连接</string>
     <string name="project_name">项目名称</string>
@@ -48,4 +49,32 @@
     <string name="read_failed">读取失败: %1$s</string>
     <string name="unsaved_changes_title">有未保存的修改</string>
     <string name="unsaved_changes_message">当前文件已修改，是否先保存？</string>
+
+    <string name="conversations">Conversation</string>
+    <string name="new_conversation">新对话</string>
+    <string name="no_conversations">暂无对话</string>
+    <string name="rename">重命名</string>
+    <string name="archive">归档</string>
+    <string name="restore">恢复</string>
+    <string name="conversation_title">对话标题</string>
+    <string name="open_project">打开项目</string>
+    <string name="view_diff">改动 / Diff</string>
+    <string name="build_log">构建日志</string>
+    <string name="apk_actions">APK</string>
+    <string name="approvals">待审批</string>
+    <string name="approve">批准</string>
+    <string name="reject">拒绝</string>
+    <string name="pause">暂停</string>
+    <string name="resume">继续</string>
+    <string name="steer">引导</string>
+    <string name="follow_up">追问</string>
+    <string name="restore_checkpoint">恢复 Checkpoint</string>
+    <string name="restore_confirm_title">确认恢复？</string>
+    <string name="restore_confirm_message">将恢复到 checkpoint，冲突文件不会被覆盖。是否继续？</string>
+    <string name="restore_conflicts">检测到冲突，未覆盖：\n%1$s</string>
+    <string name="resource_unavailable">资源不存在或无权访问</string>
+    <string name="apk_not_ready">暂无可用 APK</string>
+    <string name="apk_downloaded">APK 已下载</string>
+    <string name="install_permission_needed">需要允许安装未知应用</string>
+    <string name="large_diff_truncated">内容过长，已截断显示</string>
 </resources>

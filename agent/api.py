@@ -15,6 +15,7 @@ from agent.config import Settings, load_settings, models_catalog, resolve_job_se
 from agent.conversation_events import ConversationEventError
 from agent.database import TaskStore
 from agent.jobs import (
+    add_job_message,
     clear_project_session,
     configure_task_store,
     create_conversation,
@@ -23,14 +24,23 @@ from agent.jobs import (
     get_job,
     get_project_session,
     job_to_dict,
-    list_conversations,
+    list_checkpoints,
     list_conversation_events,
+    list_conversations,
     list_job_approvals,
+    list_job_messages,
     list_jobs,
+    pause_job,
     request_cancel,
+    restore_checkpoint,
+    restore_conversation,
+    restore_file,
     resolve_job_approval,
+    resume_job,
     start_ask_job,
     update_conversation,
+    workspace_diff,
+    workspace_status,
 )
 from agent.paths import (
     DEFAULT_USER_ID,
@@ -42,6 +52,23 @@ from agent.paths import (
 )
 from agent.project import delete_project, init_project, list_projects, load_project_meta
 from agent.redaction import redact_sensitive_text
+from agent.repo_index import get_repo_index
+from agent.rules import diagnose_rules, discover_rules, load_rules_for_turn
+from agent.skills import discover_skills_for_context, list_skills, load_skill
+from agent.mcp_manager import get_mcp_manager
+from agent.mcp_config import is_project_mcp_trusted
+from agent.memory_store import get_memory_store
+from agent.memory_retrieve import retrieve_memories_for_task
+from agent.terminal import (
+    create_terminal,
+    get_terminal,
+    list_terminals,
+    mark_interrupted_terminals,
+    resize_terminal,
+    terminate_terminal,
+    terminal_outputs,
+    write_terminal_input,
+)
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
 from agent.users import UserStore
 
@@ -82,6 +109,63 @@ class ConversationAskRequest(BaseModel):
 class WriteFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
     content: str = Field(default="")
+
+
+class RestoreCheckpointRequest(BaseModel):
+    path: Optional[str] = None
+
+
+class JobMessageRequest(BaseModel):
+    message_key: str = Field(..., min_length=1)
+    type: str = Field(..., pattern="^(steer|follow_up|cancel|pause|resume)$")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobMessageResponse(BaseModel):
+    id: int
+    task_id: str
+    message_key: str
+    type: str
+    payload: dict[str, Any]
+    created_at: float
+
+
+class CreateTerminalRequest(BaseModel):
+    cwd: Optional[str] = "."
+    argv: Optional[list[str]] = None
+    shell: Optional[str] = None
+    cols: int = 80
+    rows: int = 24
+    env: Optional[dict[str, str]] = None
+
+
+class TerminalInputRequest(BaseModel):
+    data: str
+
+
+class TerminalResizeRequest(BaseModel):
+    cols: int
+    rows: int
+
+
+class McpEnableRequest(BaseModel):
+    enabled: bool = True
+
+
+class MemoryEditRequest(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    tags: Optional[list[str]] = None
+    memory_type: Optional[str] = None
+
+
+class MemoryCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+    memory_type: str = Field(..., min_length=1)
+    scope: str = "project"
+    tags: list[str] = Field(default_factory=list)
+    status: str = "candidate"
 
 
 _PRIVATE_EVENT_FIELDS = frozenset(
@@ -169,6 +253,9 @@ def create_app(
     app.state.settings = settings
     app.state.user_store = user_store or UserStore()
     configure_task_store(task_store, settings)
+    # Mark pre-restart PTY sessions as interrupted; we cannot recover their
+    # underlying processes.
+    mark_interrupted_terminals()
 
     app.add_middleware(
         CORSMiddleware,
@@ -296,9 +383,13 @@ def create_app(
         return {"job": job_to_dict(job)}
 
     @app.get("/api/projects/{project_id}/conversations")
-    def get_conversations(project_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+    def get_conversations(
+        project_id: str,
+        archived: bool = False,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
         try:
-            items = list_conversations(user_id, project_id)
+            items = list_conversations(user_id, project_id, include_archived=archived)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         return {"user_id": user_id, "project_id": project_id, "conversations": items}
@@ -381,6 +472,16 @@ def create_app(
         if not delete_conversation(conversation_id, user_id):
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
 
+    @app.post("/api/conversations/{conversation_id}/restore")
+    def restore_conversation_endpoint(
+        conversation_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        conv = restore_conversation(conversation_id, user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        return conv
+
     @app.post("/api/conversations/{conversation_id}/ask")
     def ask_conversation(
         conversation_id: str,
@@ -461,6 +562,65 @@ def create_app(
         if job["status"] in {"succeeded", "failed", "canceled"}:
             return {"job": job_to_dict(job)}
         request_cancel(job_id, user_id)
+        return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
+
+    @app.post("/api/jobs/{job_id}/messages", status_code=201)
+    def post_job_message(
+        job_id: str,
+        body: JobMessageRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        if job["status"] in {"succeeded", "failed", "canceled"}:
+            raise HTTPException(status_code=409, detail="任务已结束")
+        msg = add_job_message(
+            job_id,
+            user_id,
+            message_key=body.message_key,
+            type=body.type,
+            payload=body.payload,
+        )
+        if not msg:
+            raise HTTPException(status_code=409, detail="无法添加消息")
+        return {
+            "job_id": job_id,
+            "message": JobMessageResponse(**msg).model_dump(),
+        }
+
+    @app.get("/api/jobs/{job_id}/messages")
+    def get_job_messages(
+        job_id: str,
+        include_consumed: bool = False,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        messages = list_job_messages(job_id, user_id, include_consumed=include_consumed)
+        if messages is None:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        return {
+            "job_id": job_id,
+            "messages": [
+                JobMessageResponse(**msg).model_dump() for msg in messages
+            ],
+        }
+
+    @app.post("/api/jobs/{job_id}/pause", status_code=202)
+    def pause_job_endpoint(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        if not pause_job(job_id, user_id):
+            raise HTTPException(status_code=409, detail="任务无法暂停")
+        return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
+
+    @app.post("/api/jobs/{job_id}/resume", status_code=202)
+    def resume_job_endpoint(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        if not resume_job(job_id, user_id):
+            raise HTTPException(status_code=409, detail="任务无法恢复")
         return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
 
     @app.get("/api/jobs/{job_id}/approvals")
@@ -635,11 +795,740 @@ def create_app(
             "message": result.output,
         }
 
+    @app.get("/api/projects/{project_id}/workspace/status")
+    def get_workspace_status(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return workspace_status(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.get("/api/projects/{project_id}/diff")
+    def get_workspace_diff(
+        project_id: str,
+        turn_id: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return workspace_diff(
+                user_id,
+                project_id,
+                turn_id=turn_id,
+                checkpoint_id=checkpoint_id,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.get("/api/projects/{project_id}/checkpoints")
+    def get_checkpoints(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            checkpoints = list_checkpoints(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "checkpoints": checkpoints,
+        }
+
+    @app.post("/api/projects/{project_id}/checkpoints/{checkpoint_id}/restore")
+    def post_restore_checkpoint(
+        project_id: str,
+        checkpoint_id: str,
+        body: RestoreCheckpointRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            if body.path:
+                result = restore_file(
+                    user_id, project_id, checkpoint_id, body.path
+                )
+            else:
+                result = restore_checkpoint(user_id, project_id, checkpoint_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if not result.get("ok"):
+            raise HTTPException(status_code=409, detail=result)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "checkpoint_id": checkpoint_id,
+            **result,
+        }
+
+    @app.get("/api/projects/{project_id}/index/status")
+    def get_index_status(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        index = get_repo_index(user_id, project_id)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            **index.status(),
+        }
+
+    @app.post("/api/projects/{project_id}/index/rebuild")
+    def post_index_rebuild(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        index = get_repo_index(user_id, project_id)
+        result = index.rebuild()
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            **result,
+        }
+
+    @app.get("/api/projects/{project_id}/search")
+    def get_project_search(
+        project_id: str,
+        q: str = Query(..., min_length=1),
+        limit: int = Query(default=20, ge=1, le=100),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        index = get_repo_index(user_id, project_id)
+        if index.status()["status"] != "ready":
+            index.rebuild()
+        hits = index.search(q, limit=limit)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "query": q,
+            "hits": hits,
+        }
+
+    @app.get("/api/projects/{project_id}/symbols")
+    def get_project_symbols(
+        project_id: str,
+        name: Optional[str] = None,
+        symbol_type: Optional[str] = None,
+        rel_path: Optional[str] = None,
+        limit: int = Query(default=50, ge=1, le=200),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        index = get_repo_index(user_id, project_id)
+        if index.status()["status"] != "ready":
+            index.rebuild()
+        symbols = index.find_symbol(
+            name=name,
+            symbol_type=symbol_type,
+            rel_path=rel_path,
+            limit=limit,
+        )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "symbols": symbols,
+        }
+
+    @app.get("/api/projects/{project_id}/rules")
+    def get_project_rules(
+        project_id: str,
+        focus: Optional[str] = Query(default=None),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        focus_paths = [p.strip() for p in (focus or "").split(",") if p.strip()]
+        candidates = discover_rules(workspace, user_id, focus_paths=focus_paths)
+        bundle = load_rules_for_turn(workspace, user_id, focus_paths=focus_paths)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "focus_paths": focus_paths,
+            "candidates": [c.to_dict() for c in candidates],
+            "loaded": [item.to_dict() for item in bundle.loaded],
+            "skipped": list(bundle.skipped),
+            "total_chars": bundle.total_chars,
+            "budget": bundle.budget,
+            "audit_text": bundle.audit_text,
+        }
+
+    @app.get("/api/projects/{project_id}/rules/diagnose")
+    def get_project_rules_diagnose(
+        project_id: str,
+        focus: Optional[str] = Query(default=None),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        focus_paths = [p.strip() for p in (focus or "").split(",") if p.strip()]
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "focus_paths": focus_paths,
+            **diagnose_rules(workspace, user_id, focus_paths=focus_paths),
+        }
+
+    @app.get("/api/projects/{project_id}/skills")
+    def get_project_skills(
+        project_id: str,
+        q: Optional[str] = Query(default=None),
+        focus: Optional[str] = Query(default=None),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        focus_paths = [p.strip() for p in (focus or "").split(",") if p.strip()]
+        if q or focus_paths:
+            skills = discover_skills_for_context(
+                workspace,
+                user_id,
+                focus_paths=focus_paths,
+                query=q,
+            )
+        else:
+            skills = list_skills(workspace, user_id)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "query": q,
+            "focus_paths": focus_paths,
+            "skills": [s.to_dict() for s in skills],
+            "note": "Metadata only; full bodies require load_skill / skills/{name}.",
+        }
+
+    @app.get("/api/projects/{project_id}/skills/{skill_name}")
+    def get_project_skill(
+        project_id: str,
+        skill_name: str,
+        resource: Optional[str] = Query(default=None),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        try:
+            content = load_skill(
+                workspace,
+                user_id,
+                skill_name,
+                resource_path=resource,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "executed": False,
+            "skill": content.to_dict(),
+        }
+
+    def _memory_store():
+        from agent.paths import DATA_DIR
+
+        return get_memory_store(DATA_DIR / "agent.db")
+
+    @app.get("/api/projects/{project_id}/memories")
+    def list_project_memories(
+        project_id: str,
+        status: Optional[str] = Query(default="active"),
+        scope: Optional[str] = None,
+        memory_type: Optional[str] = None,
+        limit: int = Query(default=50, ge=1, le=200),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        store = _memory_store()
+        items = store.list_memories(
+            user_id,
+            project_id=project_id,
+            status=status,
+            scope=scope,
+            memory_type=memory_type,
+            limit=limit,
+        )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "memories": items,
+        }
+
+    @app.get("/api/projects/{project_id}/memories/candidates")
+    def list_memory_candidates(
+        project_id: str,
+        limit: int = Query(default=50, ge=1, le=200),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        items = _memory_store().list_candidates(user_id, project_id, limit=limit)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "candidates": items,
+        }
+
+    @app.get("/api/projects/{project_id}/memories/search")
+    def search_project_memories(
+        project_id: str,
+        q: str = Query(..., min_length=1),
+        limit: int = Query(default=20, ge=1, le=100),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        hits = _memory_store().search(
+            user_id, q, project_id=project_id, status="active", limit=limit
+        )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "query": q,
+            "hits": hits,
+        }
+
+    @app.get("/api/projects/{project_id}/memories/usage")
+    def list_memory_usage(
+        project_id: str,
+        memory_id: Optional[str] = None,
+        limit: int = Query(default=50, ge=1, le=200),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        rows = _memory_store().list_usage(
+            user_id, memory_id=memory_id, project_id=project_id, limit=limit
+        )
+        return {"user_id": user_id, "project_id": project_id, "usage": rows}
+
+    @app.post("/api/projects/{project_id}/memories", status_code=201)
+    def create_project_memory(
+        project_id: str,
+        body: MemoryCreateRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        try:
+            item = _memory_store().create_memory(
+                user_id=user_id,
+                project_id=project_id,
+                scope=body.scope,
+                memory_type=body.memory_type,
+                title=body.title,
+                content=body.content,
+                tags=body.tags,
+                status=body.status if body.status in {"candidate", "active"} else "candidate",
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"user_id": user_id, "project_id": project_id, "memory": item}
+
+    @app.post("/api/memories/{memory_id}/approve")
+    def approve_memory(
+        memory_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        item = _memory_store().approve(memory_id, user_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="记忆不存在")
+        return {"memory": item}
+
+    @app.post("/api/memories/{memory_id}/reject")
+    def reject_memory(
+        memory_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        item = _memory_store().reject(memory_id, user_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="记忆不存在")
+        return {"memory": item}
+
+    @app.post("/api/memories/{memory_id}/archive")
+    def archive_memory(
+        memory_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        item = _memory_store().archive(memory_id, user_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="记忆不存在")
+        return {"memory": item}
+
+    @app.patch("/api/memories/{memory_id}")
+    def edit_memory(
+        memory_id: str,
+        body: MemoryEditRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            item = _memory_store().update_memory(
+                memory_id,
+                user_id,
+                title=body.title,
+                content=body.content,
+                tags=body.tags,
+                memory_type=body.memory_type,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not item:
+            raise HTTPException(status_code=404, detail="记忆不存在")
+        return {"memory": item}
+
+    @app.delete("/api/memories/{memory_id}", status_code=204)
+    def delete_memory(
+        memory_id: str,
+        user_id: str = Depends(current_user),
+    ) -> None:
+        if not _memory_store().delete_memory(memory_id, user_id):
+            raise HTTPException(status_code=404, detail="记忆不存在")
+
+    @app.post("/api/projects/{project_id}/memories/retrieve")
+    def retrieve_memories(
+        project_id: str,
+        q: str = Query(..., min_length=1),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        plan = retrieve_memories_for_task(
+            user_id=user_id,
+            project_id=project_id,
+            prompt=q,
+            store=_memory_store(),
+        )
+        return {"user_id": user_id, "project_id": project_id, **plan}
+
+    @app.get("/api/projects/{project_id}/mcp/servers")
+    def get_mcp_servers(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        servers = mgr.list_servers()
+        # Never return secrets.
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "project_trusted": is_project_mcp_trusted(user_id, project_id, workspace),
+            "servers": servers,
+        }
+
+    @app.get("/api/projects/{project_id}/mcp/tools")
+    def get_mcp_tools(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        tools = []
+        for server in mgr.list_servers():
+            for tool in server.get("tools") or []:
+                tools.append(
+                    {
+                        "server": server["name"],
+                        "tool": tool.get("name"),
+                        "namespaced": f"mcp__{server['name']}__{tool.get('name')}",
+                        "description": tool.get("description"),
+                        "input_schema": tool.get("input_schema"),
+                        "status": server.get("status"),
+                    }
+                )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "tools": tools,
+        }
+
+    @app.post("/api/projects/{project_id}/mcp/trust")
+    def post_mcp_trust(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        result = mgr.trust_project()
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            **result,
+        }
+
+    @app.post("/api/projects/{project_id}/mcp/servers/{server_name}/enable")
+    def post_mcp_enable(
+        project_id: str,
+        server_name: str,
+        body: McpEnableRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        try:
+            server = mgr.set_enabled(server_name, body.enabled)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if body.enabled and server.get("status") == "stopped":
+            try:
+                server = mgr.start_server(server_name)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "server": server,
+        }
+
+    @app.post("/api/projects/{project_id}/mcp/servers/{server_name}/reconnect")
+    def post_mcp_reconnect(
+        project_id: str,
+        server_name: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        try:
+            server = mgr.reconnect(server_name)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "server": server,
+        }
+
+    @app.post("/api/projects/{project_id}/mcp/servers/{server_name}/refresh")
+    def post_mcp_refresh(
+        project_id: str,
+        server_name: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        refreshed = mgr.refresh_tools(server_name)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "servers": refreshed,
+        }
+
+    @app.post("/api/projects/{project_id}/terminals", status_code=201)
+    def create_project_terminal(
+        project_id: str,
+        body: CreateTerminalRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        try:
+            return create_terminal(
+                user_id,
+                project_id,
+                cwd=body.cwd or ".",
+                argv=body.argv,
+                shell=body.shell,
+                cols=body.cols,
+                rows=body.rows,
+                env=body.env,
+            )
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=429, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/projects/{project_id}/terminals")
+    def get_project_terminals(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "terminals": list_terminals(user_id, project_id),
+        }
+
+    @app.get("/api/terminals/{terminal_id}")
+    def get_terminal_info(
+        terminal_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        info = get_terminal(terminal_id, user_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="终端不存在")
+        return info
+
+    @app.post("/api/terminals/{terminal_id}/input")
+    def post_terminal_input(
+        terminal_id: str,
+        body: TerminalInputRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = write_terminal_input(terminal_id, user_id, body.data)
+        if result is None:
+            raise HTTPException(status_code=404, detail="终端不存在")
+        if not result["ok"]:
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+
+    @app.post("/api/terminals/{terminal_id}/resize")
+    def post_terminal_resize(
+        terminal_id: str,
+        body: TerminalResizeRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = resize_terminal(terminal_id, user_id, body.cols, body.rows)
+        if result is None:
+            raise HTTPException(status_code=404, detail="终端不存在")
+        if not result["ok"]:
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+
+    @app.delete("/api/terminals/{terminal_id}")
+    def delete_terminal(
+        terminal_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = terminate_terminal(terminal_id, user_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="终端不存在")
+        return result
+
+    @app.websocket("/api/ws/terminals/{terminal_id}")
+    async def ws_terminal(
+        terminal_id: str,
+        websocket: WebSocket,
+        token: Optional[str] = Query(default=None),
+        after_seq: Optional[int] = Query(default=None),
+    ) -> None:
+        auth_header = websocket.headers.get("authorization")
+        if not auth_header and token:
+            auth_header = f"Bearer {token}"
+        try:
+            user_id = authenticated_user(auth_header)
+        except HTTPException:
+            await websocket.close(code=4401)
+            return
+
+        info = get_terminal(terminal_id, user_id)
+        if not info:
+            await websocket.close(code=4404)
+            return
+
+        await websocket.accept()
+        cursor = after_seq or 0
+        try:
+            while True:
+                info = get_terminal(terminal_id, user_id)
+                if not info:
+                    break
+                for chunk in terminal_outputs(terminal_id, after_seq=cursor, limit=100):
+                    seq = chunk["seq"]
+                    if seq > cursor:
+                        await websocket.send_json(
+                            {
+                                "seq": seq,
+                                "data": chunk["data"],
+                                "is_stderr": bool(chunk.get("is_stderr")),
+                                "ts": chunk.get("created_at"),
+                            }
+                        )
+                        cursor = seq
+                if info["status"] in {"exited", "failed", "terminated", "interrupted"}:
+                    await websocket.send_json(
+                        {
+                            "type": "done",
+                            "status": info["status"],
+                            "exit_code": info.get("exit_code"),
+                        }
+                    )
+                    break
+                await asyncio.sleep(0.05)
+        except WebSocketDisconnect:
+            return
+
     @app.websocket("/api/ws/jobs/{job_id}")
     async def ws_job(
         job_id: str,
         websocket: WebSocket,
         token: Optional[str] = Query(default=None),
+        after_event_id: Optional[int] = Query(default=None),
     ) -> None:
         auth_header = websocket.headers.get("authorization")
         if not auth_header and token:
@@ -656,18 +1545,24 @@ def create_app(
             return
 
         await websocket.accept()
-        sent = 0
+        cursor_id = after_event_id
+        done_sent = False
         try:
             while True:
                 job = get_job(job_id, user_id=user_id)
                 if not job:
                     break
 
-                while sent < len(job.get("events", [])):
-                    await websocket.send_json(job["events"][sent])
-                    sent += 1
+                for event in job.get("events", []):
+                    event_id = event.get("id")
+                    if cursor_id is None or (
+                        isinstance(event_id, int) and event_id > cursor_id
+                    ):
+                        await websocket.send_json(event)
+                        if isinstance(event_id, int):
+                            cursor_id = event_id
 
-                if job["status"] in {"succeeded", "failed", "canceled"}:
+                if not done_sent and job["status"] in {"succeeded", "failed", "canceled"}:
                     await websocket.send_json(
                         {
                             "type": "done",
@@ -677,6 +1572,7 @@ def create_app(
                             "error": job.get("error_message"),
                         }
                     )
+                    done_sent = True
                     break
 
                 await asyncio.sleep(0.05)

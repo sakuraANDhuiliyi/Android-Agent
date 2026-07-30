@@ -135,20 +135,184 @@
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/approvals`);
     }
 
+    renameConversation(id, title) {
+      return this.request(`/api/conversations/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: { title },
+      });
+    }
+
+    archiveConversation(id) {
+      return this.request(`/api/conversations/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    }
+
+    restoreConversation(id) {
+      return this.request(`/api/conversations/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+      });
+    }
+
+    listArchivedConversations(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/conversations?archived=1`);
+    }
+
+    sendJobMessage(jobId, type, payload = {}) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages`, {
+        method: "POST",
+        body: { type, payload },
+      });
+    }
+
+    pauseJob(jobId) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/pause`, { method: "POST" });
+    }
+
+    resumeJob(jobId) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
+    }
+
+    steerJob(jobId, text) {
+      return this.sendJobMessage(jobId, "steer", { text });
+    }
+
+    followUpJob(jobId, text) {
+      return this.sendJobMessage(jobId, "follow_up", { text });
+    }
+
+    search(projectId, query) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/search?q=${encodeURIComponent(query)}`);
+    }
+
+    repoMap(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/symbols`);
+    }
+
+    indexStatus(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/index/status`);
+    }
+
+    rebuildIndex(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/index/rebuild`, { method: "POST" });
+    }
+
+    checkpoints(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints`);
+    }
+
+    restoreCheckpoint(projectId, checkpointId, scope = "turn") {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints/${encodeURIComponent(checkpointId)}/restore`, {
+        method: "POST",
+        body: { scope },
+      });
+    }
+
+    turnDiff(projectId, turnId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/turns/${encodeURIComponent(turnId)}/diff`);
+    }
+
+    // —— Terminals ——
+    listTerminals(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/terminals`);
+    }
+
+    createTerminal(projectId, body) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/terminals`, {
+        method: "POST",
+        body,
+      });
+    }
+
+    getTerminal(terminalId) {
+      return this.request(`/api/terminals/${encodeURIComponent(terminalId)}`);
+    }
+
+    terminalInput(terminalId, data) {
+      return this.request(`/api/terminals/${encodeURIComponent(terminalId)}/input`, {
+        method: "POST",
+        body: { data },
+      });
+    }
+
+    terminalResize(terminalId, cols, rows) {
+      return this.request(`/api/terminals/${encodeURIComponent(terminalId)}/resize`, {
+        method: "POST",
+        body: { cols, rows },
+      });
+    }
+
+    deleteTerminal(terminalId) {
+      return this.request(`/api/terminals/${encodeURIComponent(terminalId)}`, { method: "DELETE" });
+    }
+
+    watchTerminal(terminalId, onEvent, { afterSeq = 0 } = {}) {
+      const url = new URL(`${this.baseUrl.replace(/^http/, "ws")}/api/ws/terminals/${encodeURIComponent(terminalId)}`);
+      if (this.token) url.searchParams.set("token", this.token);
+      if (afterSeq) url.searchParams.set("after_seq", String(afterSeq));
+      let ws = null;
+      let closed = false;
+      let cursor = afterSeq;
+      let reconnectTimer = null;
+
+      const connect = () => {
+        if (closed) return;
+        try {
+          const u = new URL(url.toString());
+          u.searchParams.set("after_seq", String(cursor));
+          ws = new WebSocket(u.toString());
+        } catch (_) {
+          return;
+        }
+        ws.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.type === "done") {
+              onEvent({ kind: "done", status: data.status, exit_code: data.exit_code });
+              return;
+            }
+            if (data.seq) cursor = data.seq;
+            onEvent({ kind: "output", ...data });
+          } catch (_) {
+            /* ignore */
+          }
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => {
+          if (closed) return;
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, 1500);
+        };
+      };
+      connect();
+      return {
+        close() {
+          closed = true;
+          clearTimeout(reconnectTimer);
+          try {
+            ws && ws.close();
+          } catch (_) {}
+        },
+      };
+    }
+
     /**
-     * Stream job events over WebSocket; falls back to caller polling on failure.
+     * Stream job events over WebSocket with cursor-based reconnect.
+     * Falls back to polling on WebSocket failure.
      * @param {string} jobId
      * @param {(event: object) => void} onEvent
+     * @param {{ afterEventId?: number }} options
      * @returns {{ close: () => void }}
      */
-    watchJob(jobId, onEvent) {
+    watchJob(jobId, onEvent, options = {}) {
       const url = new URL(`${this.baseUrl.replace(/^http/, "ws")}/api/ws/jobs/${encodeURIComponent(jobId)}`);
       if (this.token) url.searchParams.set("token", this.token);
-
+      let afterEventId = options.afterEventId || 0;
       let ws = null;
       let closed = false;
       let finished = false;
       let pollTimer = null;
+      let reconnectTimer = null;
 
       const stopPoll = () => {
         if (pollTimer) {
@@ -161,6 +325,7 @@
         if (finished) return;
         finished = true;
         stopPoll();
+        clearTimeout(reconnectTimer);
         onEvent(payload);
         try {
           ws && ws.close();
@@ -179,14 +344,17 @@
             const job = data.job;
             const events = job.events || [];
             while (lastCount < events.length) {
-              onEvent({ kind: "event", event: events[lastCount], job });
+              const ev = events[lastCount];
+              onEvent({ kind: "event", event: ev, job });
+              if (ev.id) afterEventId = Math.max(afterEventId, ev.id);
               lastCount += 1;
             }
             onEvent({ kind: "job", job });
             if (
               job.status !== "queued" &&
               job.status !== "running" &&
-              job.status !== "awaiting_approval"
+              job.status !== "awaiting_approval" &&
+              job.status !== "paused"
             ) {
               markDone({
                 kind: "done",
@@ -202,47 +370,49 @@
         }, 200);
       };
 
-      try {
-        ws = new WebSocket(url.toString());
-      } catch (_) {
-        startPoll();
-        return {
-          close() {
-            closed = true;
-            finished = true;
-            stopPoll();
-          },
-        };
-      }
-
-      ws.onmessage = (ev) => {
+      const connect = () => {
+        if (closed || finished) return;
         try {
-          const data = JSON.parse(ev.data);
-          if (data.type === "done") {
-            markDone({
-              kind: "done",
-              status: data.status,
-              result: data.result,
-              error: data.error,
-              job: null,
-            });
-            return;
-          }
-          onEvent({ kind: "event", event: data, job: null });
+          const u = new URL(url.toString());
+          if (afterEventId) u.searchParams.set("after_event_id", String(afterEventId));
+          ws = new WebSocket(u.toString());
         } catch (_) {
-          /* ignore malformed */
+          startPoll();
+          return;
         }
+
+        ws.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.type === "done") {
+              markDone({
+                kind: "done",
+                status: data.status,
+                result: data.result,
+                error: data.error,
+                job: null,
+              });
+              return;
+            }
+            if (data.id) afterEventId = Math.max(afterEventId, data.id);
+            onEvent({ kind: "event", event: data, job: null });
+          } catch (_) {
+            /* ignore malformed */
+          }
+        };
+
+        ws.onerror = () => {
+          /* poll covers gaps */
+        };
+
+        ws.onclose = () => {
+          if (closed || finished) return;
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, 1500);
+        };
       };
 
-      ws.onerror = () => {
-        /* poll below covers gaps */
-      };
-
-      ws.onclose = () => {
-        /* keep polling until finished */
-      };
-
-      // Always poll in parallel so approval / late events are never missed
+      connect();
       startPoll();
 
       return {
@@ -250,6 +420,7 @@
           closed = true;
           finished = true;
           stopPoll();
+          clearTimeout(reconnectTimer);
           try {
             ws && ws.close();
           } catch (_) {

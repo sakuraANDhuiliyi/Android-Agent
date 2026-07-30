@@ -11,7 +11,13 @@
     tabs: document.getElementById("tabs"),
     breadcrumbs: document.getElementById("breadcrumbs"),
     monacoHost: document.getElementById("monacoHost"),
-    editorSplit: document.getElementById("editorSplit"),
+    editorHosts: document.getElementById("editorHosts"),
+    monacoDiffHost: document.getElementById("monacoDiffHost"),
+    diffMonaco: document.getElementById("diffMonaco"),
+    diffTitle: document.getElementById("diffTitle"),
+    btnCloseDiff: document.getElementById("btnCloseDiff"),
+    btnAcceptDiff: document.getElementById("btnAcceptDiff"),
+    btnRejectDiff: document.getElementById("btnRejectDiff"),
     previewPane: document.getElementById("previewPane"),
     previewScreen: document.getElementById("previewScreen"),
     previewMeta: document.getElementById("previewMeta"),
@@ -297,7 +303,7 @@
     state.previewOpen = Boolean(open);
     els.previewPane.hidden = !state.previewOpen;
     els.sashPreview.hidden = !state.previewOpen;
-    els.editorSplit?.classList.toggle("preview-open", state.previewOpen);
+    els.editorHosts?.classList.toggle("preview-open", state.previewOpen);
     if (state.previewOpen && !skipRefresh) schedulePreviewRefresh({ immediate: true });
     if (!silent) renderBreadcrumbs();
   }
@@ -403,6 +409,7 @@
     const tab = activeTab();
     renderTabs();
     syncEditorFromTab(tab);
+    window.dispatchEvent(new CustomEvent("editor-tab-changed", { detail: { tab } }));
     updateEmpty();
     window.AiPanel?.onActiveFileChanged(tab);
   }
@@ -436,15 +443,25 @@
     return tab;
   }
 
-  async function openPath(filePath, { reveal = true } = {}) {
+  async function openPath(filePath, { reveal = true } = {}, line = 0) {
     const existing = state.tabs.find((t) => t.path === filePath);
     if (existing) {
       activateTab(existing.id);
+      if (line && editor) {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+      }
       return existing;
     }
     const data = await api.readFile(filePath);
     const title = await api.basename(filePath);
     const tab = createTab({ path: filePath, content: data.content, title });
+    if (line && editor) {
+      setTimeout(() => {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+      }, 50);
+    }
     if (reveal) highlightTreePath(filePath);
     return tab;
   }
@@ -962,10 +979,69 @@
       bindUi();
       updateEmpty();
 
+      let diffEditor = null;
+      let diffOriginal = "";
+      let diffModified = "";
+      let diffPath = "";
+
+      function openDiff({ original, modified, path, language = "plaintext" }) {
+        els.monacoDiffHost.hidden = false;
+        els.diffTitle.textContent = path ? `Diff: ${basenameSync(path)}` : "Diff";
+        diffOriginal = original || "";
+        diffModified = modified || "";
+        diffPath = path || "";
+        if (diffEditor) {
+          try {
+            diffEditor.dispose();
+          } catch (_) {}
+        }
+        diffEditor = monaco.editor.createDiffEditor(els.diffMonaco, {
+          theme: "vs-dark",
+          automaticLayout: true,
+          renderSideBySide: true,
+          readOnly: true,
+          scrollBeyondLastLine: false,
+        });
+        diffEditor.setModel({
+          original: monaco.editor.createModel(diffOriginal, language),
+          modified: monaco.editor.createModel(diffModified, language),
+        });
+      }
+
+      function closeDiff() {
+        els.monacoDiffHost.hidden = true;
+        if (diffEditor) {
+          try {
+            diffEditor.dispose();
+          } catch (_) {}
+          diffEditor = null;
+        }
+      }
+
+      function acceptDiff() {
+        if (diffPath && diffModified !== undefined) {
+          openPath(diffPath, diffModified);
+        }
+        closeDiff();
+      }
+
+      if (els.btnCloseDiff) els.btnCloseDiff.addEventListener("click", closeDiff);
+      if (els.btnRejectDiff) els.btnRejectDiff.addEventListener("click", closeDiff);
+      if (els.btnAcceptDiff) els.btnAcceptDiff.addEventListener("click", acceptDiff);
+
       // Expose editor bridge for AI panel
       window.EditorApp = {
         getRoot: () => state.root,
         getActiveTab: () => activeTab(),
+        getSelection: () => {
+          if (!editor) return null;
+          const sel = editor.getSelection();
+          const model = editor.getModel();
+          if (!sel || !model) return null;
+          const text = model.getValueInRange(sel);
+          const tab = activeTab();
+          return { path: tab?.path, text, startLine: sel.startLineNumber, endLine: sel.endLineNumber };
+        },
         openPath,
         reloadPathIfOpen,
         refreshTree,
@@ -976,6 +1052,9 @@
         toggleSidebar,
         togglePreview,
         refreshPreview,
+        openDiff,
+        closeDiff,
+        acceptDiff,
         setStatus: (text) => {
           els.statusErrors.textContent = text;
         },

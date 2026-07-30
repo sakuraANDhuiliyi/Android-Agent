@@ -23,13 +23,19 @@
       </div>
     </header>
 
-    <div class="workbench">
+    <div class="workbench" id="workbench">
       <nav class="activitybar" aria-label="活动栏">
         <button type="button" class="activity-btn active" data-view="explorer" title="资源管理器 (⌘⇧E)">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 4h8l2 2h8v14H3V4zm2 2v12h14V8h-7.17l-2-2H5z"/></svg>
         </button>
-        <button type="button" class="activity-btn" data-view="search" title="快速打开 (⌘P)">
+        <button type="button" class="activity-btn" data-view="search" title="搜索 (⌘⇧F)">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 5L20.49 19l-5-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        </button>
+        <button type="button" class="activity-btn" data-view="conversations" title="对话 (⌘⇧C)">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6.17L4 17.17V4h16v12zM7 9h2v2H7V9zm4 0h2v2h-2V9zm4 0h2v2h-2V9z"/></svg>
+        </button>
+        <button type="button" class="activity-btn" data-view="jobs" title="任务 (⌘⇧J)">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zM16 4v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z"/></svg>
         </button>
         <div class="activity-spacer"></div>
         <button type="button" class="activity-btn" id="btnToggleAiActivity" title="AI 对话 (⌘L)">
@@ -38,29 +44,77 @@
       </nav>
 
       <aside class="sidebar" id="sidebar">
-        <div class="sidebar-view" data-view="explorer">
-          <div class="sidebar-header">
-            <span>资源管理器</span>
-            <div class="sidebar-actions">
-              <button type="button" class="icon-btn" id="btnNewFile" title="新建文件">+</button>
-              <button type="button" class="icon-btn" id="btnRefreshTree" title="刷新">↻</button>
-              <button type="button" class="icon-btn" id="btnCollapseTree" title="全部折叠">▤</button>
+        <div class="sidebar-tabs" id="sidebarTabs">
+          <button class="sidebar-tab active" data-view="explorer" title="资源管理器">资源</button>
+          <button class="sidebar-tab" data-view="search" title="搜索">搜索</button>
+          <button class="sidebar-tab" data-view="conversations" title="对话">对话</button>
+          <button class="sidebar-tab" data-view="jobs" title="任务">任务</button>
+        </div>
+        <div class="sidebar-content" id="sidebarContent">
+          <div class="sidebar-view active" data-view="explorer">
+            <div class="sidebar-header">
+              <span>资源管理器</span>
+              <div class="sidebar-actions">
+                <button type="button" class="icon-btn" id="btnNewFile" title="新建文件">+</button>
+                <button type="button" class="icon-btn" id="btnRefreshTree" title="刷新">↻</button>
+                <button type="button" class="icon-btn" id="btnCollapseTree" title="全部折叠">▤</button>
+              </div>
             </div>
+            <div class="sidebar-subtitle" id="explorerRootName">未打开文件夹</div>
+            <div class="tree" id="fileTree"></div>
           </div>
-          <div class="sidebar-subtitle" id="explorerRootName">未打开文件夹</div>
-          <div class="tree" id="fileTree"></div>
+          <div class="sidebar-view" data-view="search" hidden>
+            <div class="sidebar-header">
+              <span>搜索</span>
+            </div>
+            <div class="search-box">
+              <input id="searchInput" type="text" placeholder="搜索代码…" autocomplete="off" />
+              <button type="button" class="icon-btn" id="btnSearch" title="搜索">↻</button>
+            </div>
+            <div class="search-results" id="searchResults"></div>
+          </div>
+          <div class="sidebar-view" data-view="conversations" hidden>
+            <div class="sidebar-header">
+              <span>Conversation</span>
+              <div class="sidebar-actions">
+                <button type="button" class="icon-btn" id="btnNewConversation" title="新对话">＋</button>
+                <button type="button" class="icon-btn" id="btnArchiveConversation" title="归档">▤</button>
+              </div>
+            </div>
+            <div class="conversation-list" id="conversationList"></div>
+          </div>
+          <div class="sidebar-view" data-view="jobs" hidden>
+            <div class="sidebar-header">
+              <span>运行任务</span>
+              <div class="sidebar-actions">
+                <button type="button" class="icon-btn" id="btnRefreshJobs" title="刷新">↻</button>
+              </div>
+            </div>
+            <div class="job-list" id="jobList"></div>
+          </div>
         </div>
       </aside>
 
       <div class="sash sash-sidebar" id="sashSidebar" data-target="sidebar"></div>
 
-      <section class="editor-pane">
+      <section class="editor-pane" id="editorPane">
         <div class="tabs" id="tabs"></div>
         <div class="breadcrumbs" id="breadcrumbs">
           <span class="crumb muted">打开文件开始编辑</span>
         </div>
-        <div class="editor-split" id="editorSplit">
+        <div class="editor-split editor-hosts" id="editorHosts">
           <div class="monaco-host" id="monacoHost"></div>
+          <div class="monaco-diff-host" id="monacoDiffHost" hidden>
+            <div class="diff-toolbar" id="diffToolbar">
+              <span id="diffTitle">Diff</span>
+              <div class="diff-actions">
+                <button type="button" class="ghost-btn sm" id="btnAcceptDiff" title="接受并应用">应用</button>
+                <button type="button" class="ghost-btn sm" id="btnRejectDiff" title="拒绝">拒绝</button>
+                <button type="button" class="icon-btn" id="btnCloseDiff" title="关闭 Diff">×</button>
+              </div>
+            </div>
+            <div class="diff-monaco" id="diffMonaco"></div>
+          </div>
           <div class="sash sash-preview" id="sashPreview" hidden title="拖动调整预览宽度"></div>
           <aside class="preview-pane" id="previewPane" hidden>
             <div class="preview-toolbar">
@@ -92,6 +146,34 @@
               <li>打开 <code>res/layout/*.xml</code> 可预览界面</li>
             </ul>
           </div>
+        </div>
+
+        <div class="bottom-panel" id="bottomPanel" hidden>
+          <div class="bottom-tabs" id="bottomTabs">
+            <button type="button" class="bottom-tab active" data-view="terminal" title="终端">终端</button>
+            <button type="button" class="bottom-tab" data-view="problems" title="问题">问题</button>
+            <button type="button" class="bottom-tab" data-view="output" title="输出">输出</button>
+            <button type="button" class="bottom-tab" data-view="build" title="构建">构建</button>
+          </div>
+          <div class="bottom-content" id="bottomContent">
+            <div class="bottom-view active" data-view="terminal">
+              <div class="terminal-toolbar" id="terminalToolbar">
+                <div class="terminal-tabs" id="terminalTabs"></div>
+                <button type="button" class="icon-btn" id="btnNewTerminal" title="新建终端">＋</button>
+              </div>
+              <div class="terminal-stack" id="terminalStack"></div>
+            </div>
+            <div class="bottom-view" data-view="problems" hidden>
+              <div class="problem-list" id="problemList"></div>
+            </div>
+            <div class="bottom-view" data-view="output" hidden>
+              <pre class="output-log" id="outputLog"></pre>
+            </div>
+            <div class="bottom-view" data-view="build" hidden>
+              <pre class="build-log" id="buildLog"></pre>
+            </div>
+          </div>
+          <div class="bottom-resize" id="bottomResize" title="拖动调整高度"></div>
         </div>
       </section>
 
@@ -125,7 +207,7 @@
           </select>
         </div>
 
-        <div class="ai-conv-bar">
+        <div class="ai-conv-bar" id="aiConvBar">
           <select id="conversationSelect" class="ai-select" title="切换对话">
             <option value="">暂无对话</option>
           </select>
@@ -158,7 +240,35 @@
 
         <div class="ai-context" id="aiContext" hidden></div>
 
+        <div class="ai-plan" id="aiPlan" hidden>
+          <div class="plan-header">
+            <span>Plan</span>
+            <button type="button" class="icon-btn" id="btnTogglePlan" title="折叠/展开">▾</button>
+          </div>
+          <div class="plan-body" id="planBody"></div>
+        </div>
+
         <div class="approval-dock" id="approvalDock" hidden></div>
+
+        <div class="ai-tools" id="aiTools" hidden>
+          <div class="tools-header">工具调用</div>
+          <div class="tools-body" id="toolsBody"></div>
+        </div>
+
+        <div class="ai-meta" id="aiMeta" hidden>
+          <span id="tokenMeta" title="token 估算">—</span>
+          <span id="timingMeta" title="耗时">—</span>
+          <span id="modelMeta" title="Provider/Model">—</span>
+          <span id="fallbackMeta" title="降级状态">—</span>
+        </div>
+
+        <div class="ai-actions" id="aiActions" hidden>
+          <button type="button" class="ghost-btn sm" id="btnSteer" title="steer">引导</button>
+          <button type="button" class="ghost-btn sm" id="btnFollowUp" title="follow_up">追问</button>
+          <button type="button" class="ghost-btn sm" id="btnPause" title="pause">暂停</button>
+          <button type="button" class="ghost-btn sm" id="btnResume" title="resume">继续</button>
+          <button type="button" class="danger-btn sm" id="btnCancel" title="cancel">取消</button>
+        </div>
 
         <div class="ai-composer">
           <textarea
@@ -170,6 +280,12 @@
           <div class="composer-bar">
             <button type="button" class="ghost-btn" id="btnUseCurrentFile" title="附加当前文件" disabled>
               @文件
+            </button>
+            <button type="button" class="ghost-btn" id="btnUseSelection" title="附加选区" disabled>
+              @选区
+            </button>
+            <button type="button" class="ghost-btn" id="btnUseFolder" title="附加文件夹" disabled>
+              @文件夹
             </button>
             <div class="spacer"></div>
             <button type="button" class="danger-btn" id="btnStop" disabled>停止</button>
@@ -241,12 +357,34 @@
     </form>
   </dialog>
 
+  <!-- Conversation rename dialog -->
+  <dialog id="renameConversationDialog">
+    <form method="dialog" id="renameConversationForm">
+      <h3>重命名对话</h3>
+      <input id="renameConversationId" type="hidden" />
+      <label>
+        名称
+        <input id="renameConversationTitle" required minlength="1" />
+      </label>
+      <div class="dialog-actions">
+        <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
+        <button type="submit" class="primary-btn" value="ok">保存</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" hidden></div>
 
   <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="../node_modules/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <script src="../node_modules/xterm-addon-web-links/lib/xterm-addon-web-links.js"></script>
   <script src="agent-api.js"></script>
+  <script src="state.js"></script>
   <script src="layout-preview.js"></script>
+  <script src="terminal.js"></script>
   <script src="renderer.js"></script>
   <script src="ai-panel.js"></script>
+  <script src="ide.js"></script>
 </body>
 </html>

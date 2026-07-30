@@ -9,10 +9,7 @@ from agent.compact import (
     compact_anthropic_messages,
     compact_openai_messages,
 )
-from agent.approvals import (
-    ApprovalEventPersistenceError,
-    request_user_approval,
-)
+from agent.approvals import ApprovalEventPersistenceError
 from agent.conversation_context import build_provider_messages
 from agent.conversation_events import ConversationEventType as EventType
 from agent.config import Settings
@@ -26,7 +23,10 @@ from agent.honesty import (
     text_claims_file_edit,
 )
 from agent.model_fallback import should_try_next_model, should_try_next_provider
-from agent.prompts import get_system_prompt
+from agent.prompts import build_system_prompt
+from agent.hooks import run_hooks
+from agent.mcp_manager import get_mcp_manager
+from agent.processes import CancellationRequested as ProcessCancellationRequested
 from agent.stream import StreamedCompletion, stream_anthropic_message, stream_openai_chat
 from agent.tools import ToolResult, dispatch_tool, get_tool_definitions
 
@@ -63,6 +63,8 @@ def run_agent(
     user_prompt: str,
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    check_pause: CancelCheck | None = None,
+    get_steers: Callable[[], list[str]] | None = None,
     task_id: str | None = None,
     set_status: Callable[[str], None] | None = None,
     conversation_events: list[dict[str, Any]] | None = None,
@@ -120,6 +122,8 @@ def run_agent(
                 turn_id=turn_id,
                 recovery_replays=recovery_replays,
                 recovery_mode=recovery_mode,
+                check_pause=check_pause,
+                get_steers=get_steers,
             )
         except CancellationRequested:
             raise
@@ -163,8 +167,38 @@ def _run_agent_with_provider(
     turn_id: str | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    check_pause: CancelCheck | None = None,
+    get_steers: Callable[[], list[str]] | None = None,
 ) -> str:
-    system_prompt = get_system_prompt(settings)
+    system_prompt, rules_bundle = build_system_prompt(
+        settings,
+        workspace=workspace,
+        user_id=user_id,
+    )
+    if rules_bundle is not None:
+        _emit(
+            on_event,
+            EventType.SYSTEM_NOTE,
+            rules_bundle.audit_text,
+            kind="rules_loaded",
+            loaded=[item.to_dict() for item in rules_bundle.loaded],
+            skipped=list(rules_bundle.skipped),
+            total_chars=rules_bundle.total_chars,
+            budget=rules_bundle.budget,
+        )
+
+    try:
+        from pathlib import Path as _Path
+
+        mcp_mgr = get_mcp_manager(
+            user_id,
+            project_id,
+            _Path(workspace),
+            on_event=on_event,
+        )
+        mcp_mgr.start_enabled()
+    except Exception as exc:
+        _emit(on_event, "mcp_status", f"MCP 启动跳过: {exc}", error=str(exc))
 
     if settings.provider == "anthropic":
         return _run_anthropic(
@@ -183,6 +217,8 @@ def _run_agent_with_provider(
             turn_id=turn_id,
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
+            check_pause=check_pause,
+            get_steers=get_steers,
         )
     return _run_openai_compatible(
         settings,
@@ -200,6 +236,8 @@ def _run_agent_with_provider(
         turn_id=turn_id,
         recovery_replays=recovery_replays,
         recovery_mode=recovery_mode,
+        check_pause=check_pause,
+        get_steers=get_steers,
     )
 
 
@@ -300,9 +338,6 @@ def _tool_result_event_payload(
     }
 
 
-_RECOVERY_APPROVAL_TOOLS = frozenset({*EDIT_TOOLS, "run_gradle"})
-
-
 def dispatch_agent_tool(
     workspace,
     user_id: str,
@@ -319,62 +354,76 @@ def dispatch_agent_tool(
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
 ) -> ToolResult:
-    replay = next(
-        (
-            item
-            for item in recovery_replays or []
-            if item.get("name") == name
-            and (item.get("input") or {}) == (tool_input or {})
-        ),
-        None,
-    )
-    if recovery_mode and name in _RECOVERY_APPROVAL_TOOLS:
-        if not task_id or not tool_call_id:
-            return ToolResult(
-                False,
-                "恢复任务检测到中断前的有副作用工具调用，但缺少审批上下文。",
-            )
-        decision = request_user_approval(
-            job_id=task_id,
-            user_id=user_id,
-            kind="recovery_tool_replay",
-            tool_call_id=tool_call_id,
-            payload={
-                "message": (
-                    f"恢复任务准备重新执行中断前未完成的工具 {name}，"
-                    "需要重新确认。"
-                ),
-                "name": name,
-                "input": tool_input,
-                "interrupted_tool_call_id": (
-                    replay.get("tool_call_id") if replay else None
-                ),
-            },
-            on_event=on_event,
-            set_status=set_status,
-            cancel_check=cancel_check,
-        )
-        if decision != "approved":
-            return ToolResult(
-                False,
-                f"恢复工具重放未获批准: {decision}",
-            )
-        if recovery_replays is not None and replay is not None:
-            recovery_replays.remove(replay)
+    """Dispatch a tool through the unified runtime, including recovery replay."""
+    from agent.approvals import request_user_approval
+    from agent.tool_registry import get_tool_spec
 
-    return dispatch_tool(
-        workspace,
-        user_id,
-        project_id,
-        name,
-        tool_input,
-        cancel_check=cancel_check,
-        settings=settings,
-        on_event=on_event,
-        task_id=task_id,
-        tool_call_id=tool_call_id,
-        set_status=set_status,
-    )
+    try:
+        spec = get_tool_spec(name)
+        replay = next(
+            (
+                item
+                for item in recovery_replays or []
+                if item.get("name") == name
+                and (item.get("input") or {}) == (tool_input or {})
+            ),
+            None,
+        )
+        if (
+            recovery_mode
+            and spec is not None
+            and spec.replay_policy == "requires_approval_on_recovery"
+        ):
+            if not task_id or not tool_call_id:
+                return ToolResult(
+                    False,
+                    "恢复任务检测到中断前的有副作用工具调用，但缺少审批上下文。",
+                )
+            decision = request_user_approval(
+                job_id=task_id,
+                user_id=user_id,
+                kind="recovery_tool_replay",
+                tool_call_id=tool_call_id,
+                payload={
+                    "message": (
+                        f"恢复任务准备重新执行中断前未完成的工具 {name}，"
+                        "需要重新确认。"
+                    ),
+                    "name": name,
+                    "input": tool_input,
+                    "interrupted_tool_call_id": (
+                        replay.get("tool_call_id") if replay else None
+                    ),
+                },
+                on_event=on_event,
+                set_status=set_status,
+                cancel_check=cancel_check,
+            )
+            if decision != "approved":
+                return ToolResult(
+                    False,
+                    f"恢复工具重放未获批准: {decision}",
+                )
+            if recovery_replays is not None and replay is not None:
+                recovery_replays.remove(replay)
+
+        return dispatch_tool(
+            workspace,
+            user_id,
+            project_id,
+            name,
+            tool_input,
+            cancel_check=cancel_check,
+            settings=settings,
+            on_event=on_event,
+            task_id=task_id,
+            tool_call_id=tool_call_id,
+            set_status=set_status,
+            recovery_replays=recovery_replays,
+            recovery_mode=recovery_mode,
+        )
+    except ProcessCancellationRequested as exc:
+        raise CancellationRequested(str(exc)) from exc
 
 
 def _openai_tools(settings: Settings) -> list[dict]:
@@ -521,6 +570,8 @@ def _run_openai_compatible(
     turn_id: str | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    check_pause: CancelCheck | None = None,
+    get_steers: Callable[[], list[str]] | None = None,
 ) -> str:
     try:
         from openai import OpenAI
@@ -554,6 +605,12 @@ def _run_openai_compatible(
         _emit_continuation(on_event, turn, settings)
         if cancel_check:
             cancel_check()
+        if check_pause:
+            check_pause()
+        if turn > 1 and get_steers:
+            for steer in get_steers():
+                messages.append({"role": "user", "content": steer})
+                _emit(on_event, "steer", steer, source="task_message")
         turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
         _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
 
@@ -561,6 +618,12 @@ def _run_openai_compatible(
         if did_compact:
             _emit(on_event, "compact", "已压缩早期上下文以控制 Token")
 
+        run_hooks(
+            "BeforeModel",
+            user_id=user_id,
+            workspace=workspace,
+            on_event=on_event,
+        )
         response, active_model = _chat_completion_with_fallback(
             client,
             settings.model_candidates,
@@ -570,6 +633,12 @@ def _run_openai_compatible(
             messages=messages,
             tools=_openai_tools(settings),
             max_tokens=max_output,
+        )
+        run_hooks(
+            "AfterModel",
+            user_id=user_id,
+            workspace=workspace,
+            on_event=on_event,
         )
 
         choice = response.choices[0]
@@ -756,7 +825,6 @@ def _run_openai_compatible(
                 continue
 
             started = time.monotonic()
-            error_type = None
             try:
                 result = dispatch_agent_tool(
                     workspace,
@@ -795,8 +863,11 @@ def _run_openai_compatible(
             except ApprovalEventPersistenceError:
                 raise
             except Exception as exc:
-                error_type = exc.__class__.__name__
-                result = ToolResult(False, f"工具 {tool_name} 执行异常: {exc}")
+                result = ToolResult(
+                    False,
+                    f"工具 {tool_name} 执行异常: {exc}",
+                    error_type=exc.__class__.__name__,
+                )
             if tool_name in EDIT_TOOLS and result.ok:
                 successful_edits += 1
             model_output = _format_tool_output(result.output)
@@ -818,7 +889,7 @@ def _run_openai_compatible(
                     ok=result.ok,
                     output=result.output,
                     duration_ms=duration_ms,
-                    error_type=error_type,
+                    error_type=result.error_type,
                 ),
                 input=tool_input,
                 preview=preview,
@@ -874,7 +945,6 @@ def _run_openai_compatible(
                     }
                 )
                 auto_started = time.monotonic()
-                auto_error_type = None
                 try:
                     auto_result = dispatch_agent_tool(
                         workspace,
@@ -915,10 +985,10 @@ def _run_openai_compatible(
                 except ApprovalEventPersistenceError:
                     raise
                 except Exception as exc:
-                    auto_error_type = exc.__class__.__name__
                     auto_result = ToolResult(
                         False,
                         f"工具 run_gradle 执行异常: {exc}",
+                        error_type=exc.__class__.__name__,
                     )
                 auto_preview = _format_tool_output(auto_result.output)
                 if len(auto_preview) > 2000:
@@ -940,7 +1010,7 @@ def _run_openai_compatible(
                         duration_ms=round(
                             (time.monotonic() - auto_started) * 1000
                         ),
-                        error_type=auto_error_type,
+                        error_type=auto_result.error_type,
                     ),
                     input={"task": "assembleDebug", "auto": True},
                     preview=auto_preview,
@@ -978,6 +1048,8 @@ def _run_anthropic(
     turn_id: str | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    check_pause: CancelCheck | None = None,
+    get_steers: Callable[[], list[str]] | None = None,
 ) -> str:
     try:
         import anthropic
@@ -1010,6 +1082,12 @@ def _run_anthropic(
         _emit_continuation(on_event, turn, settings)
         if cancel_check:
             cancel_check()
+        if check_pause:
+            check_pause()
+        if turn > 1 and get_steers:
+            for steer in get_steers():
+                messages.append({"role": "user", "content": steer})
+                _emit(on_event, "steer", steer, source="task_message")
         turn_msg = f"\n--- Agent 轮次 {turn}/{total_turns} ---"
         _emit(on_event, "turn", turn_msg, turn=turn, max_turns=total_turns)
 
@@ -1017,6 +1095,12 @@ def _run_anthropic(
         if did_compact:
             _emit(on_event, "compact", "已压缩早期上下文以控制 Token")
 
+        run_hooks(
+            "BeforeModel",
+            user_id=user_id,
+            workspace=workspace,
+            on_event=on_event,
+        )
         response, active_model = _anthropic_message_with_fallback(
             client,
             settings.model_candidates,
@@ -1027,6 +1111,12 @@ def _run_anthropic(
             system=system_prompt,
             tools=tool_definitions,
             messages=messages,
+        )
+        run_hooks(
+            "AfterModel",
+            user_id=user_id,
+            workspace=workspace,
+            on_event=on_event,
         )
         usage = getattr(response, "usage", None)
         if usage:
@@ -1194,7 +1284,6 @@ def _run_anthropic(
                 continue
 
             started = time.monotonic()
-            error_type = None
             try:
                 result = dispatch_agent_tool(
                     workspace,
@@ -1232,8 +1321,11 @@ def _run_anthropic(
             except ApprovalEventPersistenceError:
                 raise
             except Exception as exc:
-                error_type = exc.__class__.__name__
-                result = ToolResult(False, f"工具 {tool_name} 执行异常: {exc}")
+                result = ToolResult(
+                    False,
+                    f"工具 {tool_name} 执行异常: {exc}",
+                    error_type=exc.__class__.__name__,
+                )
             if tool_name in EDIT_TOOLS and result.ok:
                 successful_edits += 1
             model_output = _format_tool_output(result.output)
@@ -1255,7 +1347,7 @@ def _run_anthropic(
                     ok=result.ok,
                     output=result.output,
                     duration_ms=duration_ms,
-                    error_type=error_type,
+                    error_type=result.error_type,
                 ),
                 input=tool_input,
                 preview=preview,
@@ -1303,7 +1395,6 @@ def _run_anthropic(
                     }
                 )
                 auto_started = time.monotonic()
-                auto_error_type = None
                 try:
                     auto_result = dispatch_agent_tool(
                         workspace,
@@ -1344,10 +1435,10 @@ def _run_anthropic(
                 except ApprovalEventPersistenceError:
                     raise
                 except Exception as exc:
-                    auto_error_type = exc.__class__.__name__
                     auto_result = ToolResult(
                         False,
                         f"工具 run_gradle 执行异常: {exc}",
+                        error_type=exc.__class__.__name__,
                     )
                 auto_preview = _format_tool_output(auto_result.output)
                 _emit(
@@ -1362,7 +1453,7 @@ def _run_anthropic(
                         duration_ms=round(
                             (time.monotonic() - auto_started) * 1000
                         ),
-                        error_type=auto_error_type,
+                        error_type=auto_result.error_type,
                     ),
                     input={"task": "assembleDebug", "auto": True},
                     preview=auto_preview[:2000],

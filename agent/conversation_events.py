@@ -21,6 +21,7 @@ TURN_STATUSES = frozenset(
         "failed",
         "canceled",
         "interrupted",
+        "paused",
     }
 )
 

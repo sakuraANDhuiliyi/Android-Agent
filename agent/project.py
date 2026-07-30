@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -103,6 +104,10 @@ def init_project(
         "name": name,
         "package": package,
         "user_id": user_id,
+        "source_kind": "template",
+        "source_url": None,
+        "default_branch": None,
+        "repo_root": str(dest),
         "created_at": time.time(),
         "updated_at": time.time(),
     }
@@ -123,6 +128,10 @@ def load_project_meta(user_id: str, project_id: str) -> dict:
     meta_user = str(meta.get("user_id") or user_id)
     if meta_user != user_id:
         raise FileNotFoundError(f"项目不存在: {user_id}/{project_id}")
+    meta.setdefault("source_kind", "template")
+    meta.setdefault("source_url", None)
+    meta.setdefault("default_branch", None)
+    meta.setdefault("repo_root", str(workspace_path(user_id, project_id)))
     meta["user_id"] = user_id
     meta["id"] = project_id
     return meta
@@ -146,6 +155,74 @@ def list_projects(user_id: str) -> list[dict]:
         meta["user_id"] = user_id
         projects.append(meta)
     return projects
+
+
+def _git_branch_at(path: Path) -> str | None:
+    if not (path / ".git").is_dir():
+        return None
+    proc = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def import_project(
+    user_id: str,
+    source_path: str | Path,
+    *,
+    name: str | None = None,
+    package: str | None = None,
+    source_kind: str = "imported",
+) -> str:
+    """Import a local project directory into the user's isolated workspace.
+
+    The source directory is copied, not used as a writable workspace.
+    """
+    source = Path(source_path).resolve()
+    if not source.is_dir():
+        raise FileNotFoundError(f"来源目录不存在: {source}")
+
+    user_id = validate_id(user_id, kind="user_id")
+    base_name = _slugify(name or source.name)
+    project_id = base_name
+    suffix = 2
+    while workspace_path(user_id, project_id).exists():
+        project_id = f"{base_name}-{suffix}"
+        suffix += 1
+
+    dest = workspace_path(user_id, project_id)
+    shutil.copytree(source, dest, ignore=WRITE_IGNORE)
+
+    if package is None:
+        package = f"com.androidagent.{project_id.replace('-', '')}"
+    _validate_package(package)
+    _replace_package_in_tree(dest, DEFAULT_PACKAGE, package)
+    ensure_local_properties(dest)
+
+    is_git = (dest / ".git").is_dir()
+    meta = {
+        "id": project_id,
+        "name": name or project_id,
+        "package": package,
+        "user_id": user_id,
+        "source_kind": source_kind,
+        "source_url": str(source),
+        "default_branch": _git_branch_at(dest) if is_git else None,
+        "repo_root": str(dest),
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+    project_meta_path(user_id, project_id).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return project_id
 
 
 def delete_project(user_id: str, project_id: str) -> None:
