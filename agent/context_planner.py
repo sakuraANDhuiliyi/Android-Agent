@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.repo_index import RepoIndex
+from agent.safe_paths import resolve_workspace_path
 
 
 # Rough char cost estimates for budgeting.
@@ -36,8 +37,8 @@ def _estimate_chars(text: str) -> int:
 
 
 def _read_file_fragment(workspace: Path, rel_path: str, max_chars: int) -> str:
-    path = workspace / rel_path
     try:
+        path = resolve_workspace_path(workspace, rel_path)
         text = path.read_text(encoding="utf-8")
     except Exception:
         return ""

@@ -54,6 +54,14 @@
       return this.request("/api/health");
     }
 
+    pair(registrationToken) {
+      return this.request("/api/pair", {
+        method: "POST",
+        headers: { "X-Registration-Token": registrationToken },
+        body: {},
+      });
+    }
+
     models() {
       return this.request("/api/models");
     }
@@ -158,10 +166,18 @@
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/conversations?archived=1`);
     }
 
-    sendJobMessage(jobId, type, payload = {}) {
+    sendJobMessage(jobId, type, payload = {}, messageKey = null) {
+      const randomPart =
+        globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages`, {
         method: "POST",
-        body: { type, payload },
+        body: {
+          message_key: messageKey || `${type}:${Date.now()}:${randomPart}`,
+          type,
+          payload,
+        },
       });
     }
 
@@ -201,15 +217,15 @@
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints`);
     }
 
-    restoreCheckpoint(projectId, checkpointId, scope = "turn") {
+    restoreCheckpoint(projectId, checkpointId, filePath = null) {
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints/${encodeURIComponent(checkpointId)}/restore`, {
         method: "POST",
-        body: { scope },
+        body: { path: filePath },
       });
     }
 
     turnDiff(projectId, turnId) {
-      return this.request(`/api/projects/${encodeURIComponent(projectId)}/turns/${encodeURIComponent(turnId)}/diff`);
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/diff?turn_id=${encodeURIComponent(turnId)}`);
     }
 
     // —— Terminals ——
@@ -246,19 +262,28 @@
       return this.request(`/api/terminals/${encodeURIComponent(terminalId)}`, { method: "DELETE" });
     }
 
+    websocketTicket(resourceType, resourceId) {
+      return this.request("/api/ws/tickets", {
+        method: "POST",
+        body: { resource_type: resourceType, resource_id: resourceId },
+      });
+    }
+
     watchTerminal(terminalId, onEvent, { afterSeq = 0 } = {}) {
       const url = new URL(`${this.baseUrl.replace(/^http/, "ws")}/api/ws/terminals/${encodeURIComponent(terminalId)}`);
-      if (this.token) url.searchParams.set("token", this.token);
       if (afterSeq) url.searchParams.set("after_seq", String(afterSeq));
       let ws = null;
       let closed = false;
       let cursor = afterSeq;
       let reconnectTimer = null;
 
-      const connect = () => {
+      const connect = async () => {
         if (closed) return;
         try {
+          const auth = await this.websocketTicket("terminal", terminalId);
+          if (closed) return;
           const u = new URL(url.toString());
+          u.searchParams.set("ticket", auth.ticket);
           u.searchParams.set("after_seq", String(cursor));
           ws = new WebSocket(u.toString());
         } catch (_) {
@@ -306,7 +331,6 @@
      */
     watchJob(jobId, onEvent, options = {}) {
       const url = new URL(`${this.baseUrl.replace(/^http/, "ws")}/api/ws/jobs/${encodeURIComponent(jobId)}`);
-      if (this.token) url.searchParams.set("token", this.token);
       let afterEventId = options.afterEventId || 0;
       let ws = null;
       let closed = false;
@@ -370,10 +394,13 @@
         }, 200);
       };
 
-      const connect = () => {
+      const connect = async () => {
         if (closed || finished) return;
         try {
+          const auth = await this.websocketTicket("job", jobId);
+          if (closed || finished) return;
           const u = new URL(url.toString());
+          u.searchParams.set("ticket", auth.ticket);
           if (afterEventId) u.searchParams.set("after_event_id", String(afterEventId));
           ws = new WebSocket(u.toString());
         } catch (_) {

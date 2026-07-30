@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,23 @@ DEFAULT_PROVIDER_FALLBACKS: dict[str, list[str]] = {
 }
 
 
+def _as_bool(value: Any, *, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0", ""}:
+            return False
+        raise ValueError(f"{name} 必须是 true 或 false")
+    if value is None:
+        return False
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"{name} 必须是布尔值")
+
+
 @dataclass
 class UserAccount:
     id: str
@@ -60,6 +78,32 @@ class Settings:
     tavily_api_key: str = ""
     users: list[UserAccount] = field(default_factory=list)
     provider_fallbacks: list["Settings"] = field(default_factory=list)
+    registration_enabled: bool = False
+    registration_token: str = ""
+    terminal_enabled: bool = False
+    debug_web_ui_enabled: bool = True
+    ws_ticket_ttl_seconds: int = 30
+    max_request_bytes: int = 2 * 1024 * 1024
+    max_prompt_chars: int = 100_000
+    max_projects_per_user: int = 50
+    max_conversations_per_project: int = 200
+    max_active_tasks_per_user: int = 6
+    max_events_per_conversation: int = 100_000
+    max_registration_per_hour: int = 20
+    max_requests_per_minute: int = 600
+    minimum_free_disk_bytes: int = 512 * 1024 * 1024
+    max_build_artifacts_per_project: int = 50
+    max_terminals_per_project: int = 5
+    max_mcp_servers_per_project: int = 10
+    max_memories_per_project: int = 1_000
+    max_task_events_per_task: int = 20_000
+    cors_allowed_origins: list[str] = field(
+        default_factory=lambda: [
+            "null",
+            "http://127.0.0.1:8000",
+            "http://localhost:8000",
+        ]
+    )
 
 
 def _resolve_api_key(provider: str, file_data: dict[str, Any], *, is_primary: bool) -> str:
@@ -161,6 +205,48 @@ def _build_settings(
         tavily_api_key=str(shared.get("tavily_api_key", "") or ""),
         users=list(shared["users"]),
         provider_fallbacks=[],
+        registration_enabled=bool(shared.get("registration_enabled", False)),
+        registration_token=str(shared.get("registration_token", "") or ""),
+        terminal_enabled=bool(shared.get("terminal_enabled", False)),
+        debug_web_ui_enabled=bool(shared.get("debug_web_ui_enabled", True)),
+        ws_ticket_ttl_seconds=int(shared.get("ws_ticket_ttl_seconds", 30)),
+        max_request_bytes=int(shared.get("max_request_bytes", 2 * 1024 * 1024)),
+        max_prompt_chars=int(shared.get("max_prompt_chars", 100_000)),
+        max_projects_per_user=int(shared.get("max_projects_per_user", 50)),
+        max_conversations_per_project=int(
+            shared.get("max_conversations_per_project", 200)
+        ),
+        max_active_tasks_per_user=int(
+            shared.get("max_active_tasks_per_user", 6)
+        ),
+        max_events_per_conversation=int(
+            shared.get("max_events_per_conversation", 100_000)
+        ),
+        max_registration_per_hour=int(
+            shared.get("max_registration_per_hour", 20)
+        ),
+        max_requests_per_minute=int(
+            shared.get("max_requests_per_minute", 600)
+        ),
+        minimum_free_disk_bytes=int(
+            shared.get("minimum_free_disk_bytes", 512 * 1024 * 1024)
+        ),
+        max_build_artifacts_per_project=int(
+            shared.get("max_build_artifacts_per_project", 50)
+        ),
+        max_terminals_per_project=int(
+            shared.get("max_terminals_per_project", 5)
+        ),
+        max_mcp_servers_per_project=int(
+            shared.get("max_mcp_servers_per_project", 10)
+        ),
+        max_memories_per_project=int(
+            shared.get("max_memories_per_project", 1_000)
+        ),
+        max_task_events_per_task=int(
+            shared.get("max_task_events_per_task", 20_000)
+        ),
+        cors_allowed_origins=list(shared.get("cors_allowed_origins") or []),
     )
 
 
@@ -201,7 +287,7 @@ def _load_users(file_data: dict[str, Any], legacy_api_token: str) -> list[UserAc
 
 
 def resolve_user_id(settings: Settings, authorization: str | None) -> str:
-    """Map Bearer token to user_id. Empty Authorization matches a user with empty token."""
+    """Map a non-empty Bearer token to exactly one configured user."""
     token = ""
     if authorization:
         auth = authorization.strip()
@@ -210,7 +296,11 @@ def resolve_user_id(settings: Settings, authorization: str | None) -> str:
         else:
             token = auth
 
-    matches = [user for user in settings.users if user.token == token]
+    matches = [
+        user
+        for user in settings.users
+        if user.token and hmac.compare_digest(user.token, token)
+    ]
     if len(matches) == 1:
         return matches[0].id
     if len(matches) > 1:
@@ -237,6 +327,26 @@ def load_settings() -> Settings:
 
     legacy_api_token = str(file_data.get("api_token", "") or "").strip()
     users = _load_users(file_data, legacy_api_token)
+    server_port = int(file_data.get("server_port", 8000))
+    raw_cors_origins = file_data.get("cors_allowed_origins")
+    if isinstance(raw_cors_origins, str):
+        cors_allowed_origins = [
+            item.strip() for item in raw_cors_origins.split(",") if item.strip()
+        ]
+    elif isinstance(raw_cors_origins, list):
+        cors_allowed_origins = [
+            str(item).strip()
+            for item in raw_cors_origins
+            if item is not None and str(item).strip()
+        ]
+    else:
+        cors_allowed_origins = [
+            "null",
+            f"http://127.0.0.1:{server_port}",
+            f"http://localhost:{server_port}",
+        ]
+    if "*" in cors_allowed_origins:
+        raise ValueError("cors_allowed_origins 不允许使用通配符 *")
 
     shared = {
         "max_turns": int(file_data.get("max_turns", 15)),
@@ -249,9 +359,72 @@ def load_settings() -> Settings:
             min(int(file_data.get("max_output_tokens", 65_536)), 384_000),
         ),
         "auto_build_after_edit": bool(file_data.get("auto_build_after_edit", False)),
-        "server_host": str(file_data.get("server_host", "0.0.0.0")),
-        "server_port": int(file_data.get("server_port", 8000)),
+        "server_host": str(file_data.get("server_host", "127.0.0.1")),
+        "server_port": server_port,
         "api_token": legacy_api_token,
+        "registration_enabled": _as_bool(
+            file_data.get("registration_enabled", False),
+            name="registration_enabled",
+        ),
+        "registration_token": str(
+            os.environ.get("AGENT_REGISTRATION_TOKEN")
+            or file_data.get("registration_token")
+            or ""
+        ).strip(),
+        "terminal_enabled": _as_bool(
+            file_data.get("terminal_enabled", False),
+            name="terminal_enabled",
+        ),
+        "debug_web_ui_enabled": _as_bool(
+            file_data.get("debug_web_ui_enabled", True),
+            name="debug_web_ui_enabled",
+        ),
+        "ws_ticket_ttl_seconds": max(
+            5, min(int(file_data.get("ws_ticket_ttl_seconds", 30)), 120)
+        ),
+        "max_request_bytes": max(
+            64 * 1024, int(file_data.get("max_request_bytes", 2 * 1024 * 1024))
+        ),
+        "max_prompt_chars": max(
+            1_000, int(file_data.get("max_prompt_chars", 100_000))
+        ),
+        "max_projects_per_user": max(
+            1, int(file_data.get("max_projects_per_user", 50))
+        ),
+        "max_conversations_per_project": max(
+            1, int(file_data.get("max_conversations_per_project", 200))
+        ),
+        "max_active_tasks_per_user": max(
+            1, int(file_data.get("max_active_tasks_per_user", 6))
+        ),
+        "max_events_per_conversation": max(
+            100, int(file_data.get("max_events_per_conversation", 100_000))
+        ),
+        "max_registration_per_hour": max(
+            1, int(file_data.get("max_registration_per_hour", 20))
+        ),
+        "max_requests_per_minute": max(
+            10, int(file_data.get("max_requests_per_minute", 600))
+        ),
+        "minimum_free_disk_bytes": max(
+            0, int(file_data.get("minimum_free_disk_bytes", 512 * 1024 * 1024))
+        ),
+        "max_build_artifacts_per_project": max(
+            2, int(file_data.get("max_build_artifacts_per_project", 50))
+        ),
+        "max_terminals_per_project": max(
+            1, int(file_data.get("max_terminals_per_project", 5))
+        ),
+        "max_mcp_servers_per_project": max(
+            1, int(file_data.get("max_mcp_servers_per_project", 10))
+        ),
+        "max_memories_per_project": max(
+            10, int(file_data.get("max_memories_per_project", 1_000))
+        ),
+        "max_task_events_per_task": max(
+            100, int(file_data.get("max_task_events_per_task", 20_000))
+        ),
+        "cors_allowed_origins": cors_allowed_origins,
         "tavily_api_key": (
             os.environ.get("TAVILY_API_KEY")
             or file_data.get("tavily_api_key")

@@ -26,6 +26,8 @@
     serverUrl: $("serverUrl"),
     apiToken: $("apiToken"),
     btnConnect: $("btnConnect"),
+    btnPair: $("btnPair"),
+    registrationToken: $("registrationToken"),
     btnDisconnect: $("btnDisconnect"),
     btnSettings: $("btnSettings"),
     connectStatus: $("connectStatus"),
@@ -73,18 +75,17 @@
 
   function loadPrefs() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
       if (data.serverUrl) els.serverUrl.value = data.serverUrl;
-      // 自用默认不恢复 Token，始终走 local
     } catch (_) {
       /* ignore */
     }
   }
 
   function savePrefs() {
-    localStorage.setItem(
+    sessionStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         serverUrl: els.serverUrl.value.trim(),
@@ -333,6 +334,14 @@
     state.token = token;
     els.serverUrl.value = baseUrl;
     savePrefs();
+    if (!token) {
+      state.connected = false;
+      setConnPill("err", "需要 Token");
+      els.connectStatus.textContent = "请输入服务端生成的访问 Token";
+      els.connectPanel.hidden = false;
+      els.workspace.hidden = true;
+      return;
+    }
     setConnPill("busy", "连接中");
     els.connectStatus.textContent = "正在连接…";
     try {
@@ -356,6 +365,27 @@
     }
   }
 
+  async function pair() {
+    const baseUrl = normalizeBaseUrl(
+      els.serverUrl.value || window.location.origin,
+    );
+    const registrationToken = els.registrationToken.value.trim();
+    if (!registrationToken) {
+      throw new Error("请输入服务端配对密钥");
+    }
+    state.baseUrl = baseUrl;
+    state.token = "";
+    const account = await api("/api/pair", {
+      method: "POST",
+      headers: { "X-Registration-Token": registrationToken },
+      body: {},
+    });
+    state.token = account.token;
+    els.apiToken.value = account.token;
+    els.registrationToken.value = "";
+    await connect();
+  }
+
   function hideSettings() {
     els.connectPanel.hidden = true;
   }
@@ -363,8 +393,8 @@
   function showSettings() {
     els.connectPanel.hidden = false;
     els.connectStatus.textContent = state.connected
-      ? `当前用户 ${state.userId || "local"}（Token 可留空）`
-      : "填写服务地址后重新连接";
+      ? `当前用户 ${state.userId}`
+      : "填写服务地址和访问 Token 后重新连接";
   }
 
   async function loadModels() {
@@ -692,6 +722,7 @@
 
   function bindEvents() {
     els.btnConnect.addEventListener("click", () => connect().catch((e) => toast(e.message)));
+    els.btnPair.addEventListener("click", () => pair().catch((e) => toast(e.message)));
     els.btnDisconnect.addEventListener("click", hideSettings);
     els.btnSettings.addEventListener("click", showSettings);
     els.btnRefreshProjects.addEventListener("click", () =>
@@ -749,10 +780,6 @@
     loadPrefs();
     if (!els.serverUrl.value) {
       els.serverUrl.value = window.location.origin;
-    }
-    // 自用默认不带 Token，直接连本机 local 用户
-    if (!els.apiToken.value.trim()) {
-      els.apiToken.value = "";
     }
     bindEvents();
     connect().catch((e) => toast(e.message));

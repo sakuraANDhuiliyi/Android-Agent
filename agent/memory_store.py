@@ -150,8 +150,8 @@ class MemoryStore:
             raise ValueError(f"无效 memory_type: {memory_type}")
         if status not in VALID_STATUSES:
             raise ValueError(f"无效 status: {status}")
-        if scope == "project" and not project_id:
-            raise ValueError("project scope 需要 project_id")
+        if scope in {"project", "local"} and not project_id:
+            raise ValueError(f"{scope} scope 需要 project_id")
         if project_id:
             project_id = validate_id(project_id, kind="project_id")
         if scope == "user":
@@ -258,8 +258,10 @@ class MemoryStore:
         clauses = ["user_id=?"]
         params: list[Any] = [user_id]
         if project_id is not None:
-            # Include project-scoped for this project + user/local scopes.
-            clauses.append("(project_id=? OR scope IN ('user','local'))")
+            # local is project-local; only user scope crosses project boundaries.
+            clauses.append(
+                "((project_id=? AND scope IN ('project','local')) OR scope='user')"
+            )
             params.append(project_id)
         if status:
             clauses.append("status=?")
@@ -292,6 +294,23 @@ class MemoryStore:
             status="candidate",
             limit=limit,
         )
+
+    def count_memories(
+        self,
+        user_id: str,
+        *,
+        project_id: str | None = None,
+    ) -> int:
+        query = "SELECT COUNT(*) FROM memories WHERE user_id=?"
+        params: list[Any] = [user_id]
+        if project_id is not None:
+            query += (
+                " AND ((project_id=? AND scope IN ('project','local')) "
+                "OR scope='user')"
+            )
+            params.append(project_id)
+        with self._lock, self._connect() as conn:
+            return int(conn.execute(query, params).fetchone()[0])
 
     def update_memory(
         self,
@@ -394,7 +413,10 @@ class MemoryStore:
             clauses = ["m.user_id=?", "m.status=?"]
             params: list[Any] = [user_id, status]
             if project_id:
-                clauses.append("(m.project_id=? OR m.scope IN ('user','local'))")
+                clauses.append(
+                    "((m.project_id=? AND m.scope IN ('project','local')) "
+                    "OR m.scope='user')"
+                )
                 params.append(project_id)
             if scope:
                 clauses.append("m.scope=?")

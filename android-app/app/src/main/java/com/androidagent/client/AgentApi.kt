@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -172,8 +173,18 @@ class AgentApi(
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
 
-    fun register(): RegisteredAccount {
-        val json = postJson("/api/register", JSONObject())
+    init {
+        require(
+            BuildConfig.DEBUG || normalizedBaseUrl.startsWith("https://"),
+        ) { "正式版仅允许 HTTPS 服务器地址" }
+    }
+
+    fun register(registrationToken: String): RegisteredAccount {
+        val json = postJson(
+            "/api/pair",
+            JSONObject(),
+            mapOf("X-Registration-Token" to registrationToken),
+        )
         return RegisteredAccount(
             userId = json.getString("user_id"),
             token = json.getString("token"),
@@ -459,11 +470,14 @@ class AgentApi(
     ): CloseableWatcher {
         val wsUrl = normalizedBaseUrl
             .replaceFirst("^http".toRegex(), "ws") +
-            "/api/ws/jobs/$jobId?after_event_id=$afterEventId" +
-            if (apiToken.isNotBlank()) "&token=${java.net.URLEncoder.encode(apiToken, "UTF-8")}" else ""
+            "/api/ws/jobs/$jobId?after_event_id=$afterEventId"
         val closed = AtomicBoolean(false)
         val lastId = AtomicLong(afterEventId)
-        val request = Request.Builder().url(wsUrl).build()
+        val requestBuilder = Request.Builder().url(wsUrl)
+        if (apiToken.isNotBlank()) {
+            requestBuilder.header("Authorization", "Bearer $apiToken")
+        }
+        val request = requestBuilder.build()
         val webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (closed.get()) return
@@ -629,9 +643,38 @@ class AgentApi(
                 throw ApiException(response.code, parseErrorMessage(response.body?.string().orEmpty(), response.code))
             }
             val body = response.body ?: throw ApiException(response.code, "APK 响应为空")
+            val expectedSha256 = response.header("X-APK-SHA256")
+                ?.lowercase()
+                ?.takeIf { it.matches(Regex("^[0-9a-f]{64}$")) }
+                ?: throw ApiException(response.code, "APK 响应缺少有效的 SHA-256")
             dest.parentFile?.mkdirs()
-            dest.outputStream().use { output ->
-                body.byteStream().copyTo(output)
+            val temp = File(dest.parentFile, ".${dest.name}.${System.nanoTime()}.part")
+            val digest = MessageDigest.getInstance("SHA-256")
+            try {
+                temp.outputStream().use { output ->
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            digest.update(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+                val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                if (actual != expectedSha256) {
+                    throw IOException("APK SHA-256 校验失败")
+                }
+                if (dest.exists() && !dest.delete()) {
+                    throw IOException("无法替换旧 APK")
+                }
+                if (!temp.renameTo(dest)) {
+                    throw IOException("无法原子保存 APK")
+                }
+                File("${dest.absolutePath}.sha256").writeText(actual)
+            } finally {
+                temp.delete()
             }
         }
     }
@@ -647,11 +690,15 @@ class AgentApi(
         }
     }
 
-    private fun postJson(path: String, body: JSONObject): JSONObject {
-        val request = buildRequest(path)
-            .newBuilder()
+    private fun postJson(
+        path: String,
+        body: JSONObject,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): JSONObject {
+        val builder = buildRequest(path).newBuilder()
             .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
+        extraHeaders.forEach { (name, value) -> builder.header(name, value) }
+        val request = builder.build()
         client.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {

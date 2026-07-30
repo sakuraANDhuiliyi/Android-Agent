@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -12,12 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from agent.mcp_config import McpServerConfig, resolve_env_secrets
-from agent.processes import build_minimal_env
+from agent.processes import build_minimal_env, build_sandboxed_command
 from agent.redaction import redact_sensitive_text, redact_sensitive_value
 
 
 PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_CALL_TIMEOUT = 30.0
+logger = logging.getLogger(__name__)
 
 
 class McpError(RuntimeError):
@@ -30,6 +33,10 @@ class McpTimeoutError(McpError):
 
 class McpTransportError(McpError):
     """Raised when the transport fails (crash, broken pipe, etc.)."""
+
+
+class McpIndeterminateError(McpTransportError):
+    """The request may have executed, but no authoritative result was received."""
 
 
 @dataclass
@@ -93,33 +100,6 @@ class McpTransport(ABC):
         ...
 
 
-class StreamableHttpTransport(McpTransport):
-    """Placeholder for Streamable HTTP when SDK/runtime supports it."""
-
-    kind = "streamable_http"
-
-    def __init__(self, config: McpServerConfig) -> None:
-        self.config = config
-
-    def start(self) -> dict[str, Any]:
-        raise McpTransportError(
-            "Streamable HTTP transport is reserved; use stdio in this build "
-            f"(server={self.config.name})"
-        )
-
-    def list_tools(self) -> list[McpToolInfo]:
-        raise McpTransportError("streamable_http not started")
-
-    def call_tool(self, name: str, arguments: dict[str, Any] | None = None, *, timeout: float | None = None) -> McpCallResult:
-        raise McpTransportError("streamable_http not started")
-
-    def close(self) -> None:
-        return None
-
-    def healthy(self) -> bool:
-        return False
-
-
 class StdioMcpTransport(McpTransport):
     """MCP stdio transport speaking JSON-RPC over newline-delimited messages.
 
@@ -161,9 +141,33 @@ class StdioMcpTransport(McpTransport):
         env = {**base, **self.extra_env, **resolved_secrets}
         # Never log resolved secrets — env for process only.
         cwd = self.config.cwd or (str(self.workspace) if self.workspace else None)
+        command = [self.config.command, *self.config.args]
+        if self.workspace is not None:
+            declared_files: list[Path] = []
+            command_path = Path(self.config.command)
+            resolved_command = (
+                command_path
+                if command_path.is_absolute()
+                else Path(cwd or self.workspace) / command_path
+            )
+            if resolved_command.is_file():
+                declared_files.append(resolved_command)
+            for arg in self.config.args:
+                candidate = Path(arg)
+                if not candidate.is_absolute():
+                    candidate = Path(cwd or self.workspace) / candidate
+                if candidate.is_file():
+                    declared_files.append(candidate)
+            command = build_sandboxed_command(
+                command,
+                self.workspace,
+                allow_network=False,
+                env=env,
+                extra_read_paths=declared_files,
+            )
         try:
             self._proc = subprocess.Popen(
-                [self.config.command, *self.config.args],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -171,6 +175,7 @@ class StdioMcpTransport(McpTransport):
                 bufsize=1,
                 cwd=cwd,
                 env=env,
+                start_new_session=True,
             )
         except Exception as exc:
             raise McpTransportError(f"无法启动 MCP server {self.config.name}: {exc}") from exc
@@ -238,6 +243,8 @@ class StdioMcpTransport(McpTransport):
                 {"name": name, "arguments": arguments or {}},
                 timeout=timeout,
             )
+        except (McpTimeoutError, McpTransportError):
+            raise
         except McpError as exc:
             return McpCallResult(ok=False, content=str(exc), is_error=True, raw={"error": str(exc)})
         is_error = bool(result.get("isError"))
@@ -253,16 +260,43 @@ class StdioMcpTransport(McpTransport):
         try:
             if proc.stdin:
                 proc.stdin.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "MCP stdin close failed server=%s: %s",
+                self.config.name,
+                redact_sensitive_text(str(exc)),
+            )
         try:
-            proc.terminate()
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
             proc.wait(timeout=2)
         except Exception:
             try:
-                proc.kill()
-            except Exception:
-                pass
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+            except Exception as exc:
+                logger.warning(
+                    "MCP force-kill failed server=%s: %s",
+                    self.config.name,
+                    redact_sensitive_text(str(exc)),
+                )
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except Exception as exc:
+                logger.warning(
+                    "MCP stream close failed server=%s: %s",
+                    self.config.name,
+                    redact_sensitive_text(str(exc)),
+                )
+        for thread in (self._reader, self._stderr_thread):
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=1)
 
     def healthy(self) -> bool:
         proc = self._proc
@@ -307,8 +341,12 @@ class StdioMcpTransport(McpTransport):
                     q = self._pending.get(key)
                 if q is not None:
                     q.put(msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "MCP stdout reader failed server=%s: %s",
+                self.config.name,
+                redact_sensitive_text(str(exc)),
+            )
         finally:
             # Unblock waiters on crash.
             with self._lock:
@@ -327,8 +365,12 @@ class StdioMcpTransport(McpTransport):
                     self._stderr_tail.append(text)
                     if len(self._stderr_tail) > 200:
                         self._stderr_tail = self._stderr_tail[-100:]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "MCP stderr reader failed server=%s: %s",
+                self.config.name,
+                redact_sensitive_text(str(exc)),
+            )
 
     def _next_request_id(self) -> int:
         with self._lock:
@@ -385,8 +427,8 @@ def create_transport(
     *,
     workspace: Path | None = None,
 ) -> McpTransport:
-    if config.transport == "streamable_http":
-        return StreamableHttpTransport(config)
+    if config.transport != "stdio":
+        raise McpTransportError(f"当前版本不支持 MCP transport: {config.transport}")
     return StdioMcpTransport(config, workspace=workspace)
 
 

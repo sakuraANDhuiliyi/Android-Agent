@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 
@@ -53,7 +54,20 @@ def _shrink_openai_message(message: dict[str, Any]) -> bool:
             fn = dict(call.get("function") or {})
             args = fn.get("arguments") or ""
             if len(args) > 300:
-                fn["arguments"] = args[:150] + "...(compressed)"
+                try:
+                    parsed = json.loads(args)
+                except (TypeError, ValueError):
+                    parsed = None
+                keys = sorted(parsed)[:20] if isinstance(parsed, dict) else []
+                fn["arguments"] = json.dumps(
+                    {
+                        "_compressed": True,
+                        "original_chars": len(args),
+                        "keys": keys,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
                 changed = True
             call["function"] = fn
             new_calls.append(call)
@@ -65,6 +79,76 @@ def _has_compact_marker(message: dict[str, Any] | None) -> bool:
     if not message:
         return False
     return "上下文已压缩" in str(message.get("content") or "")
+
+
+def _openai_units(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    units: list[list[dict[str, Any]]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        unit = [message]
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if isinstance(calls, list) and calls:
+            call_ids = {str(call.get("id")) for call in calls if call.get("id")}
+            cursor = index + 1
+            while cursor < len(messages):
+                candidate = messages[cursor]
+                if (
+                    candidate.get("role") == "tool"
+                    and str(candidate.get("tool_call_id")) in call_ids
+                ):
+                    unit.append(candidate)
+                    cursor += 1
+                    continue
+                break
+            index = cursor
+        else:
+            index += 1
+        units.append(unit)
+    return units
+
+
+def _anthropic_has_tool_use(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return bool(
+        message.get("role") == "assistant"
+        and isinstance(content, list)
+        and any(
+            isinstance(block, dict) and block.get("type") == "tool_use"
+            for block in content
+        )
+    )
+
+
+def _anthropic_is_tool_result_message(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return bool(
+        message.get("role") == "user"
+        and isinstance(content, list)
+        and content
+        and all(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
+    )
+
+
+def _anthropic_units(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    units: list[list[dict[str, Any]]] = []
+    index = 0
+    while index < len(messages):
+        unit = [messages[index]]
+        if (
+            _anthropic_has_tool_use(messages[index])
+            and index + 1 < len(messages)
+            and _anthropic_is_tool_result_message(messages[index + 1])
+        ):
+            unit.append(messages[index + 1])
+            index += 2
+        else:
+            index += 1
+        units.append(unit)
+    return units
 
 
 def compact_openai_messages(
@@ -81,38 +165,29 @@ def compact_openai_messages(
     if before <= max_chars:
         return messages, False
 
-    result = [dict(message) for message in messages]
-    protect = max(2, min(keep_recent, max(0, len(result) - 1)))
+    result = deepcopy(messages)
+    system = result[:1] if result and result[0].get("role") == "system" else []
+    units = _openai_units(result[len(system) :])
+    protect = max(1, min(keep_recent, len(units)))
     changed = False
 
-    # Compress everything except the newest protect messages
-    for message in result[:-protect] if protect else result:
-        if _shrink_openai_message(message):
-            changed = True
+    for unit in units[:-protect]:
+        for message in unit:
+            if _shrink_openai_message(message):
+                changed = True
 
-    # Still too large: drop oldest non-system messages (keep working under budget)
     marker_inserted = False
-    while len(result) > protect + 1 and estimate_message_chars(result) > max_chars:
-        drop_at = 1 if result and result[0].get("role") == "system" else 0
-        if drop_at >= len(result) - protect:
-            break
-        result.pop(drop_at)
+    result = system + [message for unit in units for message in unit]
+    while len(units) > protect and estimate_message_chars(result) > max_chars:
+        units.pop(0)
         changed = True
-        if (
-            not marker_inserted
-            and result
-            and result[0].get("role") == "system"
-            and not _has_compact_marker(result[1] if len(result) > 1 else None)
-        ):
-            result.insert(
-                1,
-                {
-                    "role": "user",
-                    "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。",
-                },
-            )
-            marker_inserted = True
-            changed = True
+        result = system + [message for unit in units for message in unit]
+        insert_at = len(system)
+        result.insert(
+            insert_at,
+            {"role": "user", "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。"},
+        )
+        marker_inserted = True
 
     after = estimate_message_chars(result)
     if after >= before and not changed:
@@ -130,45 +205,30 @@ def compact_anthropic_messages(
     if before <= max_chars:
         return messages, False
 
-    result = [dict(message) for message in messages]
-    protect = max(2, min(keep_recent, max(0, len(result) - 1)))
+    result = deepcopy(messages)
+    units = _anthropic_units(result)
+    protect = max(1, min(keep_recent, len(units)))
     changed = False
-    cutoff = max(0, len(result) - protect)
 
-    for index, item in enumerate(result):
-        if index >= cutoff:
-            continue
-        content = item.get("content")
-        if isinstance(content, list):
-            new_blocks = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    text = block.get("content") or ""
-                    if isinstance(text, str) and len(text) > 400:
-                        block = dict(block)
-                        block["content"] = text[:200] + "\n... (历史工具输出已压缩) ..."
-                        changed = True
-                new_blocks.append(block)
-            item["content"] = new_blocks
+    for unit in units[:-protect]:
+        for item in unit:
+            content = item.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        text = block.get("content") or ""
+                        if isinstance(text, str) and len(text) > 400:
+                            block["content"] = text[:200] + "\n... (历史工具输出已压缩) ..."
+                            changed = True
 
     marker_inserted = False
-    while len(result) > protect and estimate_message_chars(result) > max_chars:
-        result.pop(0)
+    result = [message for unit in units for message in unit]
+    while len(units) > protect and estimate_message_chars(result) > max_chars:
+        units.pop(0)
         changed = True
-        if not marker_inserted and not (
-            result
-            and isinstance(result[0].get("content"), str)
-            and "上下文已压缩" in result[0].get("content", "")
-        ):
-            result.insert(
-                0,
-                {
-                    "role": "user",
-                    "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续。",
-                },
-            )
-            marker_inserted = True
-            changed = True
+        result = [message for unit in units for message in unit]
+        result.insert(0, {"role": "user", "content": "[系统] 更早的对话与工具输出已压缩，请基于剩余上下文继续."})
+        marker_inserted = True
 
     after = estimate_message_chars(result)
     if after >= before and not changed:

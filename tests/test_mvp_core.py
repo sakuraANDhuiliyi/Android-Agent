@@ -490,7 +490,13 @@ class DownloadFileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with patch("httpx.stream", fake_stream):
+            with (
+                patch("agent.tools._pinned_http_stream", fake_stream),
+                patch(
+                    "agent.tools._resolve_public_addresses",
+                    return_value={"93.184.216.34"},
+                ),
+            ):
                 result = download_file(
                     root,
                     "https://example.com/a.bin",

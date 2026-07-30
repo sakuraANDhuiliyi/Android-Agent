@@ -40,7 +40,6 @@ def _handle_spawn_subagent(ctx: ToolContext, tool_input: dict[str, Any]):
     depends_on = tool_input.get("depends_on") or []
     if isinstance(depends_on, str):
         depends_on = [depends_on]
-    fake_result = tool_input.get("fake_result")
     try:
         result = spawn_subagent(
             user_id=ctx.user_id,
@@ -52,7 +51,6 @@ def _handle_spawn_subagent(ctx: ToolContext, tool_input: dict[str, Any]):
             base_revision=tool_input.get("base_revision"),
             settings=ctx.settings,
             on_event=ctx.on_event,
-            fake_result=fake_result if isinstance(fake_result, dict) else None,
             max_children=int(tool_input.get("max_children") or DEFAULT_MAX_SUBAGENTS),
         )
     except Exception as exc:
@@ -131,9 +129,14 @@ register_tool(
             "properties": {
                 "role": {
                     "type": "string",
+                    "enum": ["explore", "reviewer", "test_runner", "implementer"],
                     "description": "explore | reviewer | test_runner | implementer",
                 },
-                "prompt": {"type": "string", "description": "子任务目标"},
+                "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "子任务目标",
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -203,6 +206,7 @@ register_tool(
                 "worktree_id": {"type": "string"},
                 "action": {
                     "type": "string",
+                    "enum": ["merge", "keep", "discard"],
                     "description": "merge | keep | discard",
                 },
             },

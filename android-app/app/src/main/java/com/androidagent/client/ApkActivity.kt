@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.databinding.ActivityApkBinding
@@ -117,6 +118,26 @@ class ApkActivity : AppCompatActivity() {
 
     private fun installDownloadedApk() {
         val apk = downloadedApk ?: return
+        val identity = try {
+            ApkVerifier.inspect(this, apk)
+        } catch (e: Exception) {
+            toast(e.message ?: "APK 校验失败")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("确认安装 APK")
+            .setMessage(
+                "包名: ${identity.packageName}\n" +
+                    "版本: ${identity.versionName}\n" +
+                    "文件 SHA-256: ${identity.sha256}\n" +
+                    "签名 SHA-256: ${identity.signerSha256}",
+            )
+            .setPositiveButton("继续安装") { _, _ -> launchApkInstaller(apk) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun launchApkInstaller(apk: File) {
         val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")

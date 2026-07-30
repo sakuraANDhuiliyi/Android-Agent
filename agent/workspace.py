@@ -12,6 +12,7 @@ from typing import Any
 from agent.database import TaskStore
 from agent.paths import DATA_DIR, validate_id, workspace_path
 from agent.project import load_project_meta
+from agent.safe_paths import resolve_workspace_path
 
 logger = logging.getLogger(__name__)
 
@@ -538,8 +539,9 @@ class WorkspaceRepository:
         entry = target.get(rel_path)
         if not entry:
             return {"ok": False, "error": "file_not_in_checkpoint", "path": rel_path}
-        dest = self.workspace / rel_path
-        if not _is_inside_workspace(dest, self.workspace):
+        try:
+            dest = resolve_workspace_path(self.workspace, rel_path)
+        except PermissionError:
             return {"ok": False, "error": "path_escape", "path": rel_path}
         data = _load_blob(self.user_id, entry["sha256"])
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -558,8 +560,9 @@ class WorkspaceRepository:
         restored: list[str] = []
         for entry in checkpoint["files"]:
             rel = entry["path"]
-            dest = self.workspace / rel
-            if not _is_inside_workspace(dest, self.workspace):
+            try:
+                dest = resolve_workspace_path(self.workspace, rel)
+            except PermissionError:
                 continue
             data = _load_blob(self.user_id, entry["sha256"])
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -570,7 +573,10 @@ class WorkspaceRepository:
         target_paths = {e["path"] for e in checkpoint["files"]}
         for rel in current - target_paths:
             if not self._is_protected_path(rel):
-                (self.workspace / rel).unlink()
+                try:
+                    resolve_workspace_path(self.workspace, rel).unlink()
+                except PermissionError:
+                    continue
         return {"ok": True, "restored": restored}
 
     def _is_protected_path(self, rel: str) -> bool:

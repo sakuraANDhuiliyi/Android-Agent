@@ -21,7 +21,12 @@ from agent.hooks import (
     merge_decisions,
     run_hooks,
 )
-from agent.mcp_client import StdioMcpTransport, create_transport
+from agent.mcp_client import (
+    McpTimeoutError,
+    McpTransportError,
+    StdioMcpTransport,
+    create_transport,
+)
 from agent.mcp_config import (
     McpServerConfig,
     is_project_mcp_trusted,
@@ -150,9 +155,8 @@ class FakeStdioMcpTests(McpHooksFixture):
         cfg.timeout_seconds = 0.5
         transport = StdioMcpTransport(cfg, workspace=self.workspace)
         transport.start()
-        result = transport.call_tool("echo", {"message": "x"}, timeout=0.4)
-        self.assertFalse(result.ok)
-        self.assertIn("超时", str(result.content))
+        with self.assertRaises(McpTimeoutError):
+            transport.call_tool("echo", {"message": "x"}, timeout=0.4)
         transport.close()
 
     def test_crash_and_reconnect_via_manager(self) -> None:
@@ -324,9 +328,8 @@ class FakeStdioMcpTests(McpHooksFixture):
             transport="streamable_http",
             url="http://127.0.0.1:9/mcp",
         )
-        transport = create_transport(cfg)
-        with self.assertRaises(Exception):
-            transport.start()
+        with self.assertRaises(McpTransportError):
+            create_transport(cfg)
 
 
 class HookDecisionTests(McpHooksFixture):

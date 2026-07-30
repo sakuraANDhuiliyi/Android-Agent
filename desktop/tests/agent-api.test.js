@@ -49,11 +49,13 @@ let lastResponse = { status: "ok" };
 function startServer(handler) {
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
-      requests.push({ method: req.method, url: req.url, headers: req.headers });
+      const record = { method: req.method, url: req.url, headers: req.headers };
+      requests.push(record);
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         const parsed = body ? JSON.parse(body) : {};
+        record.body = parsed;
         handler(req, res, parsed);
       });
     });
@@ -102,6 +104,17 @@ async function run() {
   await api.steerJob("j1", "focus");
   const steerReq = requests.find((r) => r.url === "/api/jobs/j1/messages" && r.method === "POST");
   assert.ok(steerReq);
+  assert.strictEqual(steerReq.body.type, "steer");
+  assert.strictEqual(steerReq.body.payload.text, "focus");
+  assert.ok(steerReq.body.message_key);
+
+  await api.restoreCheckpoint("p1", "cp1", "app/src/Main.kt");
+  const restoreReq = requests.find((r) => r.url.includes("/checkpoints/cp1/restore"));
+  assert.deepStrictEqual(restoreReq.body, { path: "app/src/Main.kt" });
+
+  await api.turnDiff("p1", "turn1");
+  const diffReq = requests.find((r) => r.url === "/api/projects/p1/diff?turn_id=turn1");
+  assert.ok(diffReq);
 
   await api.createTerminal("p1", { shell: "/bin/bash" });
   const termReq = requests.find((r) => r.url === "/api/projects/p1/terminals" && r.method === "POST");

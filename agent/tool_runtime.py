@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,21 +31,133 @@ class ToolContext:
     cancel_check: CancelCheck | None
 
 
+def _type_matches(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return False
+
+
+def _validate_schema(value: Any, schema: dict[str, Any], path: str = "$") -> str | None:
+    """Validate the JSON Schema subset used by built-in and MCP tools."""
+    if not isinstance(schema, dict):
+        return f"{path} 的 schema 必须是对象"
+
+    if "const" in schema and value != schema["const"]:
+        return f"{path} 必须等于 {schema['const']!r}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{path} 必须是 {schema['enum']!r} 之一"
+
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if not isinstance(branches, list):
+            continue
+        results = [_validate_schema(value, branch, path) for branch in branches]
+        valid_count = sum(error is None for error in results)
+        if keyword == "allOf" and valid_count != len(results):
+            return next(error for error in results if error is not None)
+        if keyword == "anyOf" and valid_count == 0:
+            return f"{path} 不符合 anyOf 中的任何 schema"
+        if keyword == "oneOf" and valid_count != 1:
+            return f"{path} 必须且只能符合 oneOf 中的一个 schema"
+
+    expected = schema.get("type")
+    if isinstance(expected, list):
+        if not any(_type_matches(value, item) for item in expected):
+            return f"{path} 类型必须是 {expected!r}"
+    elif isinstance(expected, str) and not _type_matches(value, expected):
+        return f"{path} 类型必须是 {expected}"
+
+    if isinstance(value, dict):
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            return f"{path} 的对象 schema 无效"
+        for key in required:
+            if key not in value:
+                return f"{path} 缺少必填参数 {key}"
+        additional = schema.get("additionalProperties", False)
+        for key, item in value.items():
+            child_path = f"{path}.{key}"
+            child_schema = properties.get(key)
+            if child_schema is not None:
+                error = _validate_schema(item, child_schema, child_path)
+                if error:
+                    return error
+            elif additional is False:
+                return f"{path} 包含未声明参数 {key}"
+            elif isinstance(additional, dict):
+                error = _validate_schema(item, additional, child_path)
+                if error:
+                    return error
+        min_properties = schema.get("minProperties")
+        max_properties = schema.get("maxProperties")
+        if min_properties is not None and len(value) < int(min_properties):
+            return f"{path} 至少需要 {min_properties} 个参数"
+        if max_properties is not None and len(value) > int(max_properties):
+            return f"{path} 最多允许 {max_properties} 个参数"
+
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if min_items is not None and len(value) < int(min_items):
+            return f"{path} 至少需要 {min_items} 项"
+        if max_items is not None and len(value) > int(max_items):
+            return f"{path} 最多允许 {max_items} 项"
+        if schema.get("uniqueItems"):
+            encoded = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value]
+            if len(encoded) != len(set(encoded)):
+                return f"{path} 不允许重复项"
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                error = _validate_schema(item, item_schema, f"{path}[{index}]")
+                if error:
+                    return error
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        if min_length is not None and len(value) < int(min_length):
+            return f"{path} 长度不能小于 {min_length}"
+        if max_length is not None and len(value) > int(max_length):
+            return f"{path} 长度不能大于 {max_length}"
+        pattern = schema.get("pattern")
+        if pattern is not None:
+            try:
+                if re.search(str(pattern), value) is None:
+                    return f"{path} 不符合格式 {pattern!r}"
+            except re.error as exc:
+                return f"{path} 的 schema pattern 无效: {exc}"
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if minimum is not None and value < minimum:
+            return f"{path} 不能小于 {minimum}"
+        if maximum is not None and value > maximum:
+            return f"{path} 不能大于 {maximum}"
+
+    return None
+
+
 def _validate_input(spec: ToolSpec, tool_input: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    """Basic JSON-schema validation: required fields must be present."""
+    """Validate model-controlled input before hooks, approval, or execution."""
     if not isinstance(tool_input, dict):
         return {}, "工具输入必须是对象"
 
-    schema = spec.input_schema or {}
-    required = schema.get("required", [])
-    if not isinstance(required, list):
-        required = []
-
-    for key in required:
-        if key not in tool_input:
-            return tool_input, f"缺少必填参数 {key}"
-
-    return tool_input, None
+    return tool_input, _validate_schema(tool_input, spec.input_schema or {})
 
 
 def _find_replay(
@@ -165,9 +279,10 @@ def execute_tool(
     if spec is None:
         return ToolResult(False, f"未知工具: {name}")
 
-    validated, error = _validate_input(spec, tool_input or {})
+    candidate_input = tool_input if tool_input is not None else {}
+    validated, error = _validate_input(spec, candidate_input)
     if error:
-        return ToolResult(False, error)
+        return ToolResult(False, error, error_type="InvalidToolInput")
 
     # PreToolUse hooks — may modify input but cannot escalate path access.
     pre = run_hooks(
@@ -183,7 +298,7 @@ def execute_tool(
         validated = pre.modified_input
         revalidated, re_error = _validate_input(spec, validated)
         if re_error:
-            return ToolResult(False, re_error)
+            return ToolResult(False, re_error, error_type="InvalidToolInput")
         validated = revalidated
 
     if pre.action == "deny":

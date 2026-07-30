@@ -394,8 +394,15 @@ class ConversationEventsApiTests(unittest.TestCase):
         self.assertEqual(response.json()["job"]["id"], task_id)
         self.assertEqual(response.json()["job"]["result"], "done")
 
+        ticket_response = self.client.post(
+            "/api/ws/tickets",
+            headers=self._headers(),
+            json={"resource_type": "job", "resource_id": task_id},
+        )
+        self.assertEqual(ticket_response.status_code, 201)
+        ticket = ticket_response.json()["ticket"]
         with self.client.websocket_connect(
-            f"/api/ws/jobs/{task_id}?token={self.alice_token}"
+            f"/api/ws/jobs/{task_id}?ticket={ticket}"
         ) as websocket:
             event = websocket.receive_json()
             done = websocket.receive_json()

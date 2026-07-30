@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         prefs.serverUrl = serverUrl
         prefs.apiToken = binding.editApiToken.text?.toString()?.trim().orEmpty()
         if (prefs.apiToken.isBlank()) {
-            toast("请先注册用户")
+            toast("请输入服务端生成的访问 Token")
             return
         }
         api = AgentApi(serverUrl, prefs.apiToken)
@@ -132,35 +132,44 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmRegisterUser() {
         val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
+        val registrationToken =
+            binding.editRegistrationToken.text?.toString()?.trim().orEmpty()
         if (serverUrl.isBlank()) {
             toast("请填写服务器地址")
             return
         }
+        if (registrationToken.isBlank()) {
+            toast("请输入服务端配置的注册密钥")
+            return
+        }
         if (prefs.apiToken.isBlank()) {
-            registerUser(serverUrl)
+            registerUser(serverUrl, registrationToken)
             return
         }
         AlertDialog.Builder(this)
             .setTitle(R.string.register_confirm_title)
             .setMessage(R.string.register_confirm_message)
-            .setPositiveButton(R.string.register_user) { _, _ -> registerUser(serverUrl) }
+            .setPositiveButton(R.string.register_user) { _, _ ->
+                registerUser(serverUrl, registrationToken)
+            }
             .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
-    private fun registerUser(serverUrl: String) {
+    private fun registerUser(serverUrl: String, registrationToken: String) {
         prefs.serverUrl = serverUrl
         setBusy(true)
         lifecycleScope.launch {
             try {
                 val account = withContext(Dispatchers.IO) {
-                    AgentApi(serverUrl).register()
+                    AgentApi(serverUrl).register(registrationToken)
                 }
                 prefs.userId = account.userId
                 prefs.apiToken = account.token
                 prefs.selectedProjectId = null
                 binding.editUserId.setText(account.userId)
                 binding.editApiToken.setText(account.token)
+                binding.editRegistrationToken.text?.clear()
                 api = AgentApi(serverUrl, account.token)
                 appendLog("注册成功，用户 ID: ${account.userId}")
                 connectServer()
@@ -514,6 +523,27 @@ class MainActivity : AppCompatActivity() {
             toast("请先下载 APK")
             return
         }
+        val identity = try {
+            ApkVerifier.inspect(this, apk)
+        } catch (e: Exception) {
+            appendLog("拒绝安装 APK: ${e.message}")
+            toast(e.message ?: "APK 校验失败")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("确认安装 APK")
+            .setMessage(
+                "包名: ${identity.packageName}\n" +
+                    "版本: ${identity.versionName}\n" +
+                    "文件 SHA-256: ${identity.sha256}\n" +
+                    "签名 SHA-256: ${identity.signerSha256}",
+            )
+            .setPositiveButton("继续安装") { _, _ -> launchApkInstaller(apk) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun launchApkInstaller(apk: File) {
         val uri = FileProvider.getUriForFile(
             this,
             "${packageName}.fileprovider",

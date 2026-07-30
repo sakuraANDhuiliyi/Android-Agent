@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 import signal
 import subprocess
 import threading
@@ -132,6 +134,63 @@ def build_minimal_env(
                 continue
             env[key] = value
     return env
+
+
+def build_sandboxed_command(
+    argv: list[str],
+    workspace: Path,
+    *,
+    allow_network: bool = False,
+    env: dict[str, str] | None = None,
+    extra_read_paths: list[Path] | None = None,
+) -> list[str]:
+    """Wrap a command in the host OS sandbox when a supported backend exists."""
+    sandbox_exec = shutil.which("sandbox-exec")
+    if platform.system() != "Darwin" or not sandbox_exec:
+        return list(argv)
+
+    root = workspace.resolve()
+    read_paths = {str(root)}
+    for key in ("JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        value = (env or {}).get(key)
+        if value:
+            read_paths.add(str(Path(value).resolve()))
+    for item in extra_read_paths or []:
+        if item.exists():
+            read_paths.add(str(item.resolve()))
+
+    def subpath_rule(action: str, path: str) -> str:
+        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        return f'({action} (subpath "{escaped}"))'
+
+    home = str(Path.home().resolve())
+    profile_lines = [
+        "(version 1)",
+        "(allow default)",
+        "(deny network*)",
+        subpath_rule("deny file-read*", home),
+        subpath_rule("deny file-write*", home),
+    ]
+    profile_lines.extend(subpath_rule("allow file-read*", path) for path in sorted(read_paths))
+    profile_lines.append(subpath_rule("allow file-write*", str(root)))
+    if allow_network:
+        profile_lines.append("(allow network*)")
+    profile = "\n".join(profile_lines)
+    return [sandbox_exec, "-p", profile, *argv]
+
+
+def _apply_resource_limits(timeout_seconds: float) -> None:
+    try:
+        import resource
+
+        cpu_limit = max(1, min(int(timeout_seconds) + 5, 1800))
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
+        if hasattr(resource, "RLIMIT_NPROC"):
+            resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 30, 1 << 30))
+    except (ImportError, OSError, ValueError):
+        return
 
 
 def _resolve_cwd(cwd: str | Path | None, workspace: Path) -> Path:
@@ -296,6 +355,29 @@ def run_command(
 
     resolved_cwd = _resolve_cwd(cwd, workspace)
     minimal_env = build_minimal_env(env, allowed_env_vars)
+    executable = argv[0]
+    executable_path = Path(executable)
+    if executable_path.is_absolute():
+        executable_exists = executable_path.is_file()
+    elif os.sep in executable:
+        executable_exists = (resolved_cwd / executable_path).is_file()
+    else:
+        executable_exists = shutil.which(
+            executable,
+            path=minimal_env.get("PATH"),
+        ) is not None
+    if not executable_exists:
+        raise ProcessStartError(f"无法启动进程: 找不到可执行文件 {executable}")
+    child_home = workspace.resolve() / ".agent-home"
+    child_home.mkdir(parents=True, exist_ok=True)
+    minimal_env["HOME"] = str(child_home)
+    minimal_env.setdefault("GRADLE_USER_HOME", str(workspace.resolve() / ".gradle"))
+    command = build_sandboxed_command(
+        argv,
+        workspace,
+        allow_network=False,
+        env=minimal_env,
+    )
 
     popen_kwargs: dict[str, Any] = {
         "cwd": resolved_cwd,
@@ -303,6 +385,7 @@ def run_command(
         "stdout": subprocess.PIPE,
         "text": True,
         "start_new_session": True,
+        "preexec_fn": lambda: _apply_resource_limits(timeout_seconds),
     }
     if combine_output:
         popen_kwargs["stderr"] = subprocess.STDOUT
@@ -310,7 +393,7 @@ def run_command(
         popen_kwargs["stderr"] = subprocess.PIPE
 
     try:
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        proc = subprocess.Popen(command, **popen_kwargs)
     except Exception as exc:
         raise ProcessStartError(f"无法启动进程: {exc}") from exc
 

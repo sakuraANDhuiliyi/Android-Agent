@@ -22,11 +22,44 @@ max_turns: 15
 max_auto_continuations: 2  # 每 15 轮自动续接，2 表示最多共 45 轮
 auto_build_after_edit: false
 
-server_host: 0.0.0.0
+server_host: 127.0.0.1
 server_port: 8000
 
-# App 通过 POST /api/register 自助注册。账号保存在 data/users.db，
-# 每个用户只能访问 workspaces/{user_id}/ 下的项目。
+# 推荐在服务端运行 `python3 -m agent register-user` 创建账号。
+# 如确需开放网络注册，必须同时配置独立注册密钥：
+# registration_enabled: true
+# registration_token: "请换成随机长字符串"
+# 也可通过环境变量 AGENT_REGISTRATION_TOKEN 提供注册密钥。
+registration_enabled: false
+
+# PTY 终端能够执行任意进程，默认关闭；仅在受信网络中按需启用。
+terminal_enabled: false
+
+# 资源治理与调试界面。Web UI 仅在 server_host 为 loopback 时挂载。
+debug_web_ui_enabled: true
+ws_ticket_ttl_seconds: 30
+max_request_bytes: 2097152
+max_prompt_chars: 100000
+max_projects_per_user: 50
+max_conversations_per_project: 200
+max_active_tasks_per_user: 6
+max_events_per_conversation: 100000
+max_registration_per_hour: 20
+max_requests_per_minute: 600
+minimum_free_disk_bytes: 536870912
+max_build_artifacts_per_project: 50
+max_terminals_per_project: 5
+max_mcp_servers_per_project: 10
+max_memories_per_project: 1000
+max_task_events_per_task: 20000
+
+# 浏览器跨域来源精确白名单。手机原生客户端不受 CORS 限制。
+cors_allowed_origins:
+  - "null"
+  - "http://127.0.0.1:8000"
+  - "http://localhost:8000"
+
+# 账号保存在 data/users.db，每个用户只能访问自己的项目。
 # 可选：保留由管理员预设的固定账号（Token 不可为空）
 # users:
 #   - id: admin

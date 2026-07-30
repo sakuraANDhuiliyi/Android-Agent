@@ -198,6 +198,8 @@ class _AnthropicToolUse:
     id: str = ""
     name: str = ""
     input: dict[str, Any] = field(default_factory=dict)
+    input_error: str | None = None
+    raw_input: str | None = None
 
 
 def stream_anthropic_message(
@@ -246,9 +248,14 @@ def stream_anthropic_message(
                 if current_tool is not None:
                     raw = "".join(tool_json)
                     try:
-                        current_tool.input = json.loads(raw) if raw else {}
-                    except json.JSONDecodeError:
+                        parsed = json.loads(raw) if raw else {}
+                        if not isinstance(parsed, dict):
+                            raise ValueError("tool input must be a JSON object")
+                        current_tool.input = parsed
+                    except (json.JSONDecodeError, ValueError) as exc:
                         current_tool.input = {}
+                        current_tool.input_error = str(exc)
+                        current_tool.raw_input = raw[:4000]
                     tool_uses.append(current_tool)
                     current_tool = None
                     tool_json = []

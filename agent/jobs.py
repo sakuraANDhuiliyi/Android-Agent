@@ -22,12 +22,14 @@ from agent.conversation_events import (
 from agent.conversation_summary import create_semantic_checkpoint
 from agent.database import TaskStore
 from agent.honesty import sanitize_final_answer
+from agent.governance import prune_old_files
 from agent.loop import CancellationRequested, dispatch_agent_tool, run_agent
 from agent.paths import latest_apk_path, user_builds_dir, workspace_path
 from agent.project import load_project_meta
+from agent.project_lifecycle import project_operation
 from agent.redaction import redact_sensitive_value
 from agent.tools import ToolResult, cancel_gradle
-from agent.worker import PauseRequested, TaskWorker
+from agent.worker import PauseRequested, TaskLeaseLost, TaskWorker
 from agent.workspace import WorkspaceRepository
 from agent.subagents import configure_subagent_store, run_subagent_job
 
@@ -37,9 +39,15 @@ logger = logging.getLogger(__name__)
 
 _store = TaskStore()
 _worker: TaskWorker | None = None
+_worker_pool: list[TaskWorker] = []
 _worker_lock = threading.Lock()
 _lock = threading.Lock()
 _project_locks: set[tuple[str, str]] = set()
+
+
+def _release_project_lock(user_id: str, project_id: str) -> None:
+    with _lock:
+        _project_locks.discard((user_id, project_id))
 
 
 def configure_task_store(
@@ -47,27 +55,51 @@ def configure_task_store(
     settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
     global _store
-    if store is not None:
+    if store is not None and store is not _store:
+        stop_worker(wait=True, timeout=5.0)
         _store = store
+    if settings is not None:
+        _store.max_events_per_conversation = int(
+            getattr(settings, "max_events_per_conversation", 100_000)
+        )
+        _store.max_task_events_per_task = int(
+            getattr(settings, "max_task_events_per_task", 20_000)
+        )
     configure_subagent_store(_store)
     recovered = _store.recover_interrupted()
-    if settings is not None:
-        _schedule_recovery_jobs(recovered, settings)
     return recovered
 
 
 def start_worker(settings: Settings) -> TaskWorker:
-    global _worker
+    global _worker, _worker_pool
     with _worker_lock:
         if _worker is not None and _worker.store is not _store:
             # Stop the old worker fully before replacing it, otherwise the old
             # thread may continue to access a stale store or run_agent patch.
             _worker.stop(wait=True, timeout=5.0)
             _worker = None
+            for pooled in _worker_pool:
+                pooled.stop(wait=True, timeout=5.0)
+            _worker_pool = []
         if _worker is not None and _worker._thread is not None and _worker._thread.is_alive():
             return _worker
-        _worker = TaskWorker(_store, _run_job, settings)
+        _worker = TaskWorker(
+            _store,
+            _run_job,
+            settings,
+            project_lock_release=_release_project_lock,
+        )
         _worker.start()
+        _worker_pool = [_worker]
+        for _ in range(2):
+            pooled = TaskWorker(
+                _store,
+                _run_job,
+                settings,
+                project_lock_release=_release_project_lock,
+            )
+            pooled.start()
+            _worker_pool.append(pooled)
     return _worker
 
 
@@ -78,11 +110,13 @@ def ensure_worker_started(settings: Settings | None = None) -> TaskWorker:
 
 
 def stop_worker(wait: bool = False, timeout: float | None = None) -> None:
-    global _worker
+    global _worker, _worker_pool
     with _worker_lock:
-        if _worker is not None:
-            _worker.stop(wait=wait, timeout=timeout)
-            _worker = None
+        workers = list(dict.fromkeys(_worker_pool + ([_worker] if _worker else [])))
+        for worker in workers:
+            worker.stop(wait=wait, timeout=timeout)
+        _worker = None
+        _worker_pool = []
 
 
 def get_job(job_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
@@ -98,9 +132,30 @@ def list_jobs(
 
 
 def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
-    result = dict(job)
+    private_fields = {
+        "apk_path",
+        "build_log_path",
+        "context_json",
+        "claim_owner",
+        "claim_token",
+        "lease_expires_at",
+        "heartbeat_at",
+        "write_lock_key",
+    }
+    result = {
+        key: value
+        for key, value in dict(job).items()
+        if key not in private_fields
+    }
     result["result"] = result.get("final_message")
     result["error"] = result.get("error_message")
+    task_id = result.get("id")
+    result["has_apk"] = bool(job.get("apk_path"))
+    result["has_build_log"] = bool(job.get("build_log_path"))
+    result["apk_url"] = f"/api/jobs/{task_id}/apk" if job.get("apk_path") else None
+    result["build_log_url"] = (
+        f"/api/jobs/{task_id}/log" if job.get("build_log_path") else None
+    )
     return dict(redact_sensitive_value(result))
 
 
@@ -269,10 +324,7 @@ def workspace_status(user_id: str, project_id: str) -> dict[str, Any]:
         "user_id": user_id,
         "project_id": project_id,
         "source_kind": meta.get("source_kind"),
-        "source_url": meta.get("source_url"),
         "default_branch": meta.get("default_branch"),
-        "repo_root": meta.get("repo_root"),
-        "workspace": str(workspace_path(user_id, project_id)),
         "is_git": repo.is_git(),
         "git": git,
     }
@@ -315,6 +367,28 @@ def restore_file(
 
 
 def start_ask_job(
+    user_id: str,
+    project_id: str,
+    prompt: str,
+    settings: Settings | None = None,
+    *,
+    conversation_id: str | None = None,
+    continue_session: bool = True,
+    reset_session: bool = False,
+) -> dict[str, Any]:
+    with project_operation(user_id, project_id):
+        return _start_ask_job_unlocked(
+            user_id,
+            project_id,
+            prompt,
+            settings,
+            conversation_id=conversation_id,
+            continue_session=continue_session,
+            reset_session=reset_session,
+        )
+
+
+def _start_ask_job_unlocked(
     user_id: str,
     project_id: str,
     prompt: str,
@@ -484,7 +558,7 @@ def enqueue_recovery_task(
                 "user_id": user_id,
                 "project_id": project_id,
                 "conversation_id": conversation_id,
-                "prompt": f"自动恢复中断任务（第 {attempt} 次）",
+                "prompt": f"用户确认恢复中断任务（第 {attempt} 次）",
                 "status": "queued",
                 "provider": settings.provider,
                 "model": settings.model,
@@ -517,7 +591,7 @@ def enqueue_recovery_task(
                     "中断前未完成的工具调用已记录为失败；不要假设它已成功。"
                     "只读工具可以重新调用，有副作用的相同工具调用必须重新获得用户确认。"
                 ),
-                "source": "automatic_service_recovery",
+                "source": "explicit_service_recovery",
                 "interrupted_turn_id": recovery["interrupted_turn_id"],
                 "original_task_id": recovery["original_task_id"],
                 "recovery_attempt": attempt,
@@ -552,6 +626,44 @@ def start_recovery_job(
 ) -> dict[str, Any]:
     """Compatibility entrypoint that enqueues a recovery task instead of starting a thread."""
     return enqueue_recovery_task(recovery, settings)
+
+
+def recover_job_explicitly(
+    task_id: str,
+    user_id: str,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    original = _store.get_task(task_id, user_id)
+    if not original:
+        return None
+    with project_operation(user_id, original["project_id"]):
+        if original["status"] not in {"failed", "interrupted"}:
+            return None
+        event_store = ConversationEventStore(_store)
+        turn = event_store.get_turn_by_task(task_id, user_id=user_id)
+        if not turn or turn["status"] != "interrupted":
+            return None
+        root_task_id = original.get("recovery_of_task_id") or task_id
+        for existing in _store.list_tasks(user_id, original["project_id"]):
+            if (
+                existing.get("recovery_of_task_id") == root_task_id
+                and existing["id"] != task_id
+                and existing["status"]
+                in {"queued", "running", "awaiting_approval", "succeeded"}
+            ):
+                raise RuntimeError("该中断任务已有恢复任务")
+        return enqueue_recovery_task(
+            {
+                "user_id": user_id,
+                "project_id": original["project_id"],
+                "conversation_id": original["conversation_id"],
+                "original_task_id": task_id,
+                "interrupted_turn_id": turn["id"],
+                "recovery_root_task_id": root_task_id,
+                "recovery_attempt": int(original.get("recovery_attempt") or 0) + 1,
+            },
+            settings or load_settings(),
+        )
 
 
 def _recovery_replay_guard(
@@ -704,6 +816,8 @@ def _run_job(
     prior_turn_count: int,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    lease_check: Any | None = None,
+    defer_project_unlock: bool = False,
 ) -> None:
     if not conversation_id:
         raise RuntimeError("任务缺少 conversation_id")
@@ -757,6 +871,8 @@ def _run_job(
             return None
 
     def check_cancel() -> None:
+        if lease_check is not None:
+            lease_check()
         messages = _store.get_pending_messages(task_id, types=["cancel"])
         for msg in messages:
             _store.consume_message(msg["id"])
@@ -769,6 +885,8 @@ def _run_job(
             raise CancellationRequested("用户已请求停止任务")
 
     def check_pause() -> None:
+        if lease_check is not None:
+            lease_check()
         messages = _store.get_pending_messages(task_id, types=["pause"])
         for msg in messages:
             _store.consume_message(msg["id"])
@@ -828,6 +946,8 @@ def _run_job(
         )
 
     def on_event(event_type: str, data: Any) -> None:
+        if lease_check is not None:
+            lease_check()
         payload = data if isinstance(data, dict) else {"message": str(data)}
         ui_payload = dict(payload)
         ui_payload.pop("model_output", None)
@@ -858,6 +978,16 @@ def _run_job(
                 payload,
                 context_visible=True,
                 event_key=f"tool_result:{payload['tool_call_id']}",
+            )
+        elif (
+            event_type == EventType.MALFORMED_TOOL_CALL
+            and payload.get("tool_call_id")
+        ):
+            append_canonical(
+                event_type,
+                payload,
+                context_visible=False,
+                event_key=f"malformed_tool_call:{payload['tool_call_id']}",
             )
         elif event_type == EventType.APPROVAL_REQUIRED:
             approval_id = payload.get("approval_id")
@@ -989,68 +1119,63 @@ def _run_job(
 
     def mark_failed(exc: Exception) -> None:
         error = str(exc)
-        terminal_errors: list[str] = []
         try:
-            append_canonical(
-                EventType.TURN_FAILED,
-                {"error": error},
-                event_key=f"turn:{turn_id}:failed",
-            )
-        except Exception as terminal_exc:
-            terminal_errors.append(f"turn_failed 写入失败: {terminal_exc}")
-        try:
-            event_store.update_turn_status(
-                turn_id,
-                "failed",
+            failed_at = time.time()
+            event_store.finalize_lifecycle(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                task_id=task_id,
                 user_id=user_id,
-                finished_at=time.time(),
+                event_type=EventType.TURN_FAILED,
+                event_key=f"turn:{turn_id}:failed",
+                event_payload={"error": error},
+                status="failed",
+                finished_at=failed_at,
                 error_message=error,
+                task_event_type="failed",
+                task_event_payload={
+                    "message": "任务失败",
+                    "error": error,
+                },
             )
         except Exception as terminal_exc:
-            terminal_errors.append(f"Turn 状态写入失败: {terminal_exc}")
-        if terminal_errors:
-            error = error + "; " + "; ".join(terminal_errors)
-        _store.update_task(
-            task_id,
-            status="failed",
-            finished_at=time.time(),
-            error_message=error,
-        )
-        _store.add_event(
-            task_id,
-            "failed",
-            {"message": "任务失败", "error": error},
-        )
+            from agent.diagnostics import get_diagnostic_store
+
+            diagnostic = (
+                f"任务失败且生命周期原子提交失败: {terminal_exc}"
+            )
+            get_diagnostic_store(_store.db_path).record(
+                "jobs",
+                "finalize_failed_task",
+                diagnostic,
+                severity="error",
+                user_id=user_id,
+                project_id=project_id,
+                task_id=task_id,
+                turn_id=turn_id,
+            )
+            _store.update_task(
+                task_id,
+                status="failed",
+                finished_at=time.time(),
+                error_message=f"{error}; {diagnostic}",
+            )
 
     answer = ""
+    lease_lost = False
     try:
         with _lock:
             _project_locks.add((user_id, project_id))
         started_at = time.time()
-        _store.update_task(task_id, status="running", started_at=started_at)
-        event_store.update_turn_status(
-            turn_id,
-            "running",
+        event_store.start_lifecycle(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            task_id=task_id,
             user_id=user_id,
+            project_id=project_id,
+            provider=settings.provider,
+            model=settings.model,
             started_at=started_at,
-        )
-        append_canonical(
-            EventType.TURN_STARTED,
-            {
-                "status": "running",
-                "provider": settings.provider,
-                "model": settings.model,
-            },
-            event_key=f"turn:{turn_id}:started",
-        )
-        _store.add_event(
-            task_id,
-            "started",
-            {
-                "message": "任务开始",
-                "project_id": project_id,
-                "conversation_id": conversation_id,
-            },
         )
         if prior_turn_count:
             _store.add_event(
@@ -1210,7 +1335,12 @@ def _run_job(
             apk = latest_apk_path(user_id, project_id)
             if apk.is_file() and apk.stat().st_mtime >= task_started:
                 task_apk = user_builds_dir(user_id) / project_id / f"{task_id}.apk"
-                shutil.copy2(apk, task_apk)
+                temp_apk = task_apk.with_suffix(".apk.part")
+                try:
+                    shutil.copy2(apk, temp_apk)
+                    temp_apk.replace(task_apk)
+                finally:
+                    temp_apk.unlink(missing_ok=True)
 
         logs = sorted(
             (user_builds_dir(user_id) / project_id).glob("*.log"),
@@ -1229,11 +1359,6 @@ def _run_job(
         changed = record_changes()
         ensure_final_assistant(answer)
         completed_at = time.time()
-        append_canonical(
-            EventType.TURN_COMPLETED,
-            {"status": "succeeded", "result": answer},
-            event_key=f"turn:{turn_id}:completed",
-        )
         try:
             from agent.hooks import run_hooks
 
@@ -1243,8 +1368,18 @@ def _run_job(
                 workspace=workspace,
                 on_event=on_event,
             )
-        except Exception:
-            pass
+        except Exception as hook_exc:
+            from agent.diagnostics import get_diagnostic_store
+
+            get_diagnostic_store(_store.db_path).record(
+                "hooks",
+                "TurnCompleted",
+                str(hook_exc),
+                user_id=user_id,
+                project_id=project_id,
+                task_id=task_id,
+                turn_id=turn_id,
+            )
         try:
             from agent.memory_extract import generate_candidates_for_turn
             from agent.memory_store import get_memory_store
@@ -1282,44 +1417,43 @@ def _run_job(
                 )
         except Exception as mem_exc:
             logger.warning("Memory candidate generation failed: %s", mem_exc)
-        event_store.update_turn_status(
-            turn_id,
-            "succeeded",
+        event_store.finalize_lifecycle(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            task_id=task_id,
             user_id=user_id,
-            finished_at=completed_at,
-        )
-        _store.update_task(
-            task_id,
+            event_type=EventType.TURN_COMPLETED,
+            event_key=f"turn:{turn_id}:completed",
+            event_payload={"status": "succeeded", "result": answer},
             status="succeeded",
             finished_at=completed_at,
             final_message=answer,
             apk_path=str(task_apk) if task_apk else None,
             build_log_path=str(logs[-1]) if logs and logs[-1].stat().st_mtime >= task_started else None,
+            task_event_type="completed",
+            task_event_payload={"message": "本轮完成", "result": answer},
         )
-        _store.add_event(task_id, "completed", {"message": "本轮完成", "result": answer})
+    except TaskLeaseLost:
+        lease_lost = True
+        raise
     except CancellationRequested as exc:
         try:
             record_changes()
             canceled_at = time.time()
-            append_canonical(
-                EventType.TURN_CANCELED,
-                {"error": str(exc)},
-                event_key=f"turn:{turn_id}:canceled",
-            )
-            event_store.update_turn_status(
-                turn_id,
-                "canceled",
+            event_store.finalize_lifecycle(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                task_id=task_id,
                 user_id=user_id,
-                finished_at=canceled_at,
-                error_message=str(exc),
-            )
-            _store.update_task(
-                task_id,
+                event_type=EventType.TURN_CANCELED,
+                event_key=f"turn:{turn_id}:canceled",
+                event_payload={"error": str(exc)},
                 status="canceled",
                 finished_at=canceled_at,
                 error_message=str(exc),
+                task_event_type="canceled",
+                task_event_payload={"message": str(exc)},
             )
-            _store.add_event(task_id, "canceled", {"message": str(exc)})
         except Exception as terminal_exc:
             mark_failed(
                 RuntimeError(
@@ -1327,27 +1461,17 @@ def _run_job(
                 )
             )
     except PauseRequested as exc:
-        try:
-            record_changes()
-            paused_at = time.time()
-            event_store.update_turn_status(
-                turn_id,
-                "paused",
-                user_id=user_id,
-                finished_at=paused_at,
-                error_message=str(exc),
-            )
-            _store.update_task(
-                task_id,
-                status="paused",
-                finished_at=paused_at,
-                error_message=str(exc),
-            )
-            _store.add_event(task_id, "paused", {"message": str(exc)})
-        except Exception as terminal_exc:
-            mark_failed(
-                RuntimeError(f"暂停任务时规范事件写入失败: {terminal_exc}")
-            )
+        record_changes()
+        paused_at = time.time()
+        event_store.update_turn_status(
+            turn_id,
+            "paused",
+            user_id=user_id,
+            finished_at=paused_at,
+            error_message=str(exc),
+        )
+        _store.add_event(task_id, "paused", {"message": str(exc)})
+        raise
     except Exception as exc:
         try:
             record_changes()
@@ -1355,26 +1479,43 @@ def _run_job(
             exc = RuntimeError(f"{exc}; changes 写入失败: {changes_exc}")
         mark_failed(exc)
     finally:
-        try:
-            from agent.hooks import run_hooks
+        if not lease_lost:
+            try:
+                from agent.hooks import run_hooks
 
-            run_hooks(
-                "TaskStopped",
-                user_id=user_id,
-                workspace=workspace,
-                on_event=on_event,
+                run_hooks(
+                    "TaskStopped",
+                    user_id=user_id,
+                    workspace=workspace,
+                    on_event=on_event,
+                )
+            except Exception as hook_exc:
+                from agent.diagnostics import get_diagnostic_store
+
+                get_diagnostic_store(_store.db_path).record(
+                    "hooks",
+                    "TaskStopped",
+                    str(hook_exc),
+                    user_id=user_id,
+                    project_id=project_id,
+                    task_id=task_id,
+                    turn_id=turn_id,
+                )
+            create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
+            logs = sorted(
+                (user_builds_dir(user_id) / project_id).glob("*.log"),
+                key=lambda path: path.stat().st_mtime,
             )
-        except Exception:
-            pass
-        create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
-        logs = sorted(
-            (user_builds_dir(user_id) / project_id).glob("*.log"),
-            key=lambda path: path.stat().st_mtime,
-        )
-        if logs and logs[-1].stat().st_mtime >= task_started:
-            _store.update_task(task_id, build_log_path=str(logs[-1]))
-        with _lock:
-            _project_locks.discard((user_id, project_id))
+            if logs and logs[-1].stat().st_mtime >= task_started:
+                _store.update_task(task_id, build_log_path=str(logs[-1]))
+            keep = int(
+                getattr(settings, "max_build_artifacts_per_project", 50)
+            )
+            artifact_dir = user_builds_dir(user_id) / project_id
+            prune_old_files(artifact_dir, "*.log", keep=keep)
+            prune_old_files(artifact_dir, "*.apk", keep=keep)
+        if not defer_project_unlock:
+            _release_project_lock(user_id, project_id)
 
 
 def wait_for_job(job_id: str, timeout: float | None = None) -> dict[str, Any] | None:

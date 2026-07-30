@@ -1,9 +1,10 @@
 <resources>
     <string name="app_name">Android Agent</string>
     <string name="server_url_hint">http://192.168.1.100:8000</string>
-    <string name="api_token_hint">访问 Token（注册后自动保存）</string>
-    <string name="user_id_hint">用户 ID（注册后自动生成）</string>
-    <string name="register_user">初始化设备连接</string>
+    <string name="api_token_hint">访问 Token（必填，由服务端生成）</string>
+    <string name="user_id_hint">用户 ID（连接后自动读取）</string>
+    <string name="registration_token_hint">注册密钥（仅网络初始化时填写，不保存）</string>
+    <string name="register_user">使用注册密钥初始化</string>
     <string name="register_confirm_title">重新初始化连接？</string>
     <string name="register_confirm_message">这会生成新的设备 ID 和 Token，原连接下的项目不会显示。</string>
     <string name="connect">连接</string>

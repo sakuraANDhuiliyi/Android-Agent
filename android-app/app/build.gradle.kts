@@ -3,6 +3,17 @@ plugins {
     alias(libs.plugins.jetbrainsKotlinAndroid)
 }
 
+val releaseStorePath = System.getenv("ANDROID_AGENT_KEYSTORE")
+val releaseStorePassword = System.getenv("ANDROID_AGENT_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ANDROID_AGENT_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ANDROID_AGENT_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.androidagent.client"
     compileSdk = 36
@@ -12,13 +23,31 @@ android {
         applicationId = "com.androidagent.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = System.getenv("ANDROID_AGENT_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("ANDROID_AGENT_VERSION_NAME") ?: "1.0.0"
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
+        debug {
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -26,17 +55,28 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+}
+
+tasks.register("verifyReleaseSigning") {
+    doLast {
+        check(hasReleaseSigning) {
+            "Release signing requires ANDROID_AGENT_KEYSTORE, " +
+                "ANDROID_AGENT_KEYSTORE_PASSWORD, ANDROID_AGENT_KEY_ALIAS and " +
+                "ANDROID_AGENT_KEY_PASSWORD"
+        }
     }
 }
 

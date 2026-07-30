@@ -32,6 +32,7 @@ class ConversationEventType:
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     CONTEXT_CHECKPOINT = "context_checkpoint"
+    CONTEXT_CHECKPOINT_INVALIDATED = "context_checkpoint_invalidated"
     SYSTEM_NOTE = "system_note"
     RECOVERY_NOTE = "recovery_note"
     TURN_STARTED = "turn_started"
@@ -45,6 +46,8 @@ class ConversationEventType:
     MODEL_SWITCH = "model_switch"
     APPROVAL_REQUIRED = "approval_required"
     APPROVAL_RESOLVED = "approval_resolved"
+    MALFORMED_TOOL_CALL = "malformed_tool_call"
+    LIFECYCLE_RECONCILED = "lifecycle_reconciled"
 
 
 CONTEXT_EVENT_TYPES = frozenset(
@@ -315,6 +318,240 @@ class ConversationEventStore:
             raise TurnNotFoundError(f"updated turn could not be read: {turn_id}")
         return turn
 
+    def finalize_lifecycle(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        task_id: str,
+        user_id: str,
+        event_type: str,
+        event_key: str,
+        event_payload: Mapping[str, Any],
+        status: str,
+        finished_at: float,
+        final_message: str | None = None,
+        error_message: str | None = None,
+        apk_path: str | None = None,
+        build_log_path: str | None = None,
+        task_event_type: str | None = None,
+        task_event_payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically append the terminal event and finalize Turn + Task."""
+        self._validate_status(status)
+        if status not in {"succeeded", "failed", "canceled", "interrupted"}:
+            raise InvalidTurnStatusError(
+                f"lifecycle finalization requires terminal status, got {status!r}"
+            )
+        payload_json = self._serialize_payload(event_payload)
+        safe_task_payload = redact_sensitive_value(task_event_payload or {})
+        task_payload_json = json.dumps(
+            safe_task_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        created_at = time.time()
+        with self._store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            turn = conn.execute(
+                """SELECT * FROM conversation_turns
+                   WHERE id=? AND conversation_id=? AND task_id=? AND user_id=?""",
+                (turn_id, conversation_id, task_id, user_id),
+            ).fetchone()
+            task = conn.execute(
+                "SELECT id FROM tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+            if not turn or not task:
+                raise TurnNotFoundError(
+                    "turn/task lifecycle identity does not match"
+                )
+            existing = conn.execute(
+                """SELECT * FROM conversation_events
+                   WHERE conversation_id=? AND event_key=?""",
+                (conversation_id, event_key),
+            ).fetchone()
+            if existing is None:
+                next_seq = conn.execute(
+                    """SELECT COALESCE(MAX(seq), 0) + 1
+                       FROM conversation_events WHERE conversation_id=?""",
+                    (conversation_id,),
+                ).fetchone()[0]
+                event_id = uuid.uuid4().hex
+                conn.execute(
+                    """INSERT INTO conversation_events
+                       (id,conversation_id,turn_id,task_id,seq,event_type,role,
+                        context_visible,provider,model,payload_json,event_key,
+                        created_at,schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                    (
+                        event_id,
+                        conversation_id,
+                        turn_id,
+                        task_id,
+                        next_seq,
+                        event_type,
+                        None,
+                        0,
+                        turn["provider"],
+                        turn["model"],
+                        payload_json,
+                        event_key,
+                        created_at,
+                    ),
+                )
+                existing = conn.execute(
+                    "SELECT * FROM conversation_events WHERE id=?",
+                    (event_id,),
+                ).fetchone()
+            conn.execute(
+                """UPDATE conversation_turns
+                   SET status=?, finished_at=?, error_message=?
+                   WHERE id=?""",
+                (status, finished_at, error_message, turn_id),
+            )
+            conn.execute(
+                """UPDATE tasks
+                   SET status=?, finished_at=?, final_message=?, error_message=?,
+                       apk_path=COALESCE(?, apk_path),
+                       build_log_path=COALESCE(?, build_log_path)
+                   WHERE id=?""",
+                (
+                    status,
+                    finished_at,
+                    final_message,
+                    error_message,
+                    apk_path,
+                    build_log_path,
+                    task_id,
+                ),
+            )
+            if task_event_type:
+                conn.execute(
+                    """INSERT INTO task_events
+                       (task_id,type,message,payload,created_at)
+                       VALUES (?,?,?,?,?)""",
+                    (
+                        task_id,
+                        task_event_type,
+                        safe_task_payload.get("message"),
+                        task_payload_json,
+                        created_at,
+                    ),
+                )
+        if existing is None:
+            raise ConversationEventError("terminal lifecycle event was not persisted")
+        return self._row_to_event(existing)
+
+    def start_lifecycle(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        task_id: str,
+        user_id: str,
+        project_id: str,
+        provider: str | None,
+        model: str | None,
+        started_at: float,
+    ) -> dict[str, Any]:
+        """Atomically record turn_started and mark its Turn + Task running."""
+        payload = {
+            "status": "running",
+            "provider": provider,
+            "model": model,
+        }
+        payload_json = self._serialize_payload(payload)
+        event_key = f"turn:{turn_id}:started"
+        with self._store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            turn = conn.execute(
+                """SELECT id FROM conversation_turns
+                   WHERE id=? AND conversation_id=? AND task_id=? AND user_id=?""",
+                (turn_id, conversation_id, task_id, user_id),
+            ).fetchone()
+            task = conn.execute(
+                "SELECT id FROM tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+            if not turn or not task:
+                raise TurnNotFoundError(
+                    "turn/task lifecycle identity does not match"
+                )
+            existing = conn.execute(
+                """SELECT * FROM conversation_events
+                   WHERE conversation_id=? AND event_key=?""",
+                (conversation_id, event_key),
+            ).fetchone()
+            if existing is None:
+                next_seq = conn.execute(
+                    """SELECT COALESCE(MAX(seq), 0) + 1
+                       FROM conversation_events WHERE conversation_id=?""",
+                    (conversation_id,),
+                ).fetchone()[0]
+                event_id = uuid.uuid4().hex
+                conn.execute(
+                    """INSERT INTO conversation_events
+                       (id,conversation_id,turn_id,task_id,seq,event_type,role,
+                        context_visible,provider,model,payload_json,event_key,
+                        created_at,schema_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                    (
+                        event_id,
+                        conversation_id,
+                        turn_id,
+                        task_id,
+                        next_seq,
+                        ConversationEventType.TURN_STARTED,
+                        None,
+                        0,
+                        provider,
+                        model,
+                        payload_json,
+                        event_key,
+                        started_at,
+                    ),
+                )
+                existing = conn.execute(
+                    "SELECT * FROM conversation_events WHERE id=?",
+                    (event_id,),
+                ).fetchone()
+            conn.execute(
+                """UPDATE conversation_turns
+                   SET status='running', started_at=?, provider=?, model=?
+                   WHERE id=?""",
+                (started_at, provider, model, turn_id),
+            )
+            conn.execute(
+                """UPDATE tasks SET status='running', started_at=?
+                   WHERE id=?""",
+                (started_at, task_id),
+            )
+            conn.execute(
+                """INSERT INTO task_events
+                   (task_id,type,message,payload,created_at)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    task_id,
+                    "started",
+                    "任务开始",
+                    json.dumps(
+                        {
+                            "message": "任务开始",
+                            "project_id": project_id,
+                            "conversation_id": conversation_id,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    started_at,
+                ),
+            )
+        if existing is None:
+            raise ConversationEventError("turn_started was not persisted")
+        return self._row_to_event(existing)
+
     def append_event(
         self,
         conversation_id: str,
@@ -553,6 +790,17 @@ class ConversationEventStore:
                     "turn does not exist or does not belong to the conversation"
                 )
             effective_task_id = task_id if task_id is not None else turn["task_id"]
+            max_events = int(
+                getattr(self._store, "max_events_per_conversation", 100_000)
+            )
+            current_count = conn.execute(
+                "SELECT COUNT(*) FROM conversation_events WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()[0]
+            if current_count >= max_events:
+                raise ConversationEventError(
+                    f"conversation event quota exceeded ({max_events})"
+                )
             next_seq = conn.execute(
                 """SELECT COALESCE(MAX(seq), 0) + 1
                    FROM conversation_events WHERE conversation_id=?""",

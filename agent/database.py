@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 class TaskStore:
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or DATA_DIR / "agent.db"
+        self.max_task_events_per_task = 20_000
+        self.max_events_per_conversation = 100_000
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_db()
         self._migrate_legacy_sessions()
         self._migrate_legacy_conversation_turns()
+        self.reconcile_lifecycle()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -31,6 +34,106 @@ class TaskStore:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
+
+    def reconcile_lifecycle(self) -> list[dict[str, Any]]:
+        """Repair status drift using immutable terminal events as authority."""
+        terminal_status = {
+            "turn_completed": "succeeded",
+            "turn_failed": "failed",
+            "turn_canceled": "canceled",
+            "turn_interrupted": "interrupted",
+        }
+        repaired: list[dict[str, Any]] = []
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT e.*, t.status AS turn_status, t.user_id, t.task_id,
+                       k.status AS task_status
+                FROM conversation_events e
+                JOIN conversation_turns t ON t.id=e.turn_id
+                LEFT JOIN tasks k ON k.id=t.task_id
+                WHERE e.event_type IN
+                    ('turn_completed','turn_failed','turn_canceled','turn_interrupted')
+                ORDER BY e.conversation_id, e.seq DESC
+                """
+            ).fetchall()
+            seen_turns: set[str] = set()
+            for row in rows:
+                turn_id = row["turn_id"]
+                if turn_id in seen_turns:
+                    continue
+                seen_turns.add(turn_id)
+                status = terminal_status[row["event_type"]]
+                if row["turn_status"] == status and (
+                    row["task_id"] is None or row["task_status"] == status
+                ):
+                    continue
+                finished_at = float(row["created_at"])
+                conn.execute(
+                    """UPDATE conversation_turns
+                       SET status=?, finished_at=COALESCE(finished_at, ?)
+                       WHERE id=?""",
+                    (status, finished_at, turn_id),
+                )
+                if row["task_id"]:
+                    task_status = "failed" if status == "interrupted" else status
+                    conn.execute(
+                        """UPDATE tasks
+                           SET status=?, finished_at=COALESCE(finished_at, ?),
+                               claim_owner=NULL, claim_token=NULL,
+                               lease_expires_at=NULL
+                           WHERE id=?""",
+                        (task_status, finished_at, row["task_id"]),
+                    )
+                event_key = f"reconcile:{turn_id}:{status}"
+                existing = conn.execute(
+                    """SELECT id FROM conversation_events
+                       WHERE conversation_id=? AND event_key=?""",
+                    (row["conversation_id"], event_key),
+                ).fetchone()
+                if existing is None:
+                    seq = conn.execute(
+                        """SELECT COALESCE(MAX(seq),0)+1
+                           FROM conversation_events WHERE conversation_id=?""",
+                        (row["conversation_id"],),
+                    ).fetchone()[0]
+                    conn.execute(
+                        """INSERT INTO conversation_events
+                           (id,conversation_id,turn_id,task_id,seq,event_type,
+                            context_visible,payload_json,event_key,created_at,
+                            schema_version)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,1)""",
+                        (
+                            uuid.uuid4().hex,
+                            row["conversation_id"],
+                            turn_id,
+                            row["task_id"],
+                            seq,
+                            "lifecycle_reconciled",
+                            0,
+                            json.dumps(
+                                {
+                                    "authoritative_event_id": row["id"],
+                                    "status": status,
+                                    "previous_turn_status": row["turn_status"],
+                                    "previous_task_status": row["task_status"],
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            event_key,
+                            time.time(),
+                        ),
+                    )
+                repaired.append(
+                    {
+                        "turn_id": turn_id,
+                        "task_id": row["task_id"],
+                        "status": status,
+                    }
+                )
+        return repaired
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -62,8 +165,10 @@ class TaskStore:
                     recovery_attempt INTEGER NOT NULL DEFAULT 0,
                     context_json TEXT,
                     claim_owner TEXT,
+                    claim_token TEXT,
                     lease_expires_at REAL,
                     heartbeat_at REAL,
+                    pause_requested INTEGER NOT NULL DEFAULT 0,
                     attempt INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_user_project
@@ -202,10 +307,16 @@ class TaskStore:
                 )
             if "claim_owner" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN claim_owner TEXT")
+            if "claim_token" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN claim_token TEXT")
             if "lease_expires_at" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN lease_expires_at REAL")
             if "heartbeat_at" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN heartbeat_at REAL")
+            if "pause_requested" not in cols:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0"
+                )
             if "attempt" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
             if "context_json" not in cols:
@@ -495,15 +606,16 @@ class TaskStore:
                 if row["status"] == "queued":
                     conn.execute(
                         """UPDATE tasks SET claim_owner=NULL, lease_expires_at=NULL,
-                           heartbeat_at=NULL, attempt=0
+                           heartbeat_at=NULL, claim_token=NULL, attempt=0
                            WHERE id=?""",
                         (row["id"],),
                     )
                     continue
                 if row["status"] == "paused":
                     conn.execute(
-                        """UPDATE tasks SET status='queued', claim_owner=NULL,
-                           lease_expires_at=NULL, heartbeat_at=NULL
+                        """UPDATE tasks SET claim_owner=NULL, claim_token=NULL,
+                           lease_expires_at=NULL, heartbeat_at=NULL,
+                           pause_requested=0
                            WHERE id=?""",
                         (row["id"],),
                     )
@@ -514,7 +626,8 @@ class TaskStore:
                     msg = "Agent 服务重启，任务执行已中断"
                 conn.execute(
                     """UPDATE tasks SET status='failed', finished_at=?, error_message=?,
-                       claim_owner=NULL, lease_expires_at=NULL, heartbeat_at=NULL
+                       claim_owner=NULL, claim_token=NULL, lease_expires_at=NULL,
+                       heartbeat_at=NULL, pause_requested=0
                        WHERE id=?""",
                     (now, msg, row["id"]),
                 )
@@ -875,7 +988,6 @@ class TaskStore:
                     safe_task.get("write_lock_key"),
                 ),
             )
-
     def update_task(self, task_id: str, **values: Any) -> None:
         if not values:
             return
@@ -906,6 +1018,18 @@ class TaskStore:
                     message,
                     json.dumps(safe_payload, ensure_ascii=False, default=str),
                     created_at,
+                ),
+            )
+            conn.execute(
+                """DELETE FROM task_events
+                   WHERE task_id=? AND id NOT IN (
+                       SELECT id FROM task_events
+                       WHERE task_id=? ORDER BY id DESC LIMIT ?
+                   )""",
+                (
+                    task_id,
+                    task_id,
+                    int(self.max_task_events_per_task),
                 ),
             )
         return {
@@ -1038,11 +1162,22 @@ class TaskStore:
                 if blocked:
                     continue
                 attempt = int(row["attempt"] or 0) + 1
+                claim_token = uuid.uuid4().hex
                 cursor = conn.execute(
                     """UPDATE tasks SET status='running', claim_owner=?,
-                       lease_expires_at=?, heartbeat_at=?, attempt=?, started_at=?
+                       claim_token=?, lease_expires_at=?, heartbeat_at=?,
+                       pause_requested=0, attempt=?, started_at=?
                        WHERE id=? AND (status='queued' OR (status='running' AND lease_expires_at<?))""",
-                    (worker_id, lease_expires, now, attempt, now, row["id"], now),
+                    (
+                        worker_id,
+                        claim_token,
+                        lease_expires,
+                        now,
+                        attempt,
+                        now,
+                        row["id"],
+                        now,
+                    ),
                 )
                 if cursor.rowcount == 0:
                     continue
@@ -1053,7 +1188,14 @@ class TaskStore:
                         row["id"],
                         "claimed",
                         "任务被 worker 认领",
-                        json.dumps({"worker_id": worker_id}, ensure_ascii=False),
+                        json.dumps(
+                            {
+                                "worker_id": worker_id,
+                                "attempt": attempt,
+                                "claim_token": claim_token,
+                            },
+                            ensure_ascii=False,
+                        ),
                         now,
                     ),
                 )
@@ -1063,21 +1205,52 @@ class TaskStore:
                 return self._row_to_task(updated)
         return None
 
-    def heartbeat_task(self, task_id: str, worker_id: str, lease_seconds: float = 300.0) -> bool:
+    def heartbeat_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_seconds: float = 300.0,
+        *,
+        claim_token: str | None = None,
+    ) -> bool:
         now = time.time()
+        token_clause = " AND claim_token=?" if claim_token is not None else ""
+        params: list[Any] = [now, now + lease_seconds, task_id, worker_id]
+        if claim_token is not None:
+            params.append(claim_token)
         with self._connect() as conn:
             cursor = conn.execute(
                 """UPDATE tasks SET heartbeat_at=?, lease_expires_at=?
-                   WHERE id=? AND claim_owner=? AND status='running'""",
-                (now, now + lease_seconds, task_id, worker_id),
+                   WHERE id=? AND claim_owner=?
+                     AND status IN ('running','awaiting_approval')"""
+                + token_clause,
+                params,
             )
         return cursor.rowcount > 0
+
+    def claim_is_valid(
+        self,
+        task_id: str,
+        worker_id: str,
+        claim_token: str,
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM tasks
+                   WHERE id=? AND claim_owner=? AND claim_token=?
+                     AND status IN ('running','awaiting_approval')
+                     AND lease_expires_at>=?""",
+                (task_id, worker_id, claim_token, time.time()),
+            ).fetchone()
+        return row is not None
 
     def release_task(
         self,
         task_id: str,
         worker_id: str,
         status: str,
+        *,
+        claim_token: str | None = None,
         **values: Any,
     ) -> bool:
         encoded = dict(redact_sensitive_value(values))
@@ -1085,15 +1258,21 @@ class TaskStore:
             encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
         encoded["status"] = status
         encoded["claim_owner"] = None
+        encoded["claim_token"] = None
         encoded["lease_expires_at"] = None
         encoded["heartbeat_at"] = None
+        encoded["pause_requested"] = 0
         if status in {"succeeded", "failed", "canceled", "interrupted"}:
             encoded["finished_at"] = time.time()
         columns = ", ".join(f"{key}=?" for key in encoded)
+        token_clause = " AND claim_token=?" if claim_token is not None else ""
+        params = [*encoded.values(), task_id, worker_id]
+        if claim_token is not None:
+            params.append(claim_token)
         with self._connect() as conn:
             cursor = conn.execute(
-                f"UPDATE tasks SET {columns} WHERE id=? AND claim_owner=?",
-                (*encoded.values(), task_id, worker_id),
+                f"UPDATE tasks SET {columns} WHERE id=? AND claim_owner=?{token_clause}",
+                params,
             )
         return cursor.rowcount > 0
 
@@ -1156,26 +1335,34 @@ class TaskStore:
     def pause_task(self, task_id: str, user_id: str) -> bool:
         now = time.time()
         with self._connect() as conn:
-            cursor = conn.execute(
-                """UPDATE tasks SET status='paused', cancel_requested=0
-                   WHERE id=? AND user_id=? AND status IN ('queued','running')""",
+            queued = conn.execute(
+                """UPDATE tasks SET status='paused', cancel_requested=0,
+                   pause_requested=0
+                   WHERE id=? AND user_id=? AND status='queued'""",
                 (task_id, user_id),
             )
-            if cursor.rowcount > 0:
+            running = conn.execute(
+                """UPDATE tasks SET pause_requested=1
+                   WHERE id=? AND user_id=? AND status='running'""",
+                (task_id, user_id),
+            )
+            changed = queued.rowcount > 0 or running.rowcount > 0
+            if changed:
                 conn.execute(
                     """INSERT OR IGNORE INTO task_messages
                        (task_id, message_key, type, payload, created_at)
                        VALUES (?,?,?,?,?)""",
                     (task_id, f"pause:{task_id}", "pause", "{}", now),
                 )
-        return cursor.rowcount > 0
+        return changed
 
     def resume_task(self, task_id: str, user_id: str) -> bool:
         now = time.time()
         with self._connect() as conn:
             cursor = conn.execute(
                 """UPDATE tasks SET status='queued', claim_owner=NULL,
-                   lease_expires_at=NULL, heartbeat_at=NULL
+                   claim_token=NULL, lease_expires_at=NULL, heartbeat_at=NULL,
+                   pause_requested=0
                    WHERE id=? AND user_id=? AND status='paused'""",
                 (task_id, user_id),
             )

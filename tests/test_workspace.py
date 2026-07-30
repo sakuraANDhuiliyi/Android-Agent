@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.api import create_app
+from agent.config import Settings, UserAccount
 from agent.database import TaskStore
 from agent.paths import BUILDS_DIR, DATA_DIR, TEMPLATE_DIR, WORKSPACES_DIR
 from agent.project import import_project, init_project
@@ -72,6 +73,26 @@ def _make_minimal_template(root: Path) -> None:
     gradle_dir = root / "gradle" / "wrapper"
     gradle_dir.mkdir(parents=True)
     (gradle_dir / "gradle-wrapper.properties").write_text("distributionBase=GRADLE_USER_HOME", encoding="utf-8")
+
+
+def _api_settings() -> Settings:
+    return Settings(
+        provider="openai",
+        api_key="fake",
+        model="fake",
+        model_candidates=["fake"],
+        max_turns=2,
+        max_auto_continuations=0,
+        max_gradle_retries=1,
+        compact_max_chars=50_000,
+        max_output_tokens=1024,
+        base_url="https://example.test",
+        auto_build_after_edit=False,
+        server_host="127.0.0.1",
+        server_port=8000,
+        api_token="",
+        users=[UserAccount(id="local", token="test-token")],
+    )
 
 
 class IsolatedWorkspaceMixin:
@@ -404,9 +425,14 @@ class WorkspaceApiTests(IsolatedWorkspaceMixin, unittest.TestCase):
         self.store = self._store()
         from agent.users import UserStore
         self.user_store = UserStore(self._data / "users.db")
-        self.alice_token = self.user_store.register()[1]
+        self.alice_token = "test-token"
         self.client = TestClient(
-            create_app(task_store=self.store, user_store=self.user_store)
+            create_app(
+                settings=_api_settings(),
+                task_store=self.store,
+                user_store=self.user_store,
+            ),
+            headers={"Authorization": f"Bearer {self.alice_token}"},
         )
 
     def tearDown(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 import uuid
@@ -18,10 +19,15 @@ POLL_INTERVAL = 1.0
 HEARTBEAT_INTERVAL = 30.0
 
 RunJobFn = Callable[..., None]
+ProjectLockReleaseFn = Callable[[str, str], None]
 
 
 class PauseRequested(RuntimeError):
     """Raised when a running task is asked to pause."""
+
+
+class TaskLeaseLost(RuntimeError):
+    """Raised when a worker no longer owns the task execution lease."""
 
 
 class _FollowUpRequested(RuntimeError):
@@ -43,6 +49,7 @@ class TaskWorker:
         *,
         lease_seconds: float = LEASE_SECONDS,
         poll_interval: float = POLL_INTERVAL,
+        project_lock_release: ProjectLockReleaseFn | None = None,
     ):
         self.worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.store = store
@@ -50,6 +57,7 @@ class TaskWorker:
         self.settings = settings
         self.lease_seconds = lease_seconds
         self.poll_interval = poll_interval
+        self.project_lock_release = project_lock_release
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._running_task: dict[str, Any] | None = None
@@ -88,12 +96,8 @@ class TaskWorker:
         return task
 
     def _loop(self) -> None:
-        last_heartbeat = 0.0
         while not self._stop.is_set():
             try:
-                if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL:
-                    self._heartbeat_running()
-                    last_heartbeat = time.monotonic()
                 task = self.store.claim_next_task(self.worker_id, self.lease_seconds)
                 if task is None:
                     time.sleep(self.poll_interval)
@@ -105,48 +109,119 @@ class TaskWorker:
                 finally:
                     with self._lock:
                         self._running_task = None
+            except sqlite3.OperationalError as exc:
+                if (
+                    "unable to open database file" in str(exc).lower()
+                    and not self.store.db_path.parent.exists()
+                ):
+                    logger.info("Worker store disappeared; stopping %s", self.worker_id)
+                    return
+                logger.exception("Worker loop database error")
+                time.sleep(self.poll_interval)
             except Exception:
                 logger.exception("Worker loop error")
                 time.sleep(self.poll_interval)
 
-    def _heartbeat_running(self) -> None:
-        with self._lock:
-            task = self._running_task
-        if task is None:
-            return
-        try:
-            self.store.heartbeat_task(task["id"], self.worker_id, self.lease_seconds)
-        except Exception:
-            logger.exception("Heartbeat failed for task %s", task["id"])
-
     def _execute(self, task: dict[str, Any]) -> None:
-        event_store = ConversationEventStore(self.store)
-        turn = event_store.get_turn_by_task(task["id"], user_id=task["user_id"])
-        if not turn:
-            logger.error("Task %s has no turn; releasing as failed", task["id"])
-            self.store.release_task(task["id"], self.worker_id, "failed", error_message="找不到对应的 turn")
-            return
-        turn_id = turn["id"]
-        conversation_id = task["conversation_id"]
-        if not conversation_id:
-            logger.error("Task %s has no conversation_id; releasing as failed", task["id"])
-            self.store.release_task(task["id"], self.worker_id, "failed", error_message="缺少 conversation_id")
-            return
-
-        settings = self._task_settings(task)
-        history_events = event_store.list_events(conversation_id, user_id=task["user_id"])
-        prior_turn_count = len(
-            {
-                event["turn_id"]
-                for event in history_events
-                if event["turn_id"] != turn_id
-            }
-        )
-        context = task.get("context") or {}
-        recovery_replays = context.get("recovery_replays")
-        recovery_mode = bool(context.get("recovery_mode") or task.get("recovery_of_task_id"))
-
         try:
+            self._execute_claimed(task)
+        finally:
+            if self.project_lock_release is not None:
+                self.project_lock_release(task["user_id"], task["project_id"])
+
+    def _execute_claimed(self, task: dict[str, Any]) -> None:
+        claim_token = str(task.get("claim_token") or "")
+        if not claim_token:
+            self.store.release_task(
+                task["id"],
+                self.worker_id,
+                "failed",
+                error_message="任务租约缺少 fencing token",
+            )
+            return
+        heartbeat_stop = threading.Event()
+        lease_lost = threading.Event()
+        heartbeat_interval = max(
+            0.01,
+            min(HEARTBEAT_INTERVAL, self.lease_seconds / 3),
+        )
+
+        def heartbeat_loop() -> None:
+            while not heartbeat_stop.wait(heartbeat_interval):
+                try:
+                    renewed = self.store.heartbeat_task(
+                        task["id"],
+                        self.worker_id,
+                        self.lease_seconds,
+                        claim_token=claim_token,
+                    )
+                except Exception:
+                    logger.exception("Heartbeat failed for task %s", task["id"])
+                    renewed = False
+                if not renewed:
+                    lease_lost.set()
+                    return
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_loop,
+            name=f"task-heartbeat-{task['id'][:8]}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
+        def check_lease() -> None:
+            if lease_lost.is_set() or not self.store.claim_is_valid(
+                task["id"],
+                self.worker_id,
+                claim_token,
+            ):
+                lease_lost.set()
+                raise TaskLeaseLost("任务租约已失效，停止旧执行器写入")
+
+        event_store = ConversationEventStore(self.store)
+        try:
+            turn = event_store.get_turn_by_task(task["id"], user_id=task["user_id"])
+            if not turn:
+                logger.error("Task %s has no turn; releasing as failed", task["id"])
+                self.store.release_task(
+                    task["id"],
+                    self.worker_id,
+                    "failed",
+                    claim_token=claim_token,
+                    error_message="找不到对应的 turn",
+                )
+                return
+            turn_id = turn["id"]
+            conversation_id = task["conversation_id"]
+            if not conversation_id:
+                logger.error("Task %s has no conversation_id; releasing as failed", task["id"])
+                self.store.release_task(
+                    task["id"],
+                    self.worker_id,
+                    "failed",
+                    claim_token=claim_token,
+                    error_message="缺少 conversation_id",
+                )
+                return
+
+            settings = self._task_settings(task)
+            history_events = event_store.list_events(
+                conversation_id,
+                user_id=task["user_id"],
+            )
+            prior_turn_count = len(
+                {
+                    event["turn_id"]
+                    for event in history_events
+                    if event["turn_id"] != turn_id
+                }
+            )
+            context = task.get("context") or {}
+            recovery_replays = context.get("recovery_replays")
+            recovery_mode = bool(
+                context.get("recovery_mode") or task.get("recovery_of_task_id")
+            )
+            check_lease()
             self.run_fn(
                 task["id"],
                 task["user_id"],
@@ -159,9 +234,16 @@ class TaskWorker:
                 prior_turn_count,
                 recovery_replays,
                 recovery_mode,
+                check_lease,
+                self.project_lock_release is not None,
             )
         except PauseRequested:
-            self.store.release_task(task["id"], self.worker_id, "paused")
+            self.store.release_task(
+                task["id"],
+                self.worker_id,
+                "paused",
+                claim_token=claim_token,
+            )
             try:
                 event_store.update_turn_status(
                     turn_id,
@@ -172,6 +254,9 @@ class TaskWorker:
             except Exception:
                 logger.exception("Failed to set turn status to paused for task %s", task["id"])
             return
+        except TaskLeaseLost:
+            logger.warning("Task %s stopped after losing its lease", task["id"])
+            return
         except Exception as exc:
             logger.exception("Task %s execution failed", task["id"])
             try:
@@ -179,22 +264,33 @@ class TaskWorker:
                     task["id"],
                     self.worker_id,
                     "failed",
+                    claim_token=claim_token,
                     error_message=str(exc),
                 )
             except Exception:
                 logger.exception("Failed to release task %s after error", task["id"])
             return
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=max(1.0, heartbeat_interval * 2))
 
-        # _run_job updates the task status itself; clear our claim.
         fresh = self.store.get_task(task["id"], task["user_id"])
-        if fresh and fresh.get("claim_owner") == self.worker_id:
-            if fresh["status"] == "running":
-                self.store.release_task(task["id"], self.worker_id, "succeeded")
-            else:
-                self.store.release_task(
-                    task["id"], self.worker_id, fresh["status"]
-                )
-        self._create_follow_ups(task)
+        if (
+            fresh
+            and fresh.get("claim_owner") == self.worker_id
+            and fresh.get("claim_token") == claim_token
+        ):
+            final_status = (
+                "succeeded" if fresh["status"] == "running" else fresh["status"]
+            )
+            released = self.store.release_task(
+                task["id"],
+                self.worker_id,
+                final_status,
+                claim_token=claim_token,
+            )
+            if released:
+                self._create_follow_ups(task)
 
     def _create_follow_ups(self, task: dict[str, Any]) -> None:
         messages = self.store.get_pending_messages(task["id"], types=["follow_up"])
@@ -237,8 +333,13 @@ def start_default_worker(
     settings: Settings,
 ) -> TaskWorker:
     """Create and start the default persistent worker."""
-    from agent.jobs import _run_job
+    from agent.jobs import _release_project_lock, _run_job
 
-    worker = TaskWorker(store, _run_job, settings)
+    worker = TaskWorker(
+        store,
+        _run_job,
+        settings,
+        project_lock_release=_release_project_lock,
+    )
     worker.start()
     return worker

@@ -1,6 +1,6 @@
 # Android Agent
 
-Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 可初始化设备连接、创建隔离的 Android 项目，并通过 Agent 修改和构建项目。第一阶段的完整范围见 `MVP_SPEC.md`。
+Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 使用服务端签发的 Token 连接、创建隔离的 Android 项目，并通过 Agent 修改和构建项目。第一阶段的完整范围见 `MVP_SPEC.md`。
 
 ## 第一阶段能力
 
@@ -42,17 +42,23 @@ Authorization: Bearer <token>
 
 `limit` 范围为 1-500，结果按 `seq` 升序返回，并提供 `next_after_seq` 与 `has_more`。接口严格校验 Conversation 所属用户并过滤凭证字段。
 
-当较早历史超过 200 个新增事件或约 120,000 字符时，服务会追加结构化 `context_checkpoint`，提取用户意图、最终结果、工具成败和改动文件，同时保留最近 4 个 Turn 的完整事件。checkpoint 只改变模型上下文边界，不删除数据库事件；任务内 compact 仍作为单次请求超限时的最后保护。
+当较早历史超过 200 个新增事件或约 120,000 字符时，服务会追加结构化 `context_checkpoint`。checkpoint 按目标、约束、决策、未解决事项、文件、测试、工具事实和错误分类，每条事实保留来源 `seq` 并在启用前验证引用范围；无效 checkpoint 会追加失效事件并回退到原始历史。checkpoint 只改变模型上下文边界，不删除数据库事件；任务内 compact 仍作为单次请求超限时的最后保护。
 
-服务重启时，未完成工具会先得到 `service_interrupted` 合成失败结果，再创建新的恢复 Task/Turn 自动继续模型推理，最多连续恢复 3 次。只读工具允许重新调用；如果模型再次请求中断前相同的 `write_file`、`str_replace` 或 `run_gradle`，必须重新经过 `recovery_tool_replay` 审批。下载工具仍沿用每次下载必审的规则。
+服务重启时，未完成工具会先得到 `service_interrupted` 合成失败结果，但不会自动继续模型或重新执行工具。用户可对中断任务调用 `POST /api/jobs/{job_id}/recover` 显式创建恢复 Task/Turn；若恢复模型再次请求有副作用的工具，仍必须重新审批。
 
 规范事件写入、历史读取、Job/WebSocket 输出和事件查询 API 会识别并脱敏 Bearer Token、JWT、常见 API Key 前缀、URL 用户信息以及 `api_key=...` 等自由文本形式。结构化凭证字段继续拒绝写入。自由文本检测属于防泄漏保护而非密码保险库，无法保证识别所有私有密钥格式。
 
-当前已支持跨 Conversation 的可控项目记忆（候选审批 + 本地 FTS 检索）。通用多实例消息队列仍未实现；自动恢复队列覆盖服务启动时发现的中断 Agent Task。
+当前已支持跨 Conversation 的可控项目记忆（候选审批 + 本地 FTS 检索）。通用多实例消息队列仍未实现；服务中断任务仅修复事件链，恢复执行需要用户显式触发。
 
 ## 设备初始化与目录隔离
 
-App 首次使用时填写服务器地址并点击“初始化设备连接”。服务端会生成唯一的 `user_id` 和随机访问 Token：
+服务端默认关闭网络注册。首次使用先在运行 Agent 的电脑上创建账号：
+
+```bash
+python3 -m agent register-user
+```
+
+命令会生成唯一的 `user_id` 和只显示一次的随机访问 Token。把 Token 填入 Android、Web 或桌面客户端：
 
 - 账号数据库：`data/users.db`（只保存 Token 的 SHA-256 哈希）
 - 用户项目：`workspaces/{user_id}/{project_id}`
@@ -60,22 +66,28 @@ App 首次使用时填写服务器地址并点击“初始化设备连接”。�
 
 之后所有 API 请求都通过 `Authorization: Bearer <token>` 确定用户身份。客户端不能通过修改 `user_id` 访问其他用户目录。
 
-> Token 只在注册响应中返回一次。请勿清除 App 数据；丢失 Token 后无法恢复原账号。
+> Token 只显示一次。丢失后无法恢复原账号，需要重新创建账号。
+
+如确需让手机通过网络配对，在 `config.yaml` 同时设置
+`registration_enabled: true` 和随机长字符串 `registration_token`，并在手机端填写该注册密钥。注册密钥不会保存在手机偏好中。
+
+三端统一调用 `POST /api/pair` 完成配对；`POST /api/register` 仅作为旧客户端兼容别名。浏览器 WebSocket 会先通过 Bearer Token 申请 5-120 秒、单次使用且绑定具体 Job/Terminal 的 ticket，长效 Token 不进入 URL。桌面 Token 使用系统 `safeStorage`，Android Token 使用 Keystore 加密，调试 Web 只使用当前标签页的 `sessionStorage`。
 
 ## 启动服务
 
 ```bash
 python3 -m pip install -r requirements.txt
 cp config.yaml.example config.yaml
+python3 -m agent register-user
 python3 -m agent serve
 ```
 
 启动后：
 
-- 可视化操作台：`http://127.0.0.1:8000/ui/`（打开即自动连接本机 `local` 用户，无需注册）
+- 本地调试操作台：`http://127.0.0.1:8000/ui/`（仅 loopback 且 `debug_web_ui_enabled: true` 时挂载）
 - API 文档：`http://127.0.0.1:8000/docs`
 
-手机连接时使用电脑的局域网 IP，例如 `http://192.168.1.100:8000`。无 Token 时 API 同样默认使用 `local` 用户；需要隔离时再走注册或配置 Token。
+服务默认只监听 `127.0.0.1`。手机连接时需要显式把 `server_host` 改为 `0.0.0.0`；Android Debug 构建可在受信局域网使用 `http://192.168.1.100:8000`，Release 构建只允许 HTTPS。所有 API 请求仍必须携带有效 Token。PTY 终端默认关闭，只有在受信网络中确有需要时才设置 `terminal_enabled: true`。
 
 ## 网络搜索（Tavily）
 
@@ -96,11 +108,11 @@ Agent 可调用 `download_file` 将 http/https 资源保存到工程内（推荐
 
 Cursor 式三栏桌面 IDE：左侧文件树 / 搜索 / 对话 / 任务，中间 Monaco + Diff Editor，右侧 Agent 对话 / Plan / 工具 / 审批，底部集成 xterm.js 终端、问题、输出和构建日志。支持对话管理、上下文 chip、断线重连、审批面板、checkpoint 恢复和响应式窄窗口。
 
-需本机已安装 Node.js 18+。
+需本机已安装 Node.js 22.12+。
 
 ```bash
 cd desktop
-npm install
+npm ci
 npm start
 ```
 
@@ -114,14 +126,15 @@ npm start
 ## 验证与构建
 
 ```bash
-# Python（含 Eval / 安全审计 / 故障注入 / 性能预算）
-python3 -m pytest tests -q
+# Python（带 hash 的发布依赖锁 + 全量测试）
+python3 -m pip install --require-hashes -r requirements.lock
+python3 -m unittest discover -s tests -v
 
 # Desktop
 cd desktop && npm run check && npm run test:unit && npm run test:screenshot
 
 # Android
-cd android-app && ./gradlew testDebugUnitTest assembleDebug
+cd android-app && ./gradlew testDebugUnitTest assembleDebug --offline
 
 # 发布门禁（敏感信息扫描 + git diff --check + 上述客户端）
 python3 scripts/release_check.py
@@ -144,14 +157,14 @@ PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for
 
 - Checkpoint 是内容寻址快照，**不是** Git commit。
 - Dirty workspace 恢复冲突时返回 `error=conflict`，不会静默覆盖。
-- 服务重启会为未完成工具写入 `service_interrupted`，并自动排队恢复 Turn（最多 3 次）。
+- 服务重启会为未完成工具写入 `service_interrupted`；只有用户调用恢复接口后才创建新 Turn。
 
 ## 队列、Rules/Skills/MCP/Hooks、Subagent、记忆
 
-- 任务队列：SQLite lease claim + worker heartbeat；同项目主写锁串行。
+- 任务队列：SQLite lease claim + fencing token + 独立心跳；运行中暂停需 worker 确认，有界 worker 池允许隔离 Subagent 并行。
 - Rules / Skills：预算注入 system prompt；恶意越界文件被拒绝。
-- MCP / Hooks：stdio MCP + 崩溃重连；Hook 不能削弱硬拒绝。
-- Subagent：explore / reviewer / test_runner / implementer；worktree 由服务端分配路径。
+- MCP / Hooks：仅启用 stdio MCP；调用结果未知时只重置连接、不重试调用；Hook 不能削弱硬拒绝。
+- Subagent：explore / reviewer / test_runner / implementer；角色工具白名单在定义和执行层双重强制，worktree 由服务端分配路径。仓库若跟踪密钥类文件将拒绝创建 worktree。
 - 项目记忆：候选 → 用户批准 → 检索注入；与 Conversation checkpoint 分离。详见阶段十八。
 
 ## 数据备份与迁移
@@ -170,7 +183,7 @@ workspaces/
 builds/
 ```
 
-可通过 `AGENT_DATA_DIR` 把账号与任务库放到独立磁盘。生产环境应使用 HTTPS，并为 `/api/register` 限流。
+可通过 `AGENT_DATA_DIR` 把账号与任务库放到独立磁盘。生产环境应使用 HTTPS；如启用 `/api/register`，还应在反向代理层限流并定期轮换注册密钥。
 
 ## 桌面打包与 Android 发布
 
@@ -178,11 +191,21 @@ builds/
 
 ```bash
 cd desktop
-npm install
+npm ci
 npm start          # 开发
-# 发布可用 electron-packager / electron-builder（按目标平台安装对应工具后打包）
-# 产物勿提交仓库；分发前运行 npm run check && npm run test:unit
+
+# macOS 发布需要已导入 Keychain 的 Developer ID 与 notarization 凭证；
+# 缺少任一项时打包会直接失败
+export CSC_NAME='Developer ID Application: ...'
+export APPLE_ID='release@example.com'
+export APPLE_APP_SPECIFIC_PASSWORD='从 CI secret 注入'
+export APPLE_TEAM_ID='...'
+npm run dist:mac
+npm run verify:signature -- "dist/Android Agent-darwin-arm64/Android Agent.app"
 ```
+
+桌面自动更新默认关闭。只有打包后的应用设置 `ANDROID_AGENT_UPDATE_URL=https://...`
+才会检查更新；HTTP 更新源会被拒绝，下载仍由平台签名验证保护。
 
 **Android APK**
 
@@ -194,10 +217,41 @@ cd android-app
 # 输出：app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Release 签名从 `ANDROID_AGENT_KEYSTORE`、`ANDROID_AGENT_KEYSTORE_PASSWORD`、
+`ANDROID_AGENT_KEY_ALIAS` 和 `ANDROID_AGENT_KEY_PASSWORD` 注入，私钥不进入仓库。
+版本由 `ANDROID_AGENT_VERSION_CODE` / `ANDROID_AGENT_VERSION_NAME` 注入。
+
+对 APK、DMG/ZIP 等产物生成 checksum、依赖清单和本地 provenance：
+
+```bash
+python3 scripts/generate_release_manifest.py \
+  --artifact android-app/app/build/outputs/apk/release/app-release.apk \
+  --output .artifacts/release-manifest.json
+```
+
+Python 依赖由 `requirements.lock` 的 hash 固定；Node 使用
+`desktop/package-lock.json`；Gradle 使用 dependency lock 和
+`gradle/verification-metadata.xml`。发布门禁另执行 `npm audit --omit=dev`。
+
+## 资源治理与诊断
+
+默认限制请求体、Prompt、项目/Conversation/活动任务、规范事件、Terminal、MCP、
+Memory 和任务流事件数量；磁盘低于水位时拒绝新写任务，构建日志与 APK 按项目保留最近
+一组有限产物。配置项见 `config.yaml.example`。
+
+可选 Hook、MCP reader 和 cleanup 失败会写入脱敏诊断库。当前用户可查询：
+
+```http
+GET /api/diagnostics?project_id=...&task_id=...&limit=100
+Authorization: Bearer <token>
+```
+
 ## 安全边界与已知限制
 
-- 路径沙箱、命令 argv 隔离、下载 SSRF 基础防护、日志/事件脱敏、用户 IDOR 隔离。
-- 已知限制：密钥自由文本检测非完备；审批超时下限 30s；索引/记忆为单机 SQLite；真实 Gradle 构建依赖本机 SDK；Eval 中构建步骤为 mock。
+- 路径解析拒绝前缀和符号链接越界；macOS 子进程额外使用 `sandbox-exec` 禁止网络和用户目录任意读取，并设置资源上限与隔离 HOME。
+- 下载会校验每次 DNS 结果、拒绝私网/混合地址、限制重定向与大小并原子落盘。部署到不受信网络时仍应使用 HTTPS 和出口代理做最终 egress 控制。
+- Android Token 由 Keystore 加密保存，WebSocket 使用 Authorization 头；APK 下载校验服务端 SHA-256，安装前展示包名、版本、文件和签名摘要。
+- 已知限制：密钥自由文本检测非完备；审批超时下限 30s；索引/记忆为单机 SQLite；WS ticket 和速率窗口为单进程内存状态；真实 Gradle 构建依赖本机 SDK/JDK 17；Eval 中构建步骤为 mock。
 
 ## 迁移到云服务器
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:;"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:;"
   />
   <title>Android Agent</title>
   <link rel="stylesheet" href="styles.css" />
@@ -327,12 +327,17 @@
         <input id="serverUrl" type="url" value="http://127.0.0.1:8000" autocomplete="off" />
       </label>
       <label>
-        Token（可选，留空使用 local）
-        <input id="apiToken" type="password" placeholder="留空即 local" autocomplete="off" />
+        访问 Token（必填）
+        <input id="apiToken" type="password" placeholder="python3 -m agent register-user" autocomplete="off" />
       </label>
-      <p class="dialog-hint" id="settingsHint">默认连接本机 Agent 服务。</p>
+      <label>
+        配对密钥（仅首次配对）
+        <input id="registrationToken" type="password" autocomplete="off" />
+      </label>
+      <p class="dialog-hint" id="settingsHint">服务端 API 不接受匿名连接。</p>
       <div class="dialog-actions">
         <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
+        <button type="button" class="ghost-btn" id="btnPair">配对</button>
         <button type="submit" class="primary-btn" value="connect" id="btnConnect">连接</button>
       </div>
     </form>

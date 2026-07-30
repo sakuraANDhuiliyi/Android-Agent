@@ -120,23 +120,14 @@ def create_worktree(
 
     _git(repo, "worktree", "add", "-b", branch, str(wt_path), base)
 
-    # Strip ignored local secrets if they were checked out (rare) or copied.
-    removed = _scrub_secrets(wt_path)
-    if removed:
-        # Commit scrub so "no agent edits" worktrees appear clean.
-        _git(wt_path, "add", "-A", check=False)
-        _git(
-            wt_path,
-            "-c",
-            "user.email=agent@localhost",
-            "-c",
-            "user.name=Android Agent",
-            "commit",
-            "-m",
-            "agent: scrub local secrets from worktree",
-            check=False,
+    exposed = secrets_would_copy(wt_path)
+    if exposed:
+        _git(repo, "worktree", "remove", "--force", str(wt_path), check=False)
+        _git(repo, "branch", "-D", branch, check=False)
+        raise PermissionError(
+            "仓库跟踪了敏感文件，拒绝创建 Agent worktree: "
+            + ", ".join(sorted(exposed)[:20])
         )
-        base = _rev_parse(wt_path)
 
     meta = WorktreeInfo(
         id=wt_id,
@@ -186,22 +177,16 @@ def load_worktree(user_id: str, project_id: str, worktree_id: str) -> WorktreeIn
     )
 
 
-def _scrub_secrets(root: Path) -> list[str]:
-    removed: list[str] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        try:
-            rel = path.relative_to(root).as_posix()
-        except Exception:
-            continue
-        if _looks_like_secret(rel):
-            try:
-                path.unlink()
-                removed.append(rel)
-            except Exception:
-                pass
-    return removed
+def list_worktrees(user_id: str, project_id: str) -> list[WorktreeInfo]:
+    root = worktrees_root(user_id, project_id)
+    if not root.is_dir():
+        return []
+    items: list[WorktreeInfo] = []
+    for meta in sorted(root.glob("*.json")):
+        info = load_worktree(user_id, project_id, meta.stem)
+        if info is not None:
+            items.append(info)
+    return items
 
 
 def worktree_has_changes(info: WorktreeInfo) -> bool:

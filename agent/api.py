@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import socket
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
 from agent.conversation_events import ConversationEventError
@@ -32,18 +35,19 @@ from agent.jobs import (
     list_jobs,
     pause_job,
     request_cancel,
+    recover_job_explicitly,
     restore_checkpoint,
     restore_conversation,
     restore_file,
     resolve_job_approval,
     resume_job,
     start_ask_job,
+    stop_worker,
     update_conversation,
     workspace_diff,
     workspace_status,
 )
 from agent.paths import (
-    DEFAULT_USER_ID,
     build_log_path,
     latest_apk_path,
     user_builds_dir,
@@ -51,11 +55,13 @@ from agent.paths import (
     workspace_path,
 )
 from agent.project import delete_project, init_project, list_projects, load_project_meta
+from agent.project_lifecycle import ProjectDeletingError, project_deletion
 from agent.redaction import redact_sensitive_text
 from agent.repo_index import get_repo_index
 from agent.rules import diagnose_rules, discover_rules, load_rules_for_turn
 from agent.skills import discover_skills_for_context, list_skills, load_skill
 from agent.mcp_manager import get_mcp_manager
+from agent.mcp_manager import reset_mcp_managers
 from agent.mcp_config import is_project_mcp_trusted
 from agent.memory_store import get_memory_store
 from agent.memory_retrieve import retrieve_memories_for_task
@@ -68,18 +74,100 @@ from agent.terminal import (
     terminate_terminal,
     terminal_outputs,
     write_terminal_input,
+    shutdown_terminals,
 )
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
 from agent.users import UserStore
+from agent.worktrees import list_worktrees
+from agent.diagnostics import get_diagnostic_store
+from agent.governance import (
+    QuotaExceededError,
+    ensure_disk_capacity,
+    registration_limiter,
+    request_limiter,
+)
+from agent.ws_tickets import WebSocketTicketStore
 
 
-class CreateProjectRequest(BaseModel):
-    name: str = Field(..., min_length=1)
-    package: Optional[str] = None
+class RequestBodyTooLargeError(RuntimeError):
+    pass
 
 
-class AskRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
+class RequestBodyLimitMiddleware:
+    """Enforce body size while receiving, including chunked requests."""
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max(1, int(max_bytes))
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        raw_length = headers.get(b"content-length")
+        if raw_length:
+            try:
+                if int(raw_length) > self.max_bytes:
+                    await self._reject(scope, receive, send)
+                    return
+            except ValueError:
+                response = JSONResponse(
+                    status_code=400,
+                    content={"detail": "无效的 Content-Length"},
+                )
+                await response(scope, receive, send)
+                return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > self.max_bytes:
+                    raise RequestBodyTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except RequestBodyTooLargeError:
+            await self._reject(scope, receive, send)
+
+    @staticmethod
+    async def _reject(scope, receive, send) -> None:
+        response = JSONResponse(
+            status_code=413,
+            content={"detail": "请求体超过服务端大小限制"},
+        )
+        await response(scope, receive, send)
+
+
+def _apk_file_response(path: Path, filename: str) -> FileResponse:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return FileResponse(
+        path,
+        media_type="application/vnd.android.package-archive",
+        filename=filename,
+        headers={"X-APK-SHA256": digest.hexdigest()},
+    )
+
+
+class StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CreateProjectRequest(StrictRequest):
+    name: str = Field(..., min_length=1, max_length=200)
+    package: Optional[str] = Field(default=None, max_length=255)
+
+
+class AskRequest(StrictRequest):
+    prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
     auto_fallback: bool = False
     continue_session: bool = True
@@ -87,35 +175,35 @@ class AskRequest(BaseModel):
     conversation_id: Optional[str] = None
 
 
-class ApprovalDecisionRequest(BaseModel):
+class ApprovalDecisionRequest(StrictRequest):
     approved: bool
 
 
-class CreateConversationRequest(BaseModel):
-    title: Optional[str] = None
+class CreateConversationRequest(StrictRequest):
+    title: Optional[str] = Field(default=None, max_length=500)
 
 
-class UpdateConversationRequest(BaseModel):
-    title: Optional[str] = None
+class UpdateConversationRequest(StrictRequest):
+    title: Optional[str] = Field(default=None, max_length=500)
     status: Optional[str] = None
 
 
-class ConversationAskRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
+class ConversationAskRequest(StrictRequest):
+    prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
     auto_fallback: bool = False
 
 
-class WriteFileRequest(BaseModel):
+class WriteFileRequest(StrictRequest):
     path: str = Field(..., min_length=1)
-    content: str = Field(default="")
+    content: str = Field(default="", max_length=2_000_000)
 
 
-class RestoreCheckpointRequest(BaseModel):
+class RestoreCheckpointRequest(StrictRequest):
     path: Optional[str] = None
 
 
-class JobMessageRequest(BaseModel):
+class JobMessageRequest(StrictRequest):
     message_key: str = Field(..., min_length=1)
     type: str = Field(..., pattern="^(steer|follow_up|cancel|pause|resume)$")
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -130,7 +218,7 @@ class JobMessageResponse(BaseModel):
     created_at: float
 
 
-class CreateTerminalRequest(BaseModel):
+class CreateTerminalRequest(StrictRequest):
     cwd: Optional[str] = "."
     argv: Optional[list[str]] = None
     shell: Optional[str] = None
@@ -139,33 +227,38 @@ class CreateTerminalRequest(BaseModel):
     env: Optional[dict[str, str]] = None
 
 
-class TerminalInputRequest(BaseModel):
-    data: str
+class TerminalInputRequest(StrictRequest):
+    data: str = Field(..., max_length=65_536)
 
 
-class TerminalResizeRequest(BaseModel):
+class TerminalResizeRequest(StrictRequest):
     cols: int
     rows: int
 
 
-class McpEnableRequest(BaseModel):
+class McpEnableRequest(StrictRequest):
     enabled: bool = True
 
 
-class MemoryEditRequest(BaseModel):
+class MemoryEditRequest(StrictRequest):
     title: Optional[str] = None
     content: Optional[str] = None
     tags: Optional[list[str]] = None
     memory_type: Optional[str] = None
 
 
-class MemoryCreateRequest(BaseModel):
+class MemoryCreateRequest(StrictRequest):
     title: str = Field(..., min_length=1)
     content: str = Field(..., min_length=1)
     memory_type: str = Field(..., min_length=1)
     scope: str = "project"
     tags: list[str] = Field(default_factory=list)
     status: str = "candidate"
+
+
+class WebSocketTicketRequest(StrictRequest):
+    resource_type: str = Field(..., pattern="^(job|terminal)$")
+    resource_id: str = Field(..., min_length=1, max_length=128)
 
 
 _PRIVATE_EVENT_FIELDS = frozenset(
@@ -209,11 +302,22 @@ def _bearer_token(authorization: str | None) -> str:
     if not authorization:
         return ""
     value = authorization.strip()
-    return value[7:].strip() if value.lower().startswith("bearer ") else value
+    return value[7:].strip() if value.lower().startswith("bearer ") else ""
 
 
 def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
     meta = load_project_meta(user_id, project_id)
+    public_meta = {
+        key: value
+        for key, value in meta.items()
+        if key
+        not in {
+            "repo_root",
+            "workspace",
+            "path",
+            "source_url",
+        }
+    }
     apk = latest_apk_path(user_id, project_id)
     builds_dir = user_builds_dir(user_id) / project_id
     build_logs = []
@@ -222,17 +326,18 @@ def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
             build_logs.append(
                 {
                     "id": log_file.stem,
-                    "path": str(log_file),
+                    "url": (
+                        f"/api/projects/{project_id}/builds/{log_file.stem}"
+                    ),
                 }
             )
     recent_tasks = list_jobs(user_id, project_id)
     latest_task = recent_tasks[0] if recent_tasks else None
     return {
-        **meta,
+        **public_meta,
         "user_id": user_id,
-        "workspace": str(workspace_path(user_id, project_id)),
         "has_apk": apk.is_file(),
-        "apk_path": str(apk) if apk.is_file() else None,
+        "apk_url": f"/api/projects/{project_id}/apk" if apk.is_file() else None,
         "build_logs": build_logs[:20],
         "latest_status": latest_task.get("status") if latest_task else None,
         "latest_task_id": latest_task.get("id") if latest_task else None,
@@ -245,31 +350,69 @@ def create_app(
     task_store: TaskStore | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            stop_worker(wait=True, timeout=10.0)
+            shutdown_terminals()
+            reset_mcp_managers()
+
     app = FastAPI(
         title="Android Agent API",
         version="1.0.0-mvp",
         description="本地 Android AI Agent HTTP 服务，按 user_id 隔离项目",
+        lifespan=lifespan,
     )
     app.state.settings = settings
     app.state.user_store = user_store or UserStore()
-    configure_task_store(task_store, settings)
+    effective_task_store = task_store or TaskStore()
+    app.state.task_store = effective_task_store
+    app.state.ws_tickets = WebSocketTicketStore()
+    app.state.diagnostics = get_diagnostic_store(effective_task_store.db_path)
+    configure_task_store(effective_task_store, settings)
     # Mark pre-restart PTY sessions as interrupted; we cannot recover their
     # underlying processes.
     mark_interrupted_terminals()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Registration-Token"],
     )
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=settings.max_request_bytes,
+    )
+
+    @app.middleware("http")
+    async def enforce_request_budgets(
+        request: Request,
+        call_next,
+    ):
+        client_host = request.client.host if request.client else "unknown"
+        try:
+            request_limiter.check(
+                f"http:{client_host}",
+                limit=settings.max_requests_per_minute,
+                window_seconds=60,
+            )
+        except QuotaExceededError as exc:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": str(exc)},
+                headers={"Retry-After": "60"},
+            )
+        return await call_next(request)
 
     def authenticated_user(authorization: str | None) -> str:
         token = _bearer_token(authorization)
         if not token:
-            # 单机自用：无 Token 时默认 local，与 CLI 一致，无需注册
-            return DEFAULT_USER_ID
+            raise HTTPException(status_code=401, detail="未提供 API Token")
         registered_user = app.state.user_store.authenticate(token)
         if registered_user:
             return registered_user
@@ -281,8 +424,73 @@ def create_app(
     def current_user(authorization: Optional[str] = Header(default=None)) -> str:
         return authenticated_user(authorization)
 
+    def require_terminal_enabled() -> None:
+        if not settings.terminal_enabled:
+            raise HTTPException(status_code=404, detail="终端功能未启用")
+
+    def ensure_write_budget() -> None:
+        try:
+            ensure_disk_capacity(
+                user_workspaces_dir("quota-check").parent,
+                settings.minimum_free_disk_bytes,
+            )
+        except QuotaExceededError as exc:
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
+
+    def ensure_prompt_budget(prompt: str, user_id: str) -> None:
+        if len(prompt) > settings.max_prompt_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Prompt 超过 {settings.max_prompt_chars} 字符限制",
+            )
+        active = [
+            task
+            for task in list_jobs(user_id)
+            if task.get("status")
+            in {"queued", "running", "awaiting_approval", "paused"}
+        ]
+        if len(active) >= settings.max_active_tasks_per_user:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "用户活动任务达到上限 "
+                    f"({settings.max_active_tasks_per_user})"
+                ),
+            )
+        ensure_write_budget()
+
+    @app.post("/api/pair", status_code=201)
     @app.post("/api/register", status_code=201)
-    def register() -> dict[str, str]:
+    def register(
+        request: Request,
+        registration_token: Optional[str] = Header(
+            default=None,
+            alias="X-Registration-Token",
+        ),
+    ) -> dict[str, str]:
+        client_host = request.client.host if request.client else "unknown"
+        try:
+            registration_limiter.check(
+                f"register:{client_host}",
+                limit=settings.max_registration_per_hour,
+                window_seconds=3600,
+            )
+        except QuotaExceededError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": "3600"},
+            ) from exc
+        if not settings.registration_enabled:
+            raise HTTPException(status_code=404, detail="网络注册未启用")
+        if not settings.registration_token:
+            raise HTTPException(status_code=503, detail="服务端未配置注册密钥")
+        if not registration_token or not hmac.compare_digest(
+            registration_token,
+            settings.registration_token,
+        ):
+            raise HTTPException(status_code=401, detail="无效的注册密钥")
+        ensure_write_budget()
         user_id, token = app.state.user_store.register()
         user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
         user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
@@ -312,6 +520,31 @@ def create_app(
         _ = user_id
         return models_catalog(settings)
 
+    @app.post("/api/ws/tickets", status_code=201)
+    def issue_websocket_ticket(
+        body: WebSocketTicketRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        if body.resource_type == "job":
+            if not get_job(body.resource_id, user_id=user_id):
+                raise HTTPException(status_code=404, detail="任务不存在")
+        else:
+            require_terminal_enabled()
+            if not get_terminal(body.resource_id, user_id):
+                raise HTTPException(status_code=404, detail="终端不存在")
+        ticket, expires_at = app.state.ws_tickets.issue(
+            user_id,
+            body.resource_type,
+            body.resource_id,
+            ttl_seconds=settings.ws_ticket_ttl_seconds,
+        )
+        return {
+            "ticket": ticket,
+            "expires_at": expires_at,
+            "resource_type": body.resource_type,
+            "resource_id": body.resource_id,
+        }
+
     @app.get("/api/projects")
     def get_projects(user_id: str = Depends(current_user)) -> dict[str, Any]:
         projects = []
@@ -324,6 +557,12 @@ def create_app(
         body: CreateProjectRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        if len(list_projects(user_id)) >= settings.max_projects_per_user:
+            raise HTTPException(
+                status_code=429,
+                detail=f"项目数量达到上限 ({settings.max_projects_per_user})",
+            )
+        ensure_write_budget()
         try:
             project_id = init_project(
                 name=body.name,
@@ -350,6 +589,7 @@ def create_app(
         body: AskRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        ensure_prompt_budget(body.prompt, user_id)
         try:
             load_project_meta(user_id, project_id)
         except (FileNotFoundError, ValueError) as e:
@@ -400,6 +640,17 @@ def create_app(
         body: CreateConversationRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        if (
+            len(list_conversations(user_id, project_id))
+            >= settings.max_conversations_per_project
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "项目 Conversation 数量达到上限 "
+                    f"({settings.max_conversations_per_project})"
+                ),
+            )
         try:
             conv = create_conversation(user_id, project_id, title=body.title or "新对话")
         except (FileNotFoundError, ValueError) as e:
@@ -488,6 +739,7 @@ def create_app(
         body: ConversationAskRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        ensure_prompt_budget(body.prompt, user_id)
         conv = get_conversation(conversation_id, user_id)
         if not conv:
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
@@ -542,6 +794,31 @@ def create_app(
                 job_to_dict(job)
                 for job in list_jobs(user_id, project_id, conversation_id)
             ],
+        }
+
+    @app.get("/api/diagnostics")
+    def get_diagnostics(
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        after: Optional[float] = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        if project_id:
+            try:
+                load_project_meta(user_id, project_id)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=404, detail="项目不存在") from exc
+        if task_id and not get_job(task_id, user_id=user_id):
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return {
+            "diagnostics": app.state.diagnostics.list(
+                user_id,
+                project_id=project_id,
+                task_id=task_id,
+                after=after,
+                limit=limit,
+            )
         }
 
     @app.get("/api/jobs/{job_id}")
@@ -650,7 +927,10 @@ def create_app(
         apk_path = job.get("apk_path")
         if not apk_path or not __import__("pathlib").Path(apk_path).is_file():
             raise HTTPException(status_code=404, detail="该任务没有 APK")
-        return FileResponse(apk_path, media_type="application/vnd.android.package-archive", filename=f"{job['project_id']}-{job_id}.apk")
+        return _apk_file_response(
+            Path(apk_path),
+            f"{job['project_id']}-{job_id}.apk",
+        )
 
     @app.get("/api/jobs/{job_id}/log")
     def get_task_log(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
@@ -663,13 +943,61 @@ def create_app(
             raise HTTPException(status_code=404, detail="该任务没有构建日志")
         return {"job_id": job_id, "content": path.read_text(encoding="utf-8", errors="replace")}
 
+    @app.post("/api/jobs/{job_id}/recover", status_code=201)
+    def recover_interrupted_job(
+        job_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            recovered = recover_job_explicitly(job_id, user_id, settings)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not recovered:
+            raise HTTPException(
+                status_code=409,
+                detail="任务不是可显式恢复的中断任务",
+            )
+        return {"job": job_to_dict(recovered)}
+
     @app.delete("/api/projects/{project_id}", status_code=204)
     def remove_project(project_id: str, user_id: str = Depends(current_user)) -> None:
-        active = [item for item in list_jobs(user_id, project_id) if item["status"] in {"queued", "running"}]
-        if active:
-            raise HTTPException(status_code=409, detail="项目有正在运行的任务")
         try:
-            delete_project(user_id, project_id)
+            with project_deletion(user_id, project_id):
+                load_project_meta(user_id, project_id)
+                active_tasks = [
+                    item
+                    for item in list_jobs(user_id, project_id)
+                    if item["status"]
+                    in {"queued", "running", "awaiting_approval", "paused"}
+                ]
+                active_terminals = [
+                    item
+                    for item in list_terminals(user_id, project_id)
+                    if item["status"] in {"starting", "running"}
+                ]
+                active_worktrees = [
+                    item.public_dict()
+                    for item in list_worktrees(user_id, project_id)
+                    if item.status in {"active", "kept"}
+                ]
+                get_mcp_manager(
+                    user_id,
+                    project_id,
+                    workspace_path(user_id, project_id),
+                ).stop_all()
+                if active_tasks or active_terminals or active_worktrees:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": "项目仍有活跃资源，停止或处理后再删除",
+                            "task_ids": [item["id"] for item in active_tasks],
+                            "terminal_ids": [item["id"] for item in active_terminals],
+                            "worktree_ids": [item["id"] for item in active_worktrees],
+                        },
+                    )
+                delete_project(user_id, project_id)
+        except ProjectDeletingError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -694,11 +1022,7 @@ def create_app(
             else:
                 raise HTTPException(status_code=404, detail="APK 尚未生成")
 
-        return FileResponse(
-            path=apk,
-            media_type="application/vnd.android.package-archive",
-            filename=f"{project_id}.apk",
-        )
+        return _apk_file_response(apk, f"{project_id}.apk")
 
     @app.get("/api/projects/{project_id}/builds/{build_id}")
     def get_build_log(
@@ -1150,6 +1474,17 @@ def create_app(
             load_project_meta(user_id, project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        if (
+            _memory_store().count_memories(user_id, project_id=project_id)
+            >= settings.max_memories_per_project
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "项目可见 Memory 数量达到上限 "
+                    f"({settings.max_memories_per_project})"
+                ),
+            )
         try:
             item = _memory_store().create_memory(
                 user_id=user_id,
@@ -1323,6 +1658,20 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(e)) from e
         workspace = workspace_path(user_id, project_id)
         mgr = get_mcp_manager(user_id, project_id, workspace)
+        if body.enabled:
+            enabled = [
+                item
+                for item in mgr.list_servers()
+                if item.get("enabled") and item.get("name") != server_name
+            ]
+            if len(enabled) >= settings.max_mcp_servers_per_project:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "项目 MCP Server 数量达到上限 "
+                        f"({settings.max_mcp_servers_per_project})"
+                    ),
+                )
         try:
             server = mgr.set_enabled(server_name, body.enabled)
         except KeyError as e:
@@ -1387,10 +1736,25 @@ def create_app(
         body: CreateTerminalRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         try:
             load_project_meta(user_id, project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        active_terminals = [
+            item
+            for item in list_terminals(user_id, project_id)
+            if item.get("status") in {"starting", "running"}
+        ]
+        if len(active_terminals) >= settings.max_terminals_per_project:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "项目活动终端达到上限 "
+                    f"({settings.max_terminals_per_project})"
+                ),
+            )
+        ensure_write_budget()
         try:
             return create_terminal(
                 user_id,
@@ -1414,6 +1778,7 @@ def create_app(
         project_id: str,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         try:
             load_project_meta(user_id, project_id)
         except (FileNotFoundError, ValueError) as e:
@@ -1429,6 +1794,7 @@ def create_app(
         terminal_id: str,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         info = get_terminal(terminal_id, user_id)
         if not info:
             raise HTTPException(status_code=404, detail="终端不存在")
@@ -1440,6 +1806,7 @@ def create_app(
         body: TerminalInputRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         result = write_terminal_input(terminal_id, user_id, body.data)
         if result is None:
             raise HTTPException(status_code=404, detail="终端不存在")
@@ -1453,6 +1820,7 @@ def create_app(
         body: TerminalResizeRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         result = resize_terminal(terminal_id, user_id, body.cols, body.rows)
         if result is None:
             raise HTTPException(status_code=404, detail="终端不存在")
@@ -1465,6 +1833,7 @@ def create_app(
         terminal_id: str,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
+        require_terminal_enabled()
         result = terminate_terminal(terminal_id, user_id)
         if result is None:
             raise HTTPException(status_code=404, detail="终端不存在")
@@ -1474,17 +1843,28 @@ def create_app(
     async def ws_terminal(
         terminal_id: str,
         websocket: WebSocket,
-        token: Optional[str] = Query(default=None),
+        ticket: Optional[str] = Query(default=None),
         after_seq: Optional[int] = Query(default=None),
     ) -> None:
-        auth_header = websocket.headers.get("authorization")
-        if not auth_header and token:
-            auth_header = f"Bearer {token}"
-        try:
-            user_id = authenticated_user(auth_header)
-        except HTTPException:
-            await websocket.close(code=4401)
+        if not settings.terminal_enabled:
+            await websocket.close(code=4404)
             return
+        auth_header = websocket.headers.get("authorization")
+        if auth_header:
+            try:
+                user_id = authenticated_user(auth_header)
+            except HTTPException:
+                await websocket.close(code=4401)
+                return
+        else:
+            user_id = app.state.ws_tickets.consume(
+                ticket or "",
+                "terminal",
+                terminal_id,
+            )
+            if not user_id:
+                await websocket.close(code=4401)
+                return
 
         info = get_terminal(terminal_id, user_id)
         if not info:
@@ -1527,17 +1907,25 @@ def create_app(
     async def ws_job(
         job_id: str,
         websocket: WebSocket,
-        token: Optional[str] = Query(default=None),
+        ticket: Optional[str] = Query(default=None),
         after_event_id: Optional[int] = Query(default=None),
     ) -> None:
         auth_header = websocket.headers.get("authorization")
-        if not auth_header and token:
-            auth_header = f"Bearer {token}"
-        try:
-            user_id = authenticated_user(auth_header)
-        except HTTPException:
-            await websocket.close(code=4401)
-            return
+        if auth_header:
+            try:
+                user_id = authenticated_user(auth_header)
+            except HTTPException:
+                await websocket.close(code=4401)
+                return
+        else:
+            user_id = app.state.ws_tickets.consume(
+                ticket or "",
+                "job",
+                job_id,
+            )
+            if not user_id:
+                await websocket.close(code=4401)
+                return
 
         job = get_job(job_id, user_id=user_id)
         if not job:
@@ -1580,7 +1968,12 @@ def create_app(
             return
 
     web_dir = Path(__file__).resolve().parent / "web"
-    if web_dir.is_dir():
+    loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+    if (
+        web_dir.is_dir()
+        and settings.debug_web_ui_enabled
+        and settings.server_host in loopback_hosts
+    ):
         @app.get("/", include_in_schema=False)
         def ui_root() -> RedirectResponse:
             return RedirectResponse(url="/ui/")

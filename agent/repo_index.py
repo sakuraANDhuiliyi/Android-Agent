@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.paths import DATA_DIR, workspace_path
+from agent.safe_paths import is_workspace_file
 
 
 logger = logging.getLogger(__name__)
@@ -241,7 +242,11 @@ class RepoIndex:
         if not self._workspace.is_dir():
             return results
         for path in self._workspace.rglob("*"):
+            if path.is_symlink():
+                continue
             if not path.is_file():
+                continue
+            if not is_workspace_file(self._workspace, path):
                 continue
             if self._is_ignored(path, ignore_patterns):
                 continue

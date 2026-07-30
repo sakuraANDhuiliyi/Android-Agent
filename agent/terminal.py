@@ -32,10 +32,12 @@ from agent.processes import (
     CancellationRequested,
     ProcessTimeoutError,
     _kill_process_group,
+    _apply_resource_limits,
     _resolve_cwd,
     _terminate_process_group,
     _wait_for_process,
     build_minimal_env,
+    build_sandboxed_command,
 )
 from agent.redaction import redact_sensitive_text
 
@@ -317,25 +319,37 @@ class TerminalSession:
         except Exception as exc:
             logger.debug("ioctl resize failed: %s", exc)
 
-    def _make_env(self) -> dict[str, str]:
-        return build_minimal_env(self.env, DEFAULT_ALLOWED_ENV_VARS)
+    def _make_env(self, workspace: Path) -> dict[str, str]:
+        env = build_minimal_env(self.env, DEFAULT_ALLOWED_ENV_VARS)
+        home = workspace.resolve() / ".agent-home"
+        home.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(home)
+        env.setdefault("GRADLE_USER_HOME", str(workspace.resolve() / ".gradle"))
+        return env
 
     def start(self) -> dict[str, Any]:
         workspace = workspace_path(self.user_id, self.project_id)
         resolved_cwd = _resolve_cwd(self.cwd, workspace)
-        command = self.argv if self.argv else [self.shell]
+        env = self._make_env(workspace)
+        command = build_sandboxed_command(
+            self.argv if self.argv else [self.shell],
+            workspace,
+            allow_network=False,
+            env=env,
+        )
         try:
             self._master_fd, slave_fd = pty.openpty()
             self._set_window_size()
             popen_kwargs: dict[str, Any] = {
                 "args": command,
                 "cwd": resolved_cwd,
-                "env": self._make_env(),
+                "env": env,
                 "stdin": slave_fd,
                 "stdout": slave_fd,
                 "stderr": slave_fd,
                 "start_new_session": True,
                 "close_fds": True,
+                "preexec_fn": lambda: _apply_resource_limits(MAX_IDLE_SECONDS),
             }
             self._proc = subprocess.Popen(**popen_kwargs)
             self.pid = self._proc.pid
@@ -363,11 +377,13 @@ class TerminalSession:
         return self.to_dict()
 
     def _reader_loop(self) -> None:
-        if self._master_fd is None:
-            return
         try:
             while True:
-                ready, _, _ = select.select([self._master_fd], [], [], 0.2)
+                with self._lock:
+                    master_fd = self._master_fd
+                if master_fd is None:
+                    break
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
                 if self._cancel_token.is_set():
                     break
                 if not ready:
@@ -375,7 +391,7 @@ class TerminalSession:
                         break
                     continue
                 try:
-                    chunk = os.read(self._master_fd, MAX_CHUNK_BYTES)
+                    chunk = os.read(master_fd, MAX_CHUNK_BYTES)
                 except OSError:
                     break
                 if not chunk:
@@ -416,8 +432,12 @@ class TerminalSession:
             if self._master_fd is not None:
                 try:
                     os.close(self._master_fd)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "terminal fd close failed session=%s: %s",
+                        self.session_id,
+                        redact_sensitive_text(str(exc)),
+                    )
                 self._master_fd = None
 
     def write(self, data: str) -> None:
@@ -450,8 +470,12 @@ class TerminalSession:
                     _kill_process_group(self._proc)
                     try:
                         self._proc.wait(timeout=2)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "terminal process reap failed session=%s: %s",
+                            self.session_id,
+                            redact_sensitive_text(str(exc)),
+                        )
             self._cancel_token.set()
             if self.status not in {"exited", "failed", "terminated", "interrupted"}:
                 self.status = "terminated"
@@ -464,8 +488,12 @@ class TerminalSession:
             if self._master_fd is not None:
                 try:
                     os.close(self._master_fd)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "terminal fd close failed session=%s: %s",
+                        self.session_id,
+                        redact_sensitive_text(str(exc)),
+                    )
                 self._master_fd = None
 
     def is_idle(self, timeout: float = MAX_IDLE_SECONDS) -> bool:
@@ -618,6 +646,20 @@ class TerminalManager:
                     session.terminate()
                     self._sessions.pop(session_id, None)
 
+    def close(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            try:
+                session.terminate()
+            except Exception as exc:
+                logger.warning(
+                    "terminal cleanup failed session=%s: %s",
+                    session.session_id,
+                    redact_sensitive_text(str(exc)),
+                )
+
 
 _manager = TerminalManager()
 
@@ -669,3 +711,7 @@ def mark_interrupted_terminals() -> None:
             if session.status in {"starting", "running"}:
                 session.status = "interrupted"
                 session.exit_code = -1
+
+
+def shutdown_terminals() -> None:
+    _manager.close()

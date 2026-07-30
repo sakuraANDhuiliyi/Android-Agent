@@ -29,20 +29,25 @@
 
   <main class="shell">
     <section class="panel connect-panel" id="connectPanel" hidden>
-      <h2>连接设置</h2>
-      <p class="hint">默认已自动连接本机服务（用户 local）。一般无需改动。</p>
+      <h2>调试连接设置</h2>
+      <p class="hint">此页面仅在 loopback 调试模式提供。Token 只保存在当前标签页会话中。</p>
       <div class="form-grid">
         <label>
           服务地址
           <input id="serverUrl" type="url" placeholder="http://127.0.0.1:8000" autocomplete="off" />
         </label>
         <label>
-          Token（可选，多用户时才需要）
-          <input id="apiToken" type="password" placeholder="留空即使用 local" autocomplete="off" />
+          访问 Token（必填）
+          <input id="apiToken" type="password" placeholder="python3 -m agent register-user" autocomplete="off" />
+        </label>
+        <label>
+          配对密钥（仅首次配对）
+          <input id="registrationToken" type="password" autocomplete="off" />
         </label>
       </div>
       <div class="btn-row">
         <button type="button" class="btn primary" id="btnConnect">重新连接</button>
+        <button type="button" class="btn ghost" id="btnPair">配对</button>
         <button type="button" class="btn ghost" id="btnDisconnect">收起</button>
       </div>
       <p class="status-line" id="connectStatus"></p>

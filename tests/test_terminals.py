@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from agent import paths as paths_mod
 from agent.api import create_app
+from agent.config import Settings, UserAccount
 from agent.database import TaskStore
 from agent.terminal import (
     TerminalStore,
@@ -30,6 +31,27 @@ def _make_workspace(temp: Path, user_id: str, project_id: str) -> Path:
         encoding="utf-8",
     )
     return ws
+
+
+def _api_settings(*, terminal_enabled: bool) -> Settings:
+    return Settings(
+        provider="openai",
+        api_key="fake",
+        model="fake",
+        model_candidates=["fake"],
+        max_turns=2,
+        max_auto_continuations=0,
+        max_gradle_retries=1,
+        compact_max_chars=50_000,
+        max_output_tokens=1024,
+        base_url="https://example.test",
+        auto_build_after_edit=False,
+        server_host="127.0.0.1",
+        server_port=8000,
+        api_token="",
+        users=[UserAccount(id="local", token="test-token")],
+        terminal_enabled=terminal_enabled,
+    )
 
 
 class TerminalTests(unittest.TestCase):
@@ -259,7 +281,13 @@ class TerminalApiTests(unittest.TestCase):
         for p in self._patches:
             p.start()
         _make_workspace(temp, "local", "demo")
-        self._client = TestClient(create_app(task_store=TaskStore(self._data / "agent.db")))
+        self._client = TestClient(
+            create_app(
+                settings=_api_settings(terminal_enabled=True),
+                task_store=TaskStore(self._data / "agent.db"),
+            ),
+            headers={"Authorization": "Bearer test-token"},
+        )
 
     def tearDown(self) -> None:
         from agent.terminal import _manager

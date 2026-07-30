@@ -8,17 +8,26 @@
     "dev": "ELECTRON_RUN_AS_NODE= electron .",
     "check": "node --check src/agent-api.js && node --check src/state.js && node --check src/terminal.js && node --check src/ai-panel.js && node --check src/renderer.js && node --check src/main.js && node --check src/preload.js",
     "test:unit": "node tests/agent-api.test.js && node tests/state.test.js && node tests/events.test.js",
-    "test:screenshot": "node tests/screenshot.test.js"
+    "test:screenshot": "node tests/screenshot.test.js",
+    "dist:mac": "node scripts/package-macos.js",
+    "verify:signature": "bash ../scripts/verify_desktop_signature.sh"
   },
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
+    "electron-updater": "6.8.9",
     "monaco-editor": "^0.52.2",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0",
     "xterm-addon-web-links": "^0.9.0"
   },
   "devDependencies": {
-    "electron": "^35.1.2",
-    "playwright": "^1.39.0"
+    "@electron/notarize": "3.1.1",
+    "@electron/osx-sign": "2.6.0",
+    "@electron/packager": "20.0.4",
+    "electron": "41.7.1",
+    "playwright": "1.60.0"
   }
 }

@@ -71,6 +71,9 @@ def run_agent(
     turn_id: str | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    extra_system_prompt: str | None = None,
+    run_mode: str = "workspace",
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
@@ -124,6 +127,9 @@ def run_agent(
                 recovery_mode=recovery_mode,
                 check_pause=check_pause,
                 get_steers=get_steers,
+                allowed_tools=allowed_tools,
+                extra_system_prompt=extra_system_prompt,
+                run_mode=run_mode,
             )
         except CancellationRequested:
             raise
@@ -169,12 +175,17 @@ def _run_agent_with_provider(
     recovery_mode: bool = False,
     check_pause: CancelCheck | None = None,
     get_steers: Callable[[], list[str]] | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    extra_system_prompt: str | None = None,
+    run_mode: str = "workspace",
 ) -> str:
     system_prompt, rules_bundle = build_system_prompt(
         settings,
         workspace=workspace,
         user_id=user_id,
     )
+    if extra_system_prompt:
+        system_prompt = f"{system_prompt}\n\n{extra_system_prompt.strip()}"
     if rules_bundle is not None:
         _emit(
             on_event,
@@ -219,6 +230,8 @@ def _run_agent_with_provider(
             recovery_mode=recovery_mode,
             check_pause=check_pause,
             get_steers=get_steers,
+            allowed_tools=allowed_tools,
+            run_mode=run_mode,
         )
     return _run_openai_compatible(
         settings,
@@ -238,6 +251,8 @@ def _run_agent_with_provider(
         recovery_mode=recovery_mode,
         check_pause=check_pause,
         get_steers=get_steers,
+        allowed_tools=allowed_tools,
+        run_mode=run_mode,
     )
 
 
@@ -281,6 +296,19 @@ def _tool_call_id(
         return provider_id
     seed = f"android-agent:{message_id}:{block_index}:{name}"
     return f"call_{uuid.uuid5(uuid.NAMESPACE_URL, seed).hex[:24]}"
+
+
+def parse_tool_arguments(
+    arguments: str | None,
+) -> tuple[dict[str, Any], str | None]:
+    raw = arguments or "{}"
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("tool arguments must decode to a JSON object")
+        return parsed, None
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {}, str(exc)
 
 
 def _safe_response_id(response: Any) -> str | None:
@@ -353,12 +381,16 @@ def dispatch_agent_tool(
     set_status: Callable[[str], None] | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    run_mode: str = "workspace",
 ) -> ToolResult:
     """Dispatch a tool through the unified runtime, including recovery replay."""
     from agent.approvals import request_user_approval
     from agent.tool_registry import get_tool_spec
 
     try:
+        if allowed_tools is not None and name not in allowed_tools:
+            return ToolResult(False, f"当前 Agent 角色无权调用工具: {name}", "PermissionError")
         spec = get_tool_spec(name)
         replay = next(
             (
@@ -421,12 +453,16 @@ def dispatch_agent_tool(
             set_status=set_status,
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
+            run_mode=run_mode,
         )
     except ProcessCancellationRequested as exc:
         raise CancellationRequested(str(exc)) from exc
 
 
-def _openai_tools(settings: Settings) -> list[dict]:
+def _openai_tools(
+    settings: Settings,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+) -> list[dict]:
     return [
         {
             "type": "function",
@@ -437,6 +473,7 @@ def _openai_tools(settings: Settings) -> list[dict]:
             },
         }
         for tool in get_tool_definitions(settings)
+        if allowed_tools is None or tool["name"] in allowed_tools
     ]
 
 
@@ -572,6 +609,8 @@ def _run_openai_compatible(
     recovery_mode: bool = False,
     check_pause: CancelCheck | None = None,
     get_steers: Callable[[], list[str]] | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    run_mode: str = "workspace",
 ) -> str:
     try:
         from openai import OpenAI
@@ -631,7 +670,7 @@ def _run_openai_compatible(
             on_event,
             cancel_check,
             messages=messages,
-            tools=_openai_tools(settings),
+            tools=_openai_tools(settings, allowed_tools),
             max_tokens=max_output,
         )
         run_hooks(
@@ -669,11 +708,7 @@ def _run_openai_compatible(
         normalized_tool_calls: list[dict[str, Any]] = []
         for block_index, tool_call in enumerate(message.tool_calls or [], start=1):
             arguments = tool_call.function.arguments or "{}"
-            try:
-                parsed_input = json.loads(arguments)
-                tool_input = parsed_input if isinstance(parsed_input, dict) else {}
-            except json.JSONDecodeError:
-                tool_input = {}
+            tool_input, input_error = parse_tool_arguments(arguments)
             name = tool_call.function.name
             normalized_tool_calls.append(
                 {
@@ -687,6 +722,8 @@ def _run_openai_compatible(
                     "block_index": block_index,
                     "name": name,
                     "input": tool_input,
+                    "input_error": input_error,
+                    "raw_arguments": arguments[:4000] if input_error else None,
                 }
             )
 
@@ -757,6 +794,8 @@ def _run_openai_compatible(
         for tool_call in normalized_tool_calls:
             if cancel_check:
                 cancel_check()
+            if tool_call.get("input_error"):
+                continue
             tool_msg = f"🔧 {tool_call['name']}({tool_call['input']})"
             _emit(
                 on_event,
@@ -790,6 +829,45 @@ def _run_openai_compatible(
             tool_input = tool_call["input"]
             tool_name = tool_call["name"]
             tool_call_id = tool_call["tool_call_id"]
+            if tool_call.get("input_error"):
+                error = (
+                    "工具参数不是合法 JSON 对象，调用已拒绝且未执行: "
+                    f"{tool_call['input_error']}"
+                )
+                _emit(
+                    on_event,
+                    EventType.MALFORMED_TOOL_CALL,
+                    error,
+                    message_id=tool_call["message_id"],
+                    tool_call_id=tool_call_id,
+                    block_index=tool_call["block_index"],
+                    name=tool_name,
+                    raw_arguments=tool_call.get("raw_arguments"),
+                    error_type="MalformedToolArguments",
+                )
+                _emit(
+                    on_event,
+                    EventType.TOOL_RESULT,
+                    error,
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        ok=False,
+                        output=error,
+                        duration_ms=0,
+                        error_type="MalformedToolArguments",
+                    ),
+                    input=None,
+                    preview=error,
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": error,
+                    }
+                )
+                continue
             # Enforce gradle retry budget before executing another failed assembleDebug cycle
             if (
                 tool_name == "run_gradle"
@@ -840,6 +918,8 @@ def _run_openai_compatible(
                     set_status=set_status,
                     recovery_replays=recovery_replays,
                     recovery_mode=recovery_mode,
+                    allowed_tools=allowed_tools,
+                    run_mode=run_mode,
                 )
             except CancellationRequested as exc:
                 duration_ms = round((time.monotonic() - started) * 1000)
@@ -909,7 +989,12 @@ def _run_openai_compatible(
                 }
             )
 
-            if settings.auto_build_after_edit and tool_name in {"write_file", "str_replace"} and result.ok:
+            if (
+                settings.auto_build_after_edit
+                and (allowed_tools is None or "run_gradle" in allowed_tools)
+                and tool_name in {"write_file", "str_replace"}
+                and result.ok
+            ):
                 auto_build_count += 1
                 auto_block_index = (
                     max(
@@ -960,6 +1045,8 @@ def _run_openai_compatible(
                         set_status=set_status,
                         recovery_replays=recovery_replays,
                         recovery_mode=recovery_mode,
+                        allowed_tools=allowed_tools,
+                        run_mode=run_mode,
                     )
                 except CancellationRequested as exc:
                     _emit(
@@ -1050,6 +1137,8 @@ def _run_anthropic(
     recovery_mode: bool = False,
     check_pause: CancelCheck | None = None,
     get_steers: Callable[[], list[str]] | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    run_mode: str = "workspace",
 ) -> str:
     try:
         import anthropic
@@ -1066,7 +1155,11 @@ def _run_anthropic(
         messages.append({"role": "user", "content": user_prompt})
 
     final_text_parts: list[str] = []
-    tool_definitions = get_tool_definitions(settings)
+    tool_definitions = [
+        tool
+        for tool in get_tool_definitions(settings)
+        if allowed_tools is None or tool["name"] in allowed_tools
+    ]
     active_model = settings.model
     gradle_failures = 0
     max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
@@ -1155,6 +1248,9 @@ def _run_anthropic(
                 assistant_content.append({"type": "text", "text": block.text})
             elif block.type == "tool_use":
                 tool_input = block.input if isinstance(block.input, dict) else {}
+                input_error = getattr(block, "input_error", None)
+                if not isinstance(block.input, dict) and not input_error:
+                    input_error = "tool input must be a JSON object"
                 tool_call_id = _tool_call_id(
                     getattr(block, "id", None),
                     message_id,
@@ -1167,6 +1263,8 @@ def _run_anthropic(
                     "block_index": block_index,
                     "name": block.name,
                     "input": tool_input,
+                    "input_error": input_error,
+                    "raw_arguments": getattr(block, "raw_input", None),
                 }
                 tool_uses.append(tool_use)
                 assistant_content.append(
@@ -1239,6 +1337,8 @@ def _run_anthropic(
         for tool_use in tool_uses:
             if cancel_check:
                 cancel_check()
+            if tool_use.get("input_error"):
+                continue
             tool_msg = f"🔧 {tool_use['name']}({tool_use['input']})"
             _emit(on_event, EventType.TOOL_CALL, tool_msg, **tool_use)
 
@@ -1249,6 +1349,46 @@ def _run_anthropic(
             tool_input = tool_use["input"]
             tool_name = tool_use["name"]
             tool_call_id = tool_use["tool_call_id"]
+            if tool_use.get("input_error"):
+                error = (
+                    "工具参数不是合法 JSON 对象，调用已拒绝且未执行: "
+                    f"{tool_use['input_error']}"
+                )
+                _emit(
+                    on_event,
+                    EventType.MALFORMED_TOOL_CALL,
+                    error,
+                    message_id=tool_use["message_id"],
+                    tool_call_id=tool_call_id,
+                    block_index=tool_use["block_index"],
+                    name=tool_name,
+                    raw_arguments=tool_use.get("raw_arguments"),
+                    error_type="MalformedToolArguments",
+                )
+                _emit(
+                    on_event,
+                    EventType.TOOL_RESULT,
+                    error,
+                    **_tool_result_event_payload(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        ok=False,
+                        output=error,
+                        duration_ms=0,
+                        error_type="MalformedToolArguments",
+                    ),
+                    input=None,
+                    preview=error,
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": error,
+                        "is_error": True,
+                    }
+                )
+                continue
             if (
                 tool_name == "run_gradle"
                 and tool_input.get("task", "assembleDebug") == "assembleDebug"
@@ -1299,6 +1439,8 @@ def _run_anthropic(
                     set_status=set_status,
                     recovery_replays=recovery_replays,
                     recovery_mode=recovery_mode,
+                    allowed_tools=allowed_tools,
+                    run_mode=run_mode,
                 )
             except CancellationRequested as exc:
                 duration_ms = round((time.monotonic() - started) * 1000)
@@ -1367,7 +1509,12 @@ def _run_anthropic(
                 }
             )
 
-            if settings.auto_build_after_edit and tool_name in {"write_file", "str_replace"} and result.ok:
+            if (
+                settings.auto_build_after_edit
+                and (allowed_tools is None or "run_gradle" in allowed_tools)
+                and tool_name in {"write_file", "str_replace"}
+                and result.ok
+            ):
                 auto_build_count += 1
                 auto_block_index = len(messages[-1]["content"]) + auto_build_count
                 auto_call_id = _tool_call_id(
@@ -1410,6 +1557,8 @@ def _run_anthropic(
                         set_status=set_status,
                         recovery_replays=recovery_replays,
                         recovery_mode=recovery_mode,
+                        allowed_tools=allowed_tools,
+                        run_mode=run_mode,
                     )
                 except CancellationRequested as exc:
                     _emit(

@@ -1,4 +1,5 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const { spawn } = require("child_process");
 const fs = require("fs/promises");
 const fssync = require("fs");
@@ -22,6 +23,105 @@ let mainWindow = null;
 /** @type {import('child_process').ChildProcess | null} */
 let agentProcess = null;
 let agentLogTail = "";
+const approvedRoots = new Set();
+
+function configureSecureUpdates() {
+  const feedUrl = String(process.env.ANDROID_AGENT_UPDATE_URL || "").trim();
+  if (!app.isPackaged || !feedUrl) return;
+  let parsed;
+  try {
+    parsed = new URL(feedUrl);
+  } catch (_) {
+    console.error("Ignoring invalid ANDROID_AGENT_UPDATE_URL");
+    return;
+  }
+  if (parsed.protocol !== "https:") {
+    console.error("Ignoring non-HTTPS update feed");
+    return;
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.setFeedURL({ provider: "generic", url: parsed.toString() });
+  autoUpdater.checkForUpdates().catch((error) => {
+    console.error("Signed update check failed:", error.message);
+  });
+}
+
+function credentialFile() {
+  return path.join(app.getPath("userData"), "agent-credentials.json");
+}
+
+async function loadCredentials() {
+  try {
+    return JSON.parse(await fs.readFile(credentialFile(), "utf8"));
+  } catch (_) {
+    return {};
+  }
+}
+
+async function getCredential(baseUrl) {
+  if (!safeStorage.isEncryptionAvailable()) return "";
+  const items = await loadCredentials();
+  const encoded = items[String(baseUrl || "")];
+  if (!encoded) return "";
+  try {
+    return safeStorage.decryptString(Buffer.from(encoded, "base64"));
+  } catch (_) {
+    return "";
+  }
+}
+
+async function setCredential(baseUrl, token) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("系统安全凭证库不可用");
+  }
+  const key = String(baseUrl || "").slice(0, 2048);
+  const items = await loadCredentials();
+  if (token) {
+    items[key] = safeStorage.encryptString(String(token)).toString("base64");
+  } else {
+    delete items[key];
+  }
+  await fs.mkdir(path.dirname(credentialFile()), { recursive: true });
+  await fs.writeFile(
+    credentialFile(),
+    JSON.stringify(items),
+    { encoding: "utf8", mode: 0o600 },
+  );
+  return true;
+}
+
+function rememberApprovedRoot(rootDir) {
+  if (!rootDir) return null;
+  const resolved = fssync.realpathSync(rootDir);
+  approvedRoots.add(resolved);
+  return resolved;
+}
+
+function isInsideRoot(candidate, root) {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
+}
+
+function assertApprovedPath(filePath) {
+  if (!filePath || typeof filePath !== "string") {
+    throw new Error("文件路径无效");
+  }
+  const absolute = path.resolve(filePath);
+  let existing = absolute;
+  while (!fssync.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const realExisting = fssync.realpathSync(existing);
+  const suffix = path.relative(existing, absolute);
+  const candidate = path.resolve(realExisting, suffix);
+  for (const root of approvedRoots) {
+    if (isInsideRoot(candidate, root)) return candidate;
+  }
+  throw new Error("拒绝访问未授权的文件路径");
+}
 
 function guessLanIp() {
   try {
@@ -240,6 +340,8 @@ function defaultWorkspace() {
 }
 
 function createWindow() {
+  const workspace = defaultWorkspace();
+  if (workspace) rememberApprovedRoot(workspace);
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -253,10 +355,14 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("file:")) event.preventDefault();
+  });
   mainWindow.loadFile(path.join(__dirname, "index.html"));
 
   const template = [
@@ -401,8 +507,9 @@ function flattenFiles(nodes, out = []) {
 
 function registerIpc() {
   ipcMain.handle("app:get-default-workspace", () => defaultWorkspace());
-  ipcMain.handle("app:get-repo-root", () => repoRoot());
-
+  ipcMain.handle("credentials:get", (_event, baseUrl) => getCredential(baseUrl));
+  ipcMain.handle("credentials:set", (_event, baseUrl, token) =>
+    setCredential(baseUrl, token));
   ipcMain.handle("dialog:confirm-download", async (_event, payload = {}) => {
     const url = payload.url || "";
     const savePath = payload.path || "";
@@ -429,7 +536,7 @@ function registerIpc() {
       properties: ["openDirectory"],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    return result.filePaths[0];
+    return rememberApprovedRoot(result.filePaths[0]);
   });
 
   ipcMain.handle("dialog:open-file", async () => {
@@ -437,7 +544,9 @@ function registerIpc() {
       properties: ["openFile"],
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    return result.filePaths[0];
+    const selected = fssync.realpathSync(result.filePaths[0]);
+    rememberApprovedRoot(path.dirname(selected));
+    return selected;
   });
 
   ipcMain.handle("dialog:save-file", async (_event, defaultPath) => {
@@ -445,33 +554,36 @@ function registerIpc() {
       defaultPath: defaultPath || undefined,
     });
     if (result.canceled || !result.filePath) return null;
+    rememberApprovedRoot(path.dirname(result.filePath));
     return result.filePath;
   });
 
   ipcMain.handle("fs:read-tree", async (_event, rootDir) => ({
-    root: rootDir,
-    children: await readDirTree(rootDir),
+    root: assertApprovedPath(rootDir),
+    children: await readDirTree(assertApprovedPath(rootDir)),
   }));
 
   ipcMain.handle("fs:list-files", async (_event, rootDir) => {
-    const children = await readDirTree(rootDir);
+    const children = await readDirTree(assertApprovedPath(rootDir));
     return flattenFiles(children);
   });
 
   ipcMain.handle("fs:read-file", async (_event, filePath) => {
-    const content = await fs.readFile(filePath, "utf8");
-    return { path: filePath, content };
+    const approved = assertApprovedPath(filePath);
+    const content = await fs.readFile(approved, "utf8");
+    return { path: approved, content };
   });
 
   ipcMain.handle("fs:write-file", async (_event, filePath, content) => {
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, content, "utf8");
-    return { ok: true, path: filePath };
+    const approved = assertApprovedPath(filePath);
+    await fs.mkdir(path.dirname(approved), { recursive: true });
+    await fs.writeFile(approved, content, "utf8");
+    return { ok: true, path: approved };
   });
 
   ipcMain.handle("fs:exists", async (_event, filePath) => {
     try {
-      await fs.access(filePath);
+      await fs.access(assertApprovedPath(filePath));
       return true;
     } catch (_) {
       return false;
@@ -480,7 +592,7 @@ function registerIpc() {
 
   ipcMain.handle("fs:stat", async (_event, filePath) => {
     try {
-      const st = await fs.stat(filePath);
+      const st = await fs.stat(assertApprovedPath(filePath));
       return {
         exists: true,
         isFile: st.isFile(),
@@ -512,6 +624,7 @@ function registerIpc() {
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  configureSecureUpdates();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();

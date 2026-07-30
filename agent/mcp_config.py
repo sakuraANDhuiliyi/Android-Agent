@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -12,7 +13,7 @@ from agent.paths import validate_id
 from agent.redaction import REDACTED, redact_sensitive_value
 
 
-TransportKind = Literal["stdio", "streamable_http"]
+TransportKind = Literal["stdio"]
 ConfigScope = Literal["user", "project"]
 
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -110,10 +111,8 @@ def _parse_servers(raw: Any, *, scope: ConfigScope) -> list[McpServerConfig]:
         except ValueError:
             continue
         transport = str(item.get("transport") or item.get("type") or "stdio").strip()
-        if transport in {"http", "sse", "streamable-http", "streamable_http"}:
-            transport = "streamable_http"
-        if transport not in {"stdio", "streamable_http"}:
-            transport = "stdio"
+        if transport != "stdio":
+            continue
         command = item.get("command")
         args = item.get("args") or []
         if isinstance(args, str):
@@ -183,7 +182,39 @@ def project_config_fingerprint(workspace: Path) -> str:
         return ""
     import hashlib
 
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    for config in load_project_mcp_config(workspace):
+        candidates: list[Path] = []
+        if config.command:
+            command_path = Path(config.command)
+            if command_path.is_absolute():
+                candidates.append(command_path)
+            else:
+                local_command = workspace / command_path
+                resolved_command = shutil.which(config.command)
+                if local_command.is_file():
+                    candidates.append(local_command)
+                elif resolved_command:
+                    candidates.append(Path(resolved_command))
+        base = Path(config.cwd) if config.cwd else workspace
+        if not base.is_absolute():
+            base = workspace / base
+        for arg in config.args:
+            arg_path = Path(arg)
+            candidate = arg_path if arg_path.is_absolute() else base / arg_path
+            if candidate.is_file():
+                candidates.append(candidate)
+        for executable in sorted({item.resolve() for item in candidates}, key=str):
+            digest.update(b"\0file\0")
+            digest.update(str(executable).encode("utf-8", errors="surrogateescape"))
+            try:
+                with executable.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except OSError:
+                digest.update(b"<unreadable>")
+    return digest.hexdigest()
 
 
 def is_project_mcp_trusted(user_id: str, project_id: str, workspace: Path) -> bool:

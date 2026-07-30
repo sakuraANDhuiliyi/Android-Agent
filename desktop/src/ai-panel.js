@@ -34,6 +34,8 @@
     settingsForm: document.getElementById("settingsForm"),
     serverUrl: document.getElementById("serverUrl"),
     apiToken: document.getElementById("apiToken"),
+    registrationToken: document.getElementById("registrationToken"),
+    btnPair: document.getElementById("btnPair"),
     settingsHint: document.getElementById("settingsHint"),
     createProjectDialog: document.getElementById("createProjectDialog"),
     createProjectForm: document.getElementById("createProjectForm"),
@@ -833,6 +835,13 @@
     els.serverUrl.value = baseUrl;
     client.configure({ baseUrl, token });
     savePrefs();
+    if (!token) {
+      state.connected = false;
+      setConn("err", "需要 Token");
+      els.settingsHint.textContent = "请输入服务端生成的访问 Token";
+      if (!silent) els.settingsDialog.showModal();
+      return;
+    }
     setConn("busy", "连接中");
     try {
       const health = await client.health();
@@ -855,6 +864,13 @@
       await refreshProjects({ silent: true });
       await maybeAutoSelectProject();
       updateComposerEnabled();
+      if (desktop?.setCredential) {
+        try {
+          await desktop.setCredential(baseUrl, token);
+        } catch (_) {
+          els.settingsHint.textContent += " · 凭证仅用于当前会话";
+        }
+      }
       if (!silent) toast("已连接 Agent");
     } catch (err) {
       state.connected = false;
@@ -864,6 +880,23 @@
       if (!silent) toast(`连接失败: ${err.message}`);
       throw err;
     }
+  }
+
+  async function pair() {
+    const baseUrl = (
+      els.serverUrl.value || "http://127.0.0.1:8000"
+    ).trim().replace(/\/+$/, "");
+    const secret = els.registrationToken.value.trim();
+    if (!secret) {
+      toast("请输入服务端配对密钥");
+      return;
+    }
+    client.configure({ baseUrl, token: "" });
+    const account = await client.pair(secret);
+    els.apiToken.value = account.token;
+    els.registrationToken.value = "";
+    await connect();
+    toast(`配对成功: ${account.user_id}`);
   }
 
   async function loadModels() {
@@ -1312,6 +1345,8 @@
     els.btnStartServer.addEventListener("click", () => startServer());
     els.btnStopServer.addEventListener("click", () => stopServer());
     els.btnCopyPhoneUrl.addEventListener("click", () => copyPhoneUrl());
+    els.btnPair?.addEventListener("click", () =>
+      pair().catch((err) => toast(`配对失败: ${err.message}`)));
     els.phoneUrl.addEventListener("click", () => copyPhoneUrl());
     desktop.onAgentServerExit?.(async () => {
       state.serverManaged = false;
@@ -1397,6 +1432,12 @@
     clearMessages();
     setRunning(false);
     await refreshServerStatus();
+    if (desktop?.getCredential) {
+      const baseUrl = (
+        els.serverUrl.value || "http://127.0.0.1:8000"
+      ).trim().replace(/\/+$/, "");
+      els.apiToken.value = await desktop.getCredential(baseUrl);
+    }
     try {
       await connect({ silent: true });
     } catch (_) {

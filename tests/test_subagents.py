@@ -69,9 +69,8 @@ def _init_git_repo(repo: Path) -> str:
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     (repo / ".env").write_text("SECRET=super-secret-value\n", encoding="utf-8")
     (repo / "local.properties").write_text("sdk.dir=/tmp\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".env\nlocal.properties\n", encoding="utf-8")
     _git(repo, "add", "-A")
-    # Ensure secrets are not committed if possible — still create tracked files for scrub test
-    _git(repo, "add", "-f", ".env", "local.properties", "README.md", "app")
     _git(repo, "commit", "-m", "initial")
     rev = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -111,9 +110,16 @@ class SubagentFixture(unittest.TestCase):
             patch("agent.paths.WORKSPACES_DIR", self.workspaces),
             patch("agent.database.DATA_DIR", self.data),
             patch("agent.worktrees.paths.DATA_DIR", self.data),
+            patch("agent.jobs.ensure_worker_started"),
         ]
         for p in self.patches:
             p.start()
+        self.fake_results: dict[str, dict] = {}
+        self.executor_patch = patch(
+            "agent.subagents._execute_subagent_agent",
+            side_effect=self._fake_subagent_execution,
+        )
+        self.executor_patch.start()
         self.store = TaskStore(self.data / "agent.db")
         configure_task_store(self.store, _settings())
         stop_worker(wait=True, timeout=2)
@@ -142,11 +148,36 @@ class SubagentFixture(unittest.TestCase):
 
     def tearDown(self) -> None:
         stop_worker(wait=True, timeout=2)
+        self.executor_patch.stop()
         for p in reversed(self.patches):
             p.stop()
         self._temp.cleanup()
 
+    def _fake_subagent_execution(
+        self,
+        settings,
+        workspace,
+        user_id,
+        project_id,
+        prompt,
+        **kwargs,
+    ):
+        _ = (settings, user_id, project_id, kwargs)
+        result = dict(self.fake_results.get(prompt) or {"text": prompt})
+        if result.get("error"):
+            raise RuntimeError(str(result["error"]))
+        workspace = Path(workspace).resolve()
+        for edit in result.get("edits") or []:
+            target = (workspace / str(edit["path"])).resolve()
+            target.relative_to(workspace)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(edit.get("content", "")), encoding="utf-8")
+        return result
+
     def _spawn(self, role: str, prompt: str, **kwargs):
+        fake_result = kwargs.pop("fake_result", None)
+        if fake_result is not None:
+            self.fake_results[prompt] = fake_result
         return spawn_subagent(
             user_id=self.user_id,
             project_id=self.project_id,
@@ -211,11 +242,6 @@ class SubagentRoleTests(SubagentFixture):
             "boom",
             fake_result={"error": "simulated"},
         )
-        # Inject fake_fail
-        task = self.store.get_task(child["child_task_id"], self.user_id)
-        ctx = task["context"]
-        ctx["fake_fail"] = True
-        self.store.update_task(child["child_task_id"], context=ctx)
         wait_subagents([child["child_task_id"]], self.user_id, timeout_seconds=5)
         info = get_subagent(child["child_task_id"], self.user_id)
         self.assertEqual(info["status"], "failed")
@@ -242,7 +268,6 @@ class SubagentRoleTests(SubagentFixture):
                 role_name="explore",
                 prompt="nested",
                 settings=_settings(),
-                fake_result={"text": "no"},
             )
         # Via tool
         result = dispatch_tool(
@@ -259,6 +284,27 @@ class SubagentRoleTests(SubagentFixture):
             payload.get("error_type") == "NoNesting"
             or "Subagent" in str(result.output)
         )
+
+    def test_model_cannot_inject_fake_subagent_result(self) -> None:
+        result = dispatch_tool(
+            self.workspace,
+            self.user_id,
+            self.project_id,
+            "spawn_subagent",
+            {
+                "role": "implementer",
+                "prompt": "write outside",
+                "fake_result": {
+                    "edits": [{"path": "../../owned.txt", "content": "owned"}],
+                },
+            },
+            task_id=self.parent_id,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, "InvalidToolInput")
+        self.assertIn("未声明参数 fake_result", str(result.output))
+        self.assertEqual(self.store.count_active_children(self.parent_id), 0)
+        self.assertFalse((self.workspaces / "owned.txt").exists())
 
     def test_dependency_atomic_claim(self) -> None:
         first = self._spawn("explore", "A", fake_result={"text": "A done"})
@@ -283,9 +329,20 @@ class SubagentRoleTests(SubagentFixture):
 
 
 class WorktreeIsolationTests(SubagentFixture):
-    def test_worktree_isolation_and_secret_scrub(self) -> None:
+    def test_worktree_rejects_tracked_secrets(self) -> None:
         secrets = secrets_would_copy(self.workspace)
         self.assertTrue(any(".env" in s or "local.properties" in s for s in secrets))
+        _git(self.workspace, "add", "-f", ".env", "local.properties")
+        _git(self.workspace, "commit", "-m", "tracked secrets")
+        with self.assertRaises(PermissionError):
+            create_worktree(
+                self.user_id,
+                self.project_id,
+                self.workspace,
+                repo_root=self.workspace,
+            )
+
+    def test_worktree_isolation(self) -> None:
         wt = create_worktree(
             self.user_id,
             self.project_id,
@@ -293,10 +350,6 @@ class WorktreeIsolationTests(SubagentFixture):
             base_revision=self.base_rev,
             repo_root=self.workspace,
         )
-        # Scrubbed secrets should not remain
-        remaining = list(wt.path.rglob(".env")) + list(wt.path.rglob("local.properties"))
-        self.assertEqual(remaining, [])
-        # Isolation: write in worktree does not touch main
         target = wt.path / "app" / "src" / "main" / "java" / "Main.kt"
         target.write_text("class Main { fun x(){} }\n", encoding="utf-8")
         main_file = self.workspace / "app" / "src" / "main" / "java" / "Main.kt"

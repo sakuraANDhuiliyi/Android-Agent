@@ -74,7 +74,9 @@
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return {};
-      return JSON.parse(raw);
+      const value = JSON.parse(raw);
+      delete value.token;
+      return value;
     } catch (_) {
       return {};
     }
@@ -107,7 +109,6 @@
     try {
       const persistable = {
         baseUrl: state.baseUrl,
-        token: state.token,
         sidebarView: state.sidebarView,
         sidebarCollapsed: state.sidebarCollapsed,
         aiCollapsed: state.aiCollapsed,

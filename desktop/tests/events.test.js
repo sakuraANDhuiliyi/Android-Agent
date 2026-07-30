@@ -34,7 +34,11 @@ class FakeWebSocket {
 
 const context = {
   window: {},
-  fetch: () => Promise.resolve({ status: 200, text: () => "{}", ok: true }),
+  fetch: () => Promise.resolve({
+    status: 201,
+    text: () => JSON.stringify({ ticket: "one-time-ticket" }),
+    ok: true,
+  }),
   URL,
   WebSocket: FakeWebSocket,
   setTimeout,
@@ -52,6 +56,7 @@ async function run() {
 
   const events = [];
   const watcher = api.watchJob("j1", (msg) => events.push(msg), { afterEventId: 5 });
+  await new Promise((r) => setTimeout(r, 0));
 
   FakeWebSocket.last.inject({ id: 6, type: "text" });
   FakeWebSocket.last.inject({ id: 7, type: "text" });
@@ -60,6 +65,8 @@ async function run() {
   await new Promise((r) => setTimeout(r, 50));
   assert.strictEqual(events.filter((e) => e.kind === "event").length, 3);
   assert.strictEqual(FakeWebSocket.last.url.searchParams.get("after_event_id"), "5");
+  assert.strictEqual(FakeWebSocket.last.url.searchParams.get("ticket"), "one-time-ticket");
+  assert.strictEqual(FakeWebSocket.last.url.searchParams.has("token"), false);
 
   watcher.close();
   console.log("events.test: OK");

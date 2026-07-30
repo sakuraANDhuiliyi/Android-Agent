@@ -14,6 +14,7 @@ from agent.paths import (
     workspace_path,
 )
 from agent.project import init_project, list_projects, load_project_meta
+from agent.users import UserStore
 
 
 def _resolve_cli_user_id(args: argparse.Namespace) -> str:
@@ -168,6 +169,16 @@ def cmd_migrate_users(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_register_user(_: argparse.Namespace) -> int:
+    """Create a local API account without exposing a registration endpoint."""
+    user_id, token = UserStore().register()
+    print("已创建 Android Agent 用户。Token 只显示一次，请保存到客户端。")
+    print(f"用户 ID: {user_id}")
+    print(f"访问 Token: {token}")
+    print("鉴权格式: Authorization: Bearer <访问 Token>")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -190,11 +201,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  本机:   http://127.0.0.1:{port}/docs")
     if lan_ip:
         print(f"  局域网: http://{lan_ip}:{port}/docs")
-    print(f"  用户数: {len(settings.users)}")
+    print(f"  配置文件用户数: {len(settings.users)}")
     for user in settings.users:
-        token_state = "已配置 Token" if user.token else "空 Token（仅本机调试）"
-        print(f"    - {user.id}: {token_state}")
+        print(f"    - {user.id}: 已配置 Token")
     print("  鉴权:   Authorization: Bearer <user_token>")
+    print(
+        "  网络注册: "
+        + ("已启用（需要注册密钥）" if settings.registration_enabled else "已关闭")
+    )
+    print("  远程终端: " + ("已启用" if settings.terminal_enabled else "已关闭"))
 
     uvicorn.run(app, host=host, port=port, log_level="info")
     return 0
@@ -238,8 +253,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_migrate.set_defaults(func=cmd_migrate_users)
 
+    p_register = sub.add_parser(
+        "register-user",
+        help="在本机创建 API 用户并输出一次性访问 Token",
+    )
+    p_register.set_defaults(func=cmd_register_user)
+
     p_serve = sub.add_parser("serve", help="启动 HTTP API 服务（供手机 App 连接）")
-    p_serve.add_argument("--host", help="监听地址，默认 0.0.0.0")
+    p_serve.add_argument("--host", help="监听地址，默认 127.0.0.1")
     p_serve.add_argument("--port", type=int, help="端口，默认 8000")
     p_serve.set_defaults(func=cmd_serve)
 

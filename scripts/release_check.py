@@ -48,7 +48,11 @@ def main() -> int:
     parser.add_argument("--skip-android", action="store_true")
     parser.add_argument("--skip-desktop", action="store_true")
     parser.add_argument("--skip-perf", action="store_true")
-    parser.add_argument("--report", type=Path, default=ROOT / "evals" / "fixtures" / "v1" / "release_report.json")
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=ROOT / ".artifacts" / "release_report.json",
+    )
     args = parser.parse_args()
 
     steps: list[dict] = []
@@ -64,6 +68,9 @@ def main() -> int:
     if not args.skip_desktop:
         steps.append(run(["npm", "run", "check"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:unit"], cwd=ROOT / "desktop", timeout=120))
+        steps.append(
+            run(["npm", "audit", "--omit=dev"], cwd=ROOT / "desktop", timeout=120)
+        )
         steps.append(
             run(["npm", "run", "test:screenshot"], cwd=ROOT / "desktop", timeout=300)
         )

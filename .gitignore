@@ -24,6 +24,7 @@ android-app/app/build/
 desktop/node_modules/
 desktop/dist/
 desktop/out/
+.artifacts/
 
 # 参考源码（本地对照用，不入库）
 agent- example/

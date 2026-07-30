@@ -10,6 +10,7 @@ from typing import Any, Callable
 from agent.mcp_client import (
     McpCallResult,
     McpError,
+    McpIndeterminateError,
     McpTimeoutError,
     McpToolInfo,
     McpTransport,
@@ -268,23 +269,22 @@ class McpManager:
             assert transport is not None
         try:
             return transport.call_tool(tool, arguments or {}, timeout=timeout)
-        except (McpTimeoutError, McpTransportError):
-            # One reconnect retry on transport failure.
+        except (McpTimeoutError, McpTransportError) as exc:
+            # The server may have completed a side-effecting call before the
+            # transport failed. Reconnect for future calls, never replay this one.
             with self._lock:
                 state = self._servers.get(server)
                 if state:
                     state.reconnect_attempts += 1
                     self._emit(
                         "mcp_status",
-                        message=f"reconnecting {server} after call failure",
+                        message=f"resetting {server} after indeterminate call",
                         server=server,
                     )
                     self._stop_locked(server)
-                    self._start_locked(server)
-                    transport = self._servers[server].transport
-            if transport is None:
-                raise
-            return transport.call_tool(tool, arguments or {}, timeout=timeout)
+            raise McpIndeterminateError(
+                f"MCP 调用结果未知，未自动重试: {server}/{tool}: {exc}"
+            ) from exc
 
     def _start_locked(self, name: str) -> dict[str, Any]:
         if name not in self._servers:
@@ -336,8 +336,13 @@ class McpManager:
         if state.transport is not None:
             try:
                 state.transport.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._emit(
+                    "mcp_diagnostic",
+                    message=f"close failed for {name}",
+                    server=name,
+                    error=str(exc),
+                )
             state.transport = None
         # Unregister this server's tools.
         prefix = f"mcp__{name}__"
@@ -447,7 +452,11 @@ def reset_mcp_managers() -> None:
         for mgr in _managers.values():
             try:
                 mgr.stop_all()
-            except Exception:
-                pass
+            except Exception as exc:
+                mgr._emit(
+                    "mcp_diagnostic",
+                    message="manager shutdown failed",
+                    error=str(exc),
+                )
         _managers.clear()
     clear_dynamic_tools(prefix="mcp__")

@@ -19,11 +19,19 @@ def select_context_events(
         (dict(event) for event in events),
         key=lambda event: (event.get("seq", 0), event.get("created_at", 0)),
     )
+    invalidated_ids = {
+        str(_payload(event).get("checkpoint_event_id"))
+        for event in ordered
+        if event.get("event_type")
+        == EventType.CONTEXT_CHECKPOINT_INVALIDATED
+        and _payload(event).get("checkpoint_event_id")
+    }
     checkpoint_index = -1
     for index, event in enumerate(ordered):
         payload = _payload(event)
         if (
             event.get("event_type") == EventType.CONTEXT_CHECKPOINT
+            and str(event.get("id") or "") not in invalidated_ids
             and _checkpoint_text(payload)
             and payload.get("valid", True) is not False
         ):

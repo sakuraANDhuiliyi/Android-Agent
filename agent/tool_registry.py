@@ -41,6 +41,10 @@ class ToolSpec:
     def __post_init__(self) -> None:
         if self.input_schema is None:
             self.input_schema = {"type": "object", "properties": {}, "required": []}
+        else:
+            self.input_schema = copy.deepcopy(self.input_schema)
+        if self.input_schema.get("type") == "object":
+            self.input_schema.setdefault("additionalProperties", False)
 
     def primary_risk(self) -> str:
         """Return the highest risk level declared by the tool."""

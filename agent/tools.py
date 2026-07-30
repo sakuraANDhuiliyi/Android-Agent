@@ -5,6 +5,7 @@ import re
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
@@ -22,6 +23,7 @@ from agent.processes import (
     run_command as _run_command,
 )
 from agent.project import new_build_id
+from agent.safe_paths import resolve_workspace_path
 from agent.tool_registry import (
     ToolSpec,
     get_anthropic_tool_definitions,
@@ -84,15 +86,20 @@ def _normalize_rel(path: str) -> str:
 
 def _resolve_in_workspace(workspace: Path, rel_path: str) -> Path:
     rel = _normalize_rel(rel_path)
-    target = (workspace / rel).resolve()
-    if not str(target).startswith(str(workspace.resolve())):
-        raise PermissionError(f"路径越界: {rel_path}")
-    return target
+    return resolve_workspace_path(workspace, rel)
 
 
 def _is_allowed(rel: str, prefixes: tuple[str, ...]) -> bool:
     rel = _normalize_rel(rel)
-    return any(rel == p.rstrip("/") or rel.startswith(p) for p in prefixes)
+    for prefix in prefixes:
+        normalized = _normalize_rel(prefix)
+        if prefix.endswith("/"):
+            root = normalized.rstrip("/")
+            if rel == root or rel.startswith(root + "/"):
+                return True
+        elif rel == normalized:
+            return True
+    return False
 
 
 def _can_browse(rel: str) -> bool:
@@ -280,7 +287,10 @@ def _iter_readable_files(workspace: Path, root_rel: str = "app/src"):
         roots = [workspace / _normalize_rel(p).rstrip("/") for p in ALLOWED_READ_PREFIXES if p.endswith("/")]
         roots += [workspace / _normalize_rel(p) for p in ALLOWED_READ_PREFIXES if not p.endswith("/")]
     else:
-        roots = [(workspace / root_rel).resolve()]
+        try:
+            roots = [resolve_workspace_path(workspace, root_rel)]
+        except PermissionError:
+            return
 
     for root in roots:
         if root.is_file():
@@ -294,12 +304,14 @@ def _iter_readable_files(workspace: Path, root_rel: str = "app/src"):
         if not root.is_dir():
             continue
         for path in root.rglob("*"):
+            if path.is_symlink():
+                continue
             if not path.is_file():
                 continue
             if any(part in IGNORE_DIR_NAMES for part in path.parts):
                 continue
             try:
-                rel = path.resolve().relative_to(workspace).as_posix()
+                rel = path.relative_to(workspace).as_posix()
             except ValueError:
                 continue
             if _is_allowed(rel, ALLOWED_READ_PREFIXES):
@@ -519,6 +531,82 @@ def _validate_download_url(url: str) -> str:
     return raw
 
 
+def _resolve_public_addresses(url: str) -> set[str]:
+    """Resolve every address for a URL and reject mixed/private DNS answers."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"下载地址 DNS 解析失败: {host}: {exc}") from exc
+    addresses = {str(record[4][0]) for record in records if record[4]}
+    if not addresses:
+        raise ValueError(f"下载地址 DNS 无有效结果: {host}")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError(f"禁止下载解析到内网/保留地址的 URL: {host}")
+    return addresses
+
+
+@contextmanager
+def _pinned_http_stream(url: str, addresses: set[str]):
+    """Create an httpx stream whose TCP backend uses a validated address."""
+    import httpcore
+    import httpx
+    from httpcore._backends.sync import SyncBackend
+
+    pinned_address = sorted(addresses)[0]
+
+    class PinnedBackend:
+        def __init__(self) -> None:
+            self.backend = SyncBackend()
+
+        def connect_tcp(
+            self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            return self.backend.connect_tcp(
+                pinned_address,
+                port,
+                timeout=timeout,
+                local_address=local_address,
+                socket_options=socket_options,
+            )
+
+        def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            return self.backend.connect_unix_socket(
+                path,
+                timeout=timeout,
+                socket_options=socket_options,
+            )
+
+        def sleep(self, seconds):
+            return self.backend.sleep(seconds)
+
+    transport = httpx.HTTPTransport()
+    transport._pool = httpcore.ConnectionPool(  # type: ignore[attr-defined]
+        network_backend=PinnedBackend(),
+        retries=0,
+    )
+    with httpx.Client(
+        transport=transport,
+        follow_redirects=False,
+        timeout=60.0,
+    ) as client:
+        with client.stream("GET", url) as response:
+            yield response
+
+
 def _download_file_impl(
     workspace: Path,
     url: str,
@@ -554,32 +642,70 @@ def _download_file_impl(
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        temp_target = target.with_name(f".{target.name}.{os.getpid()}.part")
         # Follow redirects manually so each hop is re-validated (SSRF guard).
         current = url
         size = 0
-        with target.open("wb") as out:
+        with temp_target.open("xb") as out:
             for _hop in range(5):
-                with httpx.stream(
-                    "GET", current, follow_redirects=False, timeout=60.0
-                ) as response:
+                before_addresses = _resolve_public_addresses(current)
+                with _pinned_http_stream(current, before_addresses) as response:
+                    after_addresses = _resolve_public_addresses(current)
+                    if before_addresses != after_addresses:
+                        raise ValueError("下载地址 DNS 结果在连接期间发生变化")
                     if response.status_code in {301, 302, 303, 307, 308}:
                         loc = response.headers.get("location")
                         if not loc:
-                            return ToolResult(False, "重定向缺少 Location")
+                            raise ValueError("重定向缺少 Location")
                         from urllib.parse import urljoin
 
                         current = _validate_download_url(urljoin(current, loc))
                         continue
                     if response.status_code >= 400:
-                        return ToolResult(
-                            False,
-                            f"下载失败 HTTP {response.status_code}: {current}",
+                        raise ValueError(
+                            f"下载失败 HTTP {response.status_code}: {current}"
                         )
                     content_length = response.headers.get("content-length")
                     if content_length and int(content_length) > max_bytes:
-                        return ToolResult(
-                            False,
-                            f"文件过大（Content-Length={content_length}），上限 {max_bytes} 字节",
+                        raise ValueError(
+                            f"文件过大（Content-Length={content_length}），"
+                            f"上限 {max_bytes} 字节"
+                        )
+                    content_type = (
+                        response.headers.get("content-type", "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
+                    )
+                    expected_types = {
+                        ".apk": {
+                            "application/vnd.android.package-archive",
+                            "application/octet-stream",
+                            "application/zip",
+                        },
+                        ".json": {
+                            "application/json",
+                            "text/json",
+                            "text/plain",
+                        },
+                        ".png": {"image/png", "application/octet-stream"},
+                        ".jpg": {"image/jpeg", "application/octet-stream"},
+                        ".jpeg": {"image/jpeg", "application/octet-stream"},
+                        ".webp": {"image/webp", "application/octet-stream"},
+                        ".zip": {
+                            "application/zip",
+                            "application/octet-stream",
+                            "application/x-zip-compressed",
+                        },
+                    }.get(target.suffix.lower())
+                    if (
+                        content_type
+                        and expected_types
+                        and content_type not in expected_types
+                    ):
+                        raise ValueError(
+                            f"响应 Content-Type {content_type} 与目标 "
+                            f"{target.suffix.lower()} 不匹配"
                         )
                     for chunk in response.iter_bytes():
                         if cancel_check:
@@ -588,25 +714,31 @@ def _download_file_impl(
                             continue
                         size += len(chunk)
                         if size > max_bytes:
-                            out.close()
-                            target.unlink(missing_ok=True)
-                            return ToolResult(
-                                False, f"下载中止：超过大小上限 {max_bytes} 字节"
+                            raise ValueError(
+                                f"下载中止：超过大小上限 {max_bytes} 字节"
                             )
                         out.write(chunk)
                     break
             else:
-                return ToolResult(False, "重定向次数过多")
+                raise ValueError("重定向次数过多")
+        if size <= 0:
+            raise ValueError("下载结果为空文件")
+        os.replace(temp_target, target)
         return ToolResult(True, f"已下载 {size} 字节 -> {rel}")
     except Exception as exc:
-        if target.exists() and target.is_file():
+        temp_target = locals().get("temp_target")
+        if isinstance(temp_target, Path) and temp_target.is_file():
             try:
-                target.unlink()
+                temp_target.unlink()
             except OSError:
                 pass
         if exc.__class__.__name__ == "CancellationRequested":
             raise
         return ToolResult(False, f"下载异常: {exc}")
+    finally:
+        temp_target = locals().get("temp_target")
+        if isinstance(temp_target, Path):
+            temp_target.unlink(missing_ok=True)
 
 
 def download_file(

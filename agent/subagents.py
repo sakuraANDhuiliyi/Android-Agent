@@ -10,6 +10,7 @@ from agent.conversation_events import ConversationEventStore
 from agent.conversation_events import ConversationEventType as EventType
 from agent.database import TaskStore
 from agent.paths import workspace_path
+from agent.project_lifecycle import project_operation
 from agent.redaction import redact_sensitive_value
 from agent.subagent_roles import (
     DEFAULT_MAX_SUBAGENTS,
@@ -55,7 +56,34 @@ def spawn_subagent(
     base_revision: str | None = None,
     settings: Any = None,
     on_event: EventCallback | None = None,
-    fake_result: dict[str, Any] | None = None,
+    max_children: int = DEFAULT_MAX_SUBAGENTS,
+) -> dict[str, Any]:
+    with project_operation(user_id, project_id):
+        return _spawn_subagent_unlocked(
+            user_id=user_id,
+            project_id=project_id,
+            parent_task_id=parent_task_id,
+            role_name=role_name,
+            prompt=prompt,
+            depends_on=depends_on,
+            base_revision=base_revision,
+            settings=settings,
+            on_event=on_event,
+            max_children=max_children,
+        )
+
+
+def _spawn_subagent_unlocked(
+    *,
+    user_id: str,
+    project_id: str,
+    parent_task_id: str,
+    role_name: str,
+    prompt: str,
+    depends_on: list[str] | None = None,
+    base_revision: str | None = None,
+    settings: Any = None,
+    on_event: EventCallback | None = None,
     max_children: int = DEFAULT_MAX_SUBAGENTS,
 ) -> dict[str, Any]:
     """Create a child task. Main-agent only (caller must enforce)."""
@@ -117,7 +145,6 @@ def spawn_subagent(
         "parent_task_id": parent_task_id,
         "system_prompt": role.system_prompt,
         "summary_only": True,
-        "fake_result": fake_result,
     }
     provider = (settings.provider if settings else None) or parent.get("provider")
     model = role.model or (settings.model if settings else None) or parent.get("model")
@@ -194,11 +221,9 @@ def spawn_subagent(
             },
         )
 
-    # Ensure worker is running for real (non-fake) subagents.
-    if fake_result is None:
-        from agent import jobs
+    from agent import jobs
 
-        jobs.ensure_worker_started()
+    jobs.ensure_worker_started()
 
     return {
         "ok": True,
@@ -247,33 +272,38 @@ def wait_subagents(
     remaining = list(child_ids)
     results: list[dict[str, Any]] = []
     store = _task_store()
-    # Prefer the global worker; if absent, use a synchronous one-shot worker.
+    # The global worker pool executes children concurrently. Tests and embedded
+    # callers without that pool get a temporary bounded pool.
     from agent import jobs
     from agent.config import load_settings
     from agent.worker import TaskWorker
 
     worker = getattr(jobs, "_worker", None)
+    local_workers: list[TaskWorker] = []
     if worker is None:
-        worker = TaskWorker(store, jobs._run_job, load_settings())
+        for _ in range(min(DEFAULT_MAX_SUBAGENTS, max(1, len(child_ids)))):
+            local = TaskWorker(store, jobs._run_job, load_settings())
+            local.start()
+            local_workers.append(local)
 
-    while remaining and time.time() < deadline:
-        try:
-            worker.run_once()
-        except Exception:
-            pass
-        still: list[str] = []
-        for cid in remaining:
-            task = store.get_task(cid, user_id)
-            if not task:
-                results.append({"child_task_id": cid, "status": "missing", "ok": False})
-                continue
-            if task["status"] in {"succeeded", "failed", "canceled"}:
-                results.append(get_subagent(cid, user_id))
-            else:
-                still.append(cid)
-        remaining = still
-        if remaining:
-            time.sleep(poll_interval)
+    try:
+        while remaining and time.time() < deadline:
+            still: list[str] = []
+            for cid in remaining:
+                task = store.get_task(cid, user_id)
+                if not task:
+                    results.append({"child_task_id": cid, "status": "missing", "ok": False})
+                    continue
+                if task["status"] in {"succeeded", "failed", "canceled"}:
+                    results.append(get_subagent(cid, user_id))
+                else:
+                    still.append(cid)
+            remaining = still
+            if remaining:
+                time.sleep(poll_interval)
+    finally:
+        for local in local_workers:
+            local.stop(wait=True, timeout=2.0)
     for cid in remaining:
         info = get_subagent(cid, user_id)
         info["timed_out"] = True
@@ -307,7 +337,7 @@ def run_subagent_job(
     on_event: EventCallback | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> str:
-    """Execute a restricted subagent turn. Prefer fake_result for tests."""
+    """Execute a restricted subagent turn and persist its bounded summary."""
     store = _task_store()
     task = store.get_task(task_id, user_id) or {}
     ctx = dict(task.get("context") or {})
@@ -318,63 +348,19 @@ def run_subagent_job(
     if cancel_check:
         cancel_check()
 
-    # Fake / scripted path — no real model or network.
-    if ctx.get("fake_result") is not None:
-        summary = dict(ctx["fake_result"])
-        if ctx.get("fake_fail"):
-            raise RuntimeError(summary.get("error") or "subagent fake failure")
-        # Optional: apply scripted file writes inside worktree only.
-        for edit in summary.get("edits") or []:
-            rel = edit.get("path")
-            content = edit.get("content", "")
-            if not rel or ".." in str(rel).split("/"):
-                continue
-            target = workspace / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(content), encoding="utf-8")
-        return _finalize_subagent(
-            store,
-            task_id,
-            user_id,
-            project_id,
-            conversation_id,
-            turn_id,
-            role.name,
-            workspace,
-            ctx,
-            summary,
-            on_event=on_event,
-        )
-
-    # Restricted real loop: empty prior history, filtered tools, permission mode.
-    from agent.loop import run_agent
-    from dataclasses import replace
-
-    limited = settings
-    try:
-        limited = replace(settings, max_turns=role.max_turns, max_auto_continuations=0)
-    except Exception:
-        pass
-
-    # Child conversation starts fresh — do not load parent history.
-    answer = run_agent(
-        limited,
+    summary = _execute_subagent_agent(
+        settings,
         workspace,
         user_id,
         project_id,
         prompt,
+        role_name=role.name,
+        max_turns=role.max_turns,
         on_event=on_event,
         cancel_check=cancel_check,
         task_id=task_id,
-        conversation_events=[],
         turn_id=turn_id,
-        # Custom attributes consumed if loop supports them later:
     )
-    summary = {
-        "text": (answer or "")[:2000],
-        "role": role.name,
-        "changed_files": [],
-    }
     return _finalize_subagent(
         store,
         task_id,
@@ -388,6 +374,57 @@ def run_subagent_job(
         summary,
         on_event=on_event,
     )
+
+
+def _execute_subagent_agent(
+    settings: Any,
+    workspace: Path,
+    user_id: str,
+    project_id: str,
+    prompt: str,
+    *,
+    role_name: str,
+    max_turns: int,
+    on_event: EventCallback | None,
+    cancel_check: Callable[[], None] | None,
+    task_id: str,
+    turn_id: str,
+) -> dict[str, Any]:
+    """Run the restricted child loop; tests replace this function with a fake."""
+    from dataclasses import replace
+
+    from agent.loop import run_agent
+
+    limited = settings
+    try:
+        limited = replace(settings, max_turns=max_turns, max_auto_continuations=0)
+    except (TypeError, ValueError):
+        pass
+
+    answer = run_agent(
+        limited,
+        workspace,
+        user_id,
+        project_id,
+        prompt,
+        on_event=on_event,
+        cancel_check=cancel_check,
+        task_id=task_id,
+        conversation_events=[],
+        turn_id=turn_id,
+        allowed_tools=frozenset(role.allowed_tools),
+        extra_system_prompt=(
+            f"你是受限 Subagent，角色为 {role.name}。\n"
+            f"{role.system_prompt}\n"
+            "只能使用已提供的工具；不得尝试越权、创建子 Agent 或扩大任务范围。"
+        ),
+        run_mode=role.permission_mode,
+    )
+    return {
+        "text": (answer or "")[:2000],
+        "role": role_name,
+        "changed_files": [],
+    }
 
 
 def _finalize_subagent(
@@ -439,8 +476,6 @@ def _finalize_subagent(
         "findings": summary.get("findings") or [],
     }
     ctx["artifacts"] = artifacts
-    # Strip bulky fake payloads from stored context.
-    ctx.pop("fake_result", None)
 
     text = ctx["summary"]["text"] or f"[{role}] completed"
     store.update_task(

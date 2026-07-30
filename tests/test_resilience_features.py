@@ -60,7 +60,7 @@ class SemanticCheckpointTests(unittest.TestCase):
             self.assertEqual(checkpoint["id"], duplicate["id"])
             self.assertEqual(
                 checkpoint["payload"]["generator"],
-                "extractive-semantic-v1",
+                "structured-deterministic-v2",
             )
             messages = build_openai_messages(
                 events.list_events(conversation["id"], user_id="user")
@@ -84,7 +84,7 @@ class SemanticCheckpointTests(unittest.TestCase):
 
 
 class AutomaticRecoveryTests(unittest.TestCase):
-    def test_startup_creates_new_recovery_task_and_continues_model(self) -> None:
+    def test_startup_requires_explicit_recovery_before_model_continues(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             builds = root / "builds"
@@ -162,6 +162,17 @@ class AutomaticRecoveryTests(unittest.TestCase):
                 self.assertEqual(len(recovered), 1)
                 original = store.get_task("interrupted-task", "user")
                 self.assertEqual(original["status"], "failed")
+                recovery_tasks = [
+                    task
+                    for task in store.list_tasks("user", "project")
+                    if task.get("recovery_of_task_id") == "interrupted-task"
+                ]
+                self.assertEqual(recovery_tasks, [])
+                jobs_mod.recover_job_explicitly(
+                    "interrupted-task",
+                    "user",
+                    recovery_settings(),
+                )
                 recovery_tasks = [
                     task
                     for task in store.list_tasks("user", "project")

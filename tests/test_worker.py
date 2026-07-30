@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from agent import jobs as jobs_mod
 from agent.api import create_app
+from agent.config import Settings, UserAccount
 from agent.conversation_events import ConversationEventStore
 from agent.database import TaskStore
 from agent.worker import TaskWorker
@@ -31,6 +32,26 @@ def _settings() -> SimpleNamespace:
         base_url=None,
         auto_build_after_edit=False,
         provider_fallbacks=[],
+    )
+
+
+def _api_settings() -> Settings:
+    return Settings(
+        provider="openai",
+        api_key="fake-key",
+        model="fake-model",
+        model_candidates=["fake-model"],
+        max_turns=3,
+        max_auto_continuations=0,
+        max_gradle_retries=3,
+        compact_max_chars=2_500_000,
+        max_output_tokens=65_536,
+        base_url=None,
+        auto_build_after_edit=False,
+        server_host="127.0.0.1",
+        server_port=8000,
+        api_token="",
+        users=[UserAccount(id="local", token="test-token")],
     )
 
 
@@ -565,7 +586,13 @@ class WorkerApiTests(unittest.TestCase):
         self._temp.cleanup()
 
     def _client(self) -> TestClient:
-        return TestClient(create_app(task_store=TaskStore(self._data / "agent.db")))
+        return TestClient(
+            create_app(
+                settings=_api_settings(),
+                task_store=TaskStore(self._data / "agent.db"),
+            ),
+            headers={"Authorization": "Bearer test-token"},
+        )
 
     def test_ask_persists_user_message_before_return(self) -> None:
         with patch("agent.jobs.run_agent", return_value="ok"):
