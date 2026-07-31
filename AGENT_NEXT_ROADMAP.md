@@ -1176,7 +1176,7 @@ Hook 可：
 ```text
 # 阶段十八：项目长期记忆与语义检索
 
-项目路径：`/Users/sakura/Android Agent`
+项目路径：`/Users/Mac/Android-Agent`
 
 请在现有 Conversation checkpoint 之外实现可控项目记忆。
 
@@ -1250,7 +1250,7 @@ Hook 可：
 ```text
 # 阶段十九：完整 Eval、安全审计、性能预算与发布
 
-项目路径：`/Users/sakura/Android Agent`
+项目路径：`/Users/Mac/Android-Agent`
 
 本阶段不新增主要 Agent 功能，完成上线前质量收口。
 

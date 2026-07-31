@@ -14,6 +14,7 @@
     jobHistory: document.getElementById("jobHistory"),
     conversationSelect: document.getElementById("conversationSelect"),
     btnNewConversation: document.getElementById("btnNewConversation"),
+    btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     aiMessages: document.getElementById("aiMessages"),
     aiEmpty: document.getElementById("aiEmpty"),
     aiContext: document.getElementById("aiContext"),
@@ -1197,7 +1198,9 @@
     els.promptInput.disabled = !state.connected || !state.selectedProjectId || !state.conversationId;
     els.btnSend.disabled = !ok;
     els.btnUseCurrentFile.disabled = !state.selectedProjectId;
-    if (els.btnNewConversation) els.btnNewConversation.disabled = !state.connected || !state.selectedProjectId || state.running;
+    const convDisabled = !state.connected || !state.selectedProjectId || state.running;
+    if (els.btnNewConversation) els.btnNewConversation.disabled = convDisabled;
+    if (els.btnSidebarNewConversation) els.btnSidebarNewConversation.disabled = convDisabled;
   }
 
   function buildPrompt() {
@@ -1358,6 +1361,7 @@
     });
     els.btnNewChat.addEventListener("click", () => createNewConversation());
     els.btnNewConversation?.addEventListener("click", () => createNewConversation());
+    els.btnSidebarNewConversation?.addEventListener("click", () => createNewConversation());
     els.conversationSelect?.addEventListener("change", async () => {
       const id = els.conversationSelect.value;
       if (id && id !== state.conversationId) await selectConversation(id);
