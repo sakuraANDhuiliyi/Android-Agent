@@ -6,7 +6,7 @@ import hmac
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +45,7 @@ from agent.jobs import (
     stop_worker,
     update_conversation,
     workspace_diff,
+    workspace_diff_file,
     workspace_status,
 )
 from agent.paths import (
@@ -166,6 +167,9 @@ class CreateProjectRequest(StrictRequest):
     package: Optional[str] = Field(default=None, max_length=255)
 
 
+RunMode = Literal["read_only", "workspace", "ask"]
+
+
 class AskRequest(StrictRequest):
     prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
@@ -173,6 +177,7 @@ class AskRequest(StrictRequest):
     continue_session: bool = True
     reset_session: bool = False
     conversation_id: Optional[str] = None
+    run_mode: Optional[RunMode] = None
 
 
 class ApprovalDecisionRequest(StrictRequest):
@@ -192,6 +197,7 @@ class ConversationAskRequest(StrictRequest):
     prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
     auto_fallback: bool = False
+    run_mode: Optional[RunMode] = None
 
 
 class WriteFileRequest(StrictRequest):
@@ -617,6 +623,7 @@ def create_app(
                 conversation_id=body.conversation_id,
                 continue_session=body.continue_session and not body.reset_session,
                 reset_session=body.reset_session,
+                run_mode=body.run_mode,
             )
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
@@ -671,6 +678,7 @@ def create_app(
     def get_conversation_events(
         conversation_id: str,
         after_seq: Optional[int] = None,
+        before_seq: Optional[int] = None,
         limit: int = Query(default=200, ge=1, le=500),
         context_only: bool = False,
         user_id: str = Depends(current_user),
@@ -680,6 +688,7 @@ def create_app(
                 conversation_id,
                 user_id,
                 after_seq=after_seq,
+                before_seq=before_seq,
                 limit=limit + 1,
                 context_only=context_only,
             )
@@ -693,6 +702,19 @@ def create_app(
                 status_code=404,
                 detail=f"对话不存在: {conversation_id}",
             )
+        backward = before_seq is not None and after_seq is None
+        if backward:
+            # events are the newest `limit+1` rows below before_seq, ascending.
+            has_more = len(events) > limit
+            page = events[-limit:] if has_more else events
+            next_before_seq = page[0]["seq"] if page else before_seq
+            return {
+                "conversation_id": conversation_id,
+                "events": [_public_event_value(event) for event in page],
+                "next_before_seq": next_before_seq,
+                "has_more": has_more,
+                "direction": "backward",
+            }
         has_more = len(events) > limit
         page = events[:limit]
         next_after_seq = page[-1]["seq"] if page else after_seq
@@ -701,6 +723,7 @@ def create_app(
             "events": [_public_event_value(event) for event in page],
             "next_after_seq": next_after_seq,
             "has_more": has_more,
+            "direction": "forward",
         }
 
     @app.patch("/api/conversations/{conversation_id}")
@@ -763,6 +786,7 @@ def create_app(
                 conversation_id=conversation_id,
                 continue_session=True,
                 reset_session=False,
+                run_mode=body.run_mode,
             )
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
@@ -1142,6 +1166,23 @@ def create_app(
                 project_id,
                 turn_id=turn_id,
                 checkpoint_id=checkpoint_id,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.get("/api/projects/{project_id}/diff/file")
+    def get_workspace_diff_file(
+        project_id: str,
+        turn_id: str,
+        path: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return workspace_diff_file(
+                user_id,
+                project_id,
+                turn_id=turn_id,
+                path=path,
             )
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e

@@ -486,6 +486,10 @@ def _chat_completion_with_fallback(
     **kwargs: Any,
 ):
     errors: list[str] = []
+    # Stream identity is only meaningful for the streaming path; keep it out
+    # of the plain (non-streaming) provider request.
+    stream_message_id = kwargs.pop("message_id", None)
+    stream_id = kwargs.pop("stream_id", None)
     start_index = model_candidates.index(active_model) if active_model in model_candidates else 0
     for model_name in model_candidates[start_index:]:
         try:
@@ -495,6 +499,8 @@ def _chat_completion_with_fallback(
                     model=model_name,
                     on_event=on_event,
                     cancel_check=cancel_check,
+                    message_id=stream_message_id,
+                    stream_id=stream_id,
                     **kwargs,
                 )
             except CancellationRequested:
@@ -543,6 +549,8 @@ def _anthropic_message_with_fallback(
     **kwargs: Any,
 ):
     errors: list[str] = []
+    stream_message_id = kwargs.pop("message_id", None)
+    stream_id = kwargs.pop("stream_id", None)
     start_index = model_candidates.index(active_model) if active_model in model_candidates else 0
     for model_name in model_candidates[start_index:]:
         try:
@@ -552,6 +560,8 @@ def _anthropic_message_with_fallback(
                     model=model_name,
                     on_event=on_event,
                     cancel_check=cancel_check,
+                    message_id=stream_message_id,
+                    stream_id=stream_id,
                     **kwargs,
                 )
             except CancellationRequested:
@@ -663,6 +673,10 @@ def _run_openai_compatible(
             workspace=workspace,
             on_event=on_event,
         )
+        # Create the stable message identity BEFORE the model call so every
+        # text_delta, text snapshot and assistant_message of this output can
+        # carry the same message_id.
+        message_id = _new_message_id(turn_id, settings.provider, turn)
         response, active_model = _chat_completion_with_fallback(
             client,
             settings.model_candidates,
@@ -672,6 +686,8 @@ def _run_openai_compatible(
             messages=messages,
             tools=_openai_tools(settings, allowed_tools),
             max_tokens=max_output,
+            message_id=message_id,
+            stream_id=message_id,
         )
         run_hooks(
             "AfterModel",
@@ -699,12 +715,27 @@ def _run_openai_compatible(
                 turn_text = text
                 final_text_parts.append(text)
                 if streamed:
-                    _emit(on_event, "text", None, content=text, streamed=True)
+                    _emit(
+                        on_event,
+                        "text",
+                        None,
+                        content=text,
+                        streamed=True,
+                        message_id=message_id,
+                        stream_id=message_id,
+                    )
                     print(text)
                 else:
-                    _emit(on_event, "text", message.content, content=text, streamed=False)
+                    _emit(
+                        on_event,
+                        "text",
+                        message.content,
+                        content=text,
+                        streamed=False,
+                        message_id=message_id,
+                        stream_id=message_id,
+                    )
 
-        message_id = _new_message_id(turn_id, settings.provider, turn)
         normalized_tool_calls: list[dict[str, Any]] = []
         for block_index, tool_call in enumerate(message.tool_calls or [], start=1):
             arguments = tool_call.function.arguments or "{}"
@@ -1194,6 +1225,8 @@ def _run_anthropic(
             workspace=workspace,
             on_event=on_event,
         )
+        # Stable message identity created before the call (see OpenAI path).
+        message_id = _new_message_id(turn_id, settings.provider, turn)
         response, active_model = _anthropic_message_with_fallback(
             client,
             settings.model_candidates,
@@ -1204,6 +1237,8 @@ def _run_anthropic(
             system=system_prompt,
             tools=tool_definitions,
             messages=messages,
+            message_id=message_id,
+            stream_id=message_id,
         )
         run_hooks(
             "AfterModel",
@@ -1226,7 +1261,6 @@ def _run_anthropic(
         tool_uses: list[dict[str, Any]] = []
         turn_text = ""
         streamed = isinstance(response, StreamedCompletion)
-        message_id = _new_message_id(turn_id, settings.provider, turn)
         for block_index, block in enumerate(response.content):
             if block.type == "text":
                 text = block.text.strip()
@@ -1234,10 +1268,26 @@ def _run_anthropic(
                     turn_text = f"{turn_text}\n{text}".strip() if turn_text else text
                     final_text_parts.append(text)
                     if streamed:
-                        _emit(on_event, "text", None, content=text, streamed=True)
+                        _emit(
+                            on_event,
+                            "text",
+                            None,
+                            content=text,
+                            streamed=True,
+                            message_id=message_id,
+                            stream_id=message_id,
+                        )
                         print(text)
                     else:
-                        _emit(on_event, "text", block.text, content=text, streamed=False)
+                        _emit(
+                            on_event,
+                            "text",
+                            block.text,
+                            content=text,
+                            streamed=False,
+                            message_id=message_id,
+                            stream_id=message_id,
+                        )
                     text_blocks.append(
                         {
                             "block_index": block_index,

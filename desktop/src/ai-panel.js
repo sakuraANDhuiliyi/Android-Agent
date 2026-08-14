@@ -1,20 +1,26 @@
 (() => {
   "use strict";
 
+  /**
+   * AI panel controller. Owns connection, projects, conversations, composer,
+   * job watching and approval resolution. All timeline rendering is delegated
+   * to window.AgentTimeline (view) fed by window.Timeline (normalizer).
+   */
+
   const STORAGE_KEY = "android-agent-desktop";
-  const desktop = window.agentDesktop;
+  const desktop = window.agentDesktop || {};
   const client = new window.AgentApi();
 
   const els = {
     connPill: document.getElementById("connPill"),
     statusConn: document.getElementById("statusConn"),
+    aiStatusDot: document.getElementById("aiStatusDot"),
     projectSelect: document.getElementById("projectSelect"),
     modelSelect: document.getElementById("modelSelect"),
+    runModeSelect: document.getElementById("runModeSelect"),
     autoFallback: document.getElementById("autoFallback"),
     jobHistory: document.getElementById("jobHistory"),
     conversationSelect: document.getElementById("conversationSelect"),
-    btnNewConversation: document.getElementById("btnNewConversation"),
-    btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     aiMessages: document.getElementById("aiMessages"),
     aiEmpty: document.getElementById("aiEmpty"),
     aiContext: document.getElementById("aiContext"),
@@ -22,10 +28,14 @@
     promptInput: document.getElementById("promptInput"),
     btnSend: document.getElementById("btnSend"),
     btnStop: document.getElementById("btnStop"),
+    btnSteer: document.getElementById("btnSteer"),
+    btnFollowUp: document.getElementById("btnFollowUp"),
     btnNewChat: document.getElementById("btnNewChat"),
-    btnAiSettings: document.getElementById("btnAiSettings"),
+    btnAiMore: document.getElementById("btnAiMore"),
+    aiMoreMenu: document.getElementById("aiMoreMenu"),
     btnCloseAi: document.getElementById("btnCloseAi"),
-    btnUseCurrentFile: document.getElementById("btnUseCurrentFile"),
+    btnAddContext: document.getElementById("btnAddContext"),
+    contextMenu: document.getElementById("contextMenu"),
     btnStartServer: document.getElementById("btnStartServer"),
     btnStopServer: document.getElementById("btnStopServer"),
     btnCopyPhoneUrl: document.getElementById("btnCopyPhoneUrl"),
@@ -36,10 +46,20 @@
     serverUrl: document.getElementById("serverUrl"),
     apiToken: document.getElementById("apiToken"),
     registrationToken: document.getElementById("registrationToken"),
-    btnPair: document.getElementById("btnPair"),
     settingsHint: document.getElementById("settingsHint"),
+    btnPair: document.getElementById("btnPair"),
+    btnOpenSettings: document.getElementById("btnOpenSettings"),
+    btnPauseJob: document.getElementById("btnPauseJob"),
+    btnResumeJob: document.getElementById("btnResumeJob"),
+    btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     createProjectDialog: document.getElementById("createProjectDialog"),
     createProjectForm: document.getElementById("createProjectForm"),
+    diffToolbar: document.getElementById("diffToolbar"),
+    diffTitle: document.getElementById("diffTitle"),
+    btnAcceptDiff: document.getElementById("btnAcceptDiff"),
+    btnRejectDiff: document.getElementById("btnRejectDiff"),
+    btnCloseDiff: document.getElementById("btnCloseDiff"),
+    monacoDiffHost: document.getElementById("monacoDiffHost"),
   };
 
   const state = {
@@ -50,20 +70,44 @@
     conversations: [],
     conversationId: null,
     currentJobId: null,
-    watcher: null,
-    liveWatching: false,
+    jobStatus: null,
     running: false,
-    sawTextForJob: false,
-    streamActive: false,
-    assistantMsgEl: null,
-    assistantTextEl: null,
-    contextFile: null,
-    seenEventIds: new Set(),
+    watcher: null,
     serverManaged: false,
     serverRunning: false,
-    phoneUrl: "",
     serverBusy: false,
+    phoneUrl: "",
+    runMode: "workspace",
+    contextChips: [],
+    // Monotonic token guarding every async conversation load: responses that
+    // arrive after the user switched away (A→B→A) are dropped, never merged.
+    loadToken: 0,
+    // Per-conversation scroll positions restored on switch-back.
+    scrollTops: new Map(),
+    // Backward pagination cursor for the current conversation history.
+    historyCursor: null, // { minSeq, hasMore }
   };
+
+  const HISTORY_PAGE_LIMIT = 300;
+  const REVIEW_PREPARE_RETRIES = 8;
+  const REVIEW_PREPARE_INTERVAL_MS = 750;
+
+  const timeline = window.Timeline.createStore();
+  let view = null;
+  let emptyNode = null;
+  let loadEarlierBtn = null;
+  let loadingEarlier = false;
+  let reviewSession = null; // { files, index, turnId, projectId, truncated }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // —— Small helpers ——
+
+  function toast(msg) {
+    window.EditorApp?.toast?.(msg);
+  }
 
   function loadPrefs() {
     try {
@@ -72,6 +116,10 @@
       const data = JSON.parse(raw);
       if (data.serverUrl) els.serverUrl.value = data.serverUrl;
       if (data.autoFallback) els.autoFallback.checked = true;
+      if (data.runMode && ["read_only", "workspace", "ask"].includes(data.runMode)) {
+        state.runMode = data.runMode;
+        if (els.runModeSelect) els.runModeSelect.value = data.runMode;
+      }
     } catch (_) {
       /* ignore */
     }
@@ -83,16 +131,9 @@
       JSON.stringify({
         serverUrl: els.serverUrl.value.trim(),
         autoFallback: els.autoFallback.checked,
+        runMode: state.runMode,
       }),
     );
-  }
-
-  function escapeHtml(text) {
-    return String(text)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
   }
 
   function setConn(stateName, label) {
@@ -108,6 +149,360 @@
             : "Agent · 未连接";
   }
 
+  function statusLabel(status) {
+    return (
+      {
+        queued: "排队中",
+        running: "运行中",
+        paused: "已暂停",
+        awaiting_approval: "等待审批",
+        succeeded: "已完成",
+        failed: "失败",
+        canceled: "已停止",
+        interrupted: "已中断",
+      }[status] || status || "—"
+    );
+  }
+
+  // —— Timeline rendering glue ——
+
+  function showEmpty() {
+    if (!emptyNode) return;
+    if (!timeline.items().length && !els.aiMessages.contains(emptyNode)) {
+      els.aiMessages.appendChild(emptyNode);
+    }
+  }
+
+  function hideEmpty() {
+    if (emptyNode && emptyNode.parentElement) emptyNode.parentElement.removeChild(emptyNode);
+  }
+
+  function renderTimeline(opts = {}) {
+    if (!view) return;
+    const items = timeline.items();
+    if (items.length) hideEmpty();
+    else showEmpty();
+    view.update(items, { immediate: Boolean(opts.immediate) });
+    renderApprovalDock();
+    updateStatusDot();
+  }
+
+  function updateStatusDot() {
+    if (!els.aiStatusDot) return;
+    const pending = timeline.pendingApprovals().length;
+    const name = state.running ? (pending ? "awaiting" : "running") : state.connected ? "idle" : "off";
+    els.aiStatusDot.dataset.state = name;
+    els.aiStatusDot.title =
+      name === "running"
+        ? "任务运行中"
+        : name === "awaiting"
+          ? "等待审批"
+          : name === "idle"
+            ? "空闲"
+            : "未连接";
+  }
+
+  function renderApprovalDock() {
+    const pending = timeline.pendingApprovals();
+    if (!pending.length && state.jobStatus === "awaiting_approval" && state.currentJobId) {
+      // Orphaned wait: server restarted mid-approval; offer an honest escape.
+      els.approvalDock.textContent = "";
+      els.approvalDock.hidden = false;
+      const box = document.createElement("div");
+      box.className = "tl-dock-orphan";
+      const text = document.createElement("span");
+      text.textContent = "任务仍在等待审批，但审批通道已失效（常见于服务重启）。";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "danger-btn sm";
+      btn.textContent = "停止任务";
+      btn.addEventListener("click", () => stopJob());
+      box.appendChild(text);
+      box.appendChild(btn);
+      els.approvalDock.appendChild(box);
+      return;
+    }
+    window.AgentTimeline.renderApprovalDock(els.approvalDock, pending, {
+      onJump: (approvalId) => view?.focusApproval(approvalId),
+    });
+  }
+
+  const callbacks = {
+    copyText(text) {
+      navigator.clipboard
+        ?.writeText(String(text ?? ""))
+        .then(() => toast("已复制"))
+        .catch(() => toast("复制失败"));
+    },
+
+    async openFile(path, line) {
+      if (!path) return;
+      try {
+        let abs = path;
+        if (!/^([A-Za-z]:[\\/]|\/)/.test(path)) {
+          const project = state.projects.find((p) => p.id === state.selectedProjectId);
+          const base = project?.workspace || window.EditorApp?.getRoot?.();
+          if (!base) {
+            toast("无法定位文件：未打开工作区");
+            return;
+          }
+          abs = await desktop.joinPath(base, path);
+        }
+        await window.EditorApp?.openPath?.(abs, undefined, line || 0);
+      } catch (err) {
+        toast(`打开文件失败: ${err.message}`);
+      }
+    },
+
+    async resolveApproval(item, approved) {
+      const jobId = item.jobId || state.currentJobId;
+      if (!jobId) return;
+      timeline.clearApprovalError(item.approvalId);
+      renderTimeline();
+      try {
+        await client.resolveApproval(jobId, item.approvalId, approved);
+        timeline.setApprovalDecision(item.approvalId, approved ? "approved" : "rejected");
+      } catch (err) {
+        // Keep the buttons; the approval is still pending server-side.
+        timeline.markApprovalError(item.approvalId, err.message);
+      }
+      renderTimeline();
+    },
+
+    async reviewChanges(item, turn) {
+      const projectId = state.selectedProjectId;
+      const turnId = item.turnId || (turn && turn.turnId) || null;
+      if (!projectId) {
+        toast("请先选择项目");
+        return;
+      }
+      if (!turnId) {
+        toast("该改动记录缺少 turn 信息，无法审查");
+        return;
+      }
+      await openTurnDiffReview(projectId, turnId);
+    },
+
+    async restoreCheckpoint(item) {
+      const projectId = state.selectedProjectId;
+      const checkpointId = item.content?.checkpointId;
+      if (!projectId || !checkpointId) return;
+      const ok = window.confirm("恢复检查点会覆盖当前工作区对应文件，确定继续吗？");
+      if (!ok) return;
+      try {
+        await client.restoreCheckpoint(projectId, checkpointId);
+        toast("已恢复到检查点");
+        await window.EditorApp?.refreshTree?.({ silent: true });
+      } catch (err) {
+        toast(`恢复失败: ${err.message}`);
+      }
+    },
+  };
+
+  // —— Turn diff review (Monaco, checkpoint-blob based) ——
+  //
+  // The review NEVER reconstructs old content from the live workspace. The
+  // backend serves exact before/after blobs captured by the before_turn and
+  // after_turn checkpoints (GET /diff, GET /diff/file), so the diff stays
+  // correct even if files kept changing after the turn finished.
+
+  function languageFor(path) {
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    return (
+      {
+        kt: "kotlin",
+        kts: "kotlin",
+        java: "java",
+        xml: "xml",
+        gradle: "groovy",
+        json: "json",
+        md: "markdown",
+        js: "javascript",
+        ts: "typescript",
+        py: "python",
+        sh: "shell",
+        yaml: "yaml",
+        yml: "yaml",
+        properties: "ini",
+        toml: "ini",
+      }[ext] || "plaintext"
+    );
+  }
+
+  /** Wait for the Monaco host instead of silently skipping via ?. chains. */
+  async function ensureEditorReady(timeoutMs = 8000) {
+    const ready = () =>
+      window.EditorApp &&
+      typeof window.EditorApp.openDiff === "function" &&
+      typeof window.EditorApp.openDiffNotice === "function";
+    if (ready()) return window.EditorApp;
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      await sleep(100);
+      if (ready()) return window.EditorApp;
+    }
+    throw new Error("编辑器尚未准备好，无法打开 Diff");
+  }
+
+  /** Poll while the backend reports preparing (after_turn checkpoint pending). */
+  async function fetchTurnDiffWithRetry(projectId, turnId) {
+    let data = null;
+    for (let attempt = 0; attempt <= REVIEW_PREPARE_RETRIES; attempt += 1) {
+      data = await client.turnDiff(projectId, turnId);
+      if (!data || data.status !== "preparing") return data;
+      if (attempt === 0) toast("正在准备改动审查…");
+      await sleep(REVIEW_PREPARE_INTERVAL_MS);
+    }
+    return data;
+  }
+
+  async function openTurnDiffReview(projectId, turnId) {
+    let data;
+    try {
+      data = await fetchTurnDiffWithRetry(projectId, turnId);
+    } catch (err) {
+      toast(`审查改动失败: ${err.message}`);
+      return;
+    }
+    if (!data) return;
+    if (data.status === "preparing") {
+      toast("改动审查仍在准备中（checkpoint 尚未写入），请稍后重试");
+      return;
+    }
+    if (data.status === "empty" || (data.ok && !(data.files || []).length)) {
+      toast("本轮没有文件改动");
+      return;
+    }
+    if (!data.ok || data.status !== "ready") {
+      toast(data.message || data.error || "该轮次无法审查改动");
+      return;
+    }
+    const files = data.files || [];
+    reviewSession = {
+      files,
+      index: 0,
+      turnId,
+      projectId,
+      truncated: Boolean(data.truncated),
+    };
+    await showReviewFile(0);
+  }
+
+  function diffSwitcher() {
+    let switcher = document.getElementById("diffFileSwitcher");
+    if (!switcher) {
+      switcher = document.createElement("select");
+      switcher.id = "diffFileSwitcher";
+      switcher.className = "ai-select sm";
+      switcher.setAttribute("aria-label", "切换审查文件");
+      switcher.addEventListener("change", () => showReviewFile(Number(switcher.value)));
+      els.diffToolbar?.insertBefore(switcher, els.diffToolbar.querySelector(".diff-actions") || null);
+    }
+    return switcher;
+  }
+
+  function reviewTitleFor(session, file) {
+    const label =
+      file.change === "renamed" && file.old_path
+        ? `${file.old_path} → ${file.path}`
+        : file.path;
+    return {
+      label,
+      text: `审查改动: ${label} (${session.index + 1}/${session.files.length})`,
+    };
+  }
+
+  function updateDiffToolbar(session, file) {
+    els.diffToolbar?.classList.add("review-mode");
+    if (els.diffTitle) {
+      const t = reviewTitleFor(session, file);
+      els.diffTitle.textContent = t.text;
+      els.diffTitle.title = t.label;
+    }
+    const switcher = diffSwitcher();
+    switcher.textContent = "";
+    session.files.forEach((f, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      const mark = { added: "A", modified: "M", deleted: "D", renamed: "R" }[f.change] || "?";
+      opt.textContent = `${mark} ${f.path}`;
+      switcher.appendChild(opt);
+    });
+    switcher.value = String(session.index);
+    // Truncation warning (recreated per session).
+    let warn = document.getElementById("diffTruncatedWarn");
+    if (session.truncated) {
+      if (!warn) {
+        warn = document.createElement("span");
+        warn.id = "diffTruncatedWarn";
+        warn.className = "diff-truncated-warn";
+        els.diffToolbar?.insertBefore(warn, switcher.nextSibling);
+      }
+      warn.textContent = "Diff 过大，已截断";
+      warn.title = "改动总量超出显示上限，仅展示部分内容";
+    } else if (warn) {
+      warn.remove();
+    }
+  }
+
+  async function showReviewFile(index) {
+    if (!reviewSession) return;
+    const session = reviewSession;
+    session.index = Math.max(0, Math.min(index, session.files.length - 1));
+    const file = session.files[session.index];
+    let app;
+    try {
+      app = await ensureEditorReady();
+    } catch (err) {
+      toast(err.message);
+      return;
+    }
+    let detail;
+    try {
+      detail = await client.turnDiffFile(session.projectId, session.turnId, file.path);
+    } catch (err) {
+      toast(`读取改动内容失败: ${err.message}`);
+      return;
+    }
+    if (!reviewSession || reviewSession !== session) return; // switched away
+    if (!detail || !detail.ok) {
+      if (detail && detail.status === "preparing") {
+        toast("改动审查正在准备中，请稍后重试");
+      } else {
+        toast((detail && detail.message) || "无法读取该文件的改动内容");
+      }
+      return;
+    }
+    updateDiffToolbar(session, file);
+    const titleInfo = reviewTitleFor(session, file);
+    if (detail.binary) {
+      // Binary files: metadata only, never fed to the text diff editor.
+      app.openDiffNotice({
+        title: titleInfo.text,
+        message: `二进制文件，不提供文本 Diff。\n路径: ${file.path}\n改动类型: ${detail.change}\n改动前 SHA256: ${file.before_hash || "—"}\n改动后 SHA256: ${file.after_hash || "—"}`,
+      });
+      return;
+    }
+    app.openDiff({
+      original: typeof detail.before_content === "string" ? detail.before_content : "",
+      modified: typeof detail.after_content === "string" ? detail.after_content : "",
+      path: file.path,
+      language: detail.language || languageFor(file.path),
+      title: titleInfo.text,
+      review: true,
+    });
+  }
+
+  function closeReviewSession() {
+    if (!reviewSession) return;
+    reviewSession = null;
+    els.diffToolbar?.classList.remove("review-mode");
+    document.getElementById("diffFileSwitcher")?.remove();
+    document.getElementById("diffTruncatedWarn")?.remove();
+  }
+
+  // —— Server / connection ——
+
   function applyServerStatus(status) {
     state.serverRunning = Boolean(status.running);
     state.serverManaged = Boolean(status.managed);
@@ -115,28 +510,18 @@
     const phone = status.phoneUrl || (status.lanIp ? `http://${status.lanIp}:${port}` : "");
     state.phoneUrl = phone;
 
-    els.serverPortLabel.textContent = state.serverRunning
-      ? `端口 ${port} · 运行中`
-      : `端口 ${port} · 未运行`;
+    els.serverPortLabel.textContent = state.serverRunning ? `端口 ${port} · 运行中` : `端口 ${port} · 未运行`;
     els.phoneUrl.textContent = phone || "等待获取局域网地址…";
-    els.phoneUrl.title = phone
-      ? `手机端服务器地址：${phone}`
-      : "启动服务后显示局域网地址";
-
     els.btnStopServer.hidden = !state.serverManaged;
-    els.btnStartServer.disabled =
-      state.serverBusy || (state.serverRunning && state.serverManaged);
+    els.btnStartServer.disabled = state.serverBusy || (state.serverRunning && state.serverManaged);
     els.btnStopServer.disabled = state.serverBusy || !state.serverManaged;
-
-    if (state.serverBusy) {
-      els.btnStartServer.textContent = "启动中…";
-    } else if (state.serverRunning && state.serverManaged) {
-      els.btnStartServer.textContent = "服务已启动";
-    } else if (state.serverRunning) {
-      els.btnStartServer.textContent = "重新连接";
-    } else {
-      els.btnStartServer.textContent = "启动服务";
-    }
+    els.btnStartServer.textContent = state.serverBusy
+      ? "启动中…"
+      : state.serverRunning && state.serverManaged
+        ? "服务已启动"
+        : state.serverRunning
+          ? "重新连接"
+          : "启动服务";
   }
 
   async function refreshServerStatus() {
@@ -144,7 +529,7 @@
       const status = await desktop.agentStatus();
       applyServerStatus(status);
       return status;
-    } catch (err) {
+    } catch (_) {
       els.serverPortLabel.textContent = "端口 —";
       els.phoneUrl.textContent = "状态获取失败";
       return null;
@@ -154,12 +539,6 @@
   async function startServer() {
     if (state.serverBusy) return;
     state.serverBusy = true;
-    applyServerStatus({
-      running: state.serverRunning,
-      managed: state.serverManaged,
-      port: Number(String(els.serverPortLabel.textContent).match(/\d+/)?.[0] || 8000),
-      phoneUrl: state.phoneUrl,
-    });
     els.btnStartServer.textContent = "启动中…";
     try {
       const result = await desktop.agentStart();
@@ -168,11 +547,7 @@
         toast(result.error || "启动失败");
         return;
       }
-      if (result.alreadyRunning && !result.managed) {
-        toast("服务已在运行，正在连接…");
-      } else {
-        toast(`服务已启动 · 端口 ${result.port}`);
-      }
+      toast(result.alreadyRunning && !result.managed ? "服务已在运行，正在连接…" : `服务已启动 · 端口 ${result.port}`);
       els.serverUrl.value = result.localUrl || `http://127.0.0.1:${result.port || 8000}`;
       try {
         await connect({ silent: true });
@@ -199,7 +574,7 @@
       if (result.stopped) {
         state.connected = false;
         setConn("idle", "未连接");
-        updateComposerEnabled();
+        updateComposer();
         toast("已停止桌面端拉起的服务");
       } else {
         toast("当前服务不是由桌面端启动的，未强制停止");
@@ -226,610 +601,6 @@
     }
   }
 
-  function toast(msg) {
-    window.EditorApp?.toast?.(msg);
-  }
-
-  function clearMessages() {
-    els.aiMessages.innerHTML = "";
-    els.aiMessages.appendChild(els.aiEmpty);
-    els.aiEmpty.hidden = false;
-    state.assistantMsgEl = null;
-    state.assistantTextEl = null;
-    state.seenEventIds = new Set();
-  }
-
-  function hideEmpty() {
-    els.aiEmpty.hidden = true;
-  }
-
-  function appendUserMessage(text) {
-    hideEmpty();
-    const msg = document.createElement("div");
-    msg.className = "msg user";
-    msg.innerHTML = `<div class="msg-role">You</div><div class="msg-bubble">${escapeHtml(text)}</div>`;
-    els.aiMessages.appendChild(msg);
-    scrollMessages();
-  }
-
-  function ensureAssistantMessage() {
-    if (state.assistantMsgEl) return state.assistantMsgEl;
-    hideEmpty();
-    const msg = document.createElement("div");
-    msg.className = "msg assistant";
-    msg.innerHTML = `<div class="msg-role">Agent</div>`;
-    const bubble = document.createElement("div");
-    bubble.className = "msg-bubble";
-    msg.appendChild(bubble);
-    els.aiMessages.appendChild(msg);
-    state.assistantMsgEl = msg;
-    state.assistantTextEl = bubble;
-    return msg;
-  }
-
-  function appendAssistantText(text) {
-    if (!text) return;
-    ensureAssistantMessage();
-    const current = state.assistantTextEl.textContent || "";
-    state.assistantTextEl.textContent = current ? `${current}\n${text}` : text;
-    state.streamActive = false;
-    scrollMessages();
-  }
-
-  function appendAssistantDelta(delta) {
-    if (!delta) return;
-    ensureAssistantMessage();
-    state.streamActive = true;
-    state.sawTextForJob = true;
-    state.assistantTextEl.textContent = (state.assistantTextEl.textContent || "") + delta;
-    scrollMessages();
-  }
-
-  function appendStatusChip(text, kind = "") {
-    hideEmpty();
-    const chip = document.createElement("div");
-    chip.className = `status-chip ${kind}`;
-    chip.textContent = text;
-    els.aiMessages.appendChild(chip);
-    state.assistantMsgEl = null;
-    state.assistantTextEl = null;
-    scrollMessages();
-    return chip;
-  }
-
-  function appendToolCard(event) {
-    hideEmpty();
-    state.assistantMsgEl = null;
-    state.assistantTextEl = null;
-    const details = document.createElement("details");
-    details.className = "tool-card";
-    if (event.type === "tool_result") {
-      details.dataset.ok = event.ok === false ? "false" : "true";
-    }
-    const isCall = event.type === "tool_call";
-    const title = isCall
-      ? event.message || `调用 ${event.name || "tool"}`
-      : event.message ||
-        `${event.name || "tool"} → ${event.ok === false ? "失败" : "成功"}`;
-    const body = isCall
-      ? JSON.stringify(event.input || {}, null, 2)
-      : event.preview || "";
-    details.innerHTML = `
-      <summary>
-        <span class="tool-badge">${isCall ? "tool" : "result"}</span>
-        <span class="tool-name">${escapeHtml(event.name || "")}</span>
-        <span>${escapeHtml(title)}</span>
-      </summary>
-      ${body ? `<div class="tool-body">${escapeHtml(body)}</div>` : ""}
-    `;
-    els.aiMessages.appendChild(details);
-    scrollMessages();
-  }
-
-  function appendChanges(files) {
-    if (!files?.length) return;
-    hideEmpty();
-    state.assistantMsgEl = null;
-    state.assistantTextEl = null;
-    const block = document.createElement("div");
-    block.className = "changes-block";
-    block.innerHTML = `<h4>改动文件</h4>`;
-    for (const file of files) {
-      const path = typeof file === "string" ? file : file.path || "";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "change-file";
-      btn.textContent = path;
-      btn.addEventListener("click", async () => {
-        const root = window.EditorApp?.getRoot?.();
-        const project = state.projects.find((p) => p.id === state.selectedProjectId);
-        const base = project?.workspace || root;
-        if (!base || !path) return;
-        const abs = await desktop.joinPath(base, path);
-        await window.EditorApp?.openPath?.(abs);
-      });
-      block.appendChild(btn);
-    }
-    els.aiMessages.appendChild(block);
-    scrollMessages();
-  }
-
-  function scrollMessages() {
-    els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
-  }
-
-  function statusLabel(status) {
-    return (
-      {
-        queued: "排队中",
-        running: "运行中",
-        awaiting_approval: "等待确认",
-        succeeded: "已完成",
-        failed: "失败",
-        canceled: "已停止",
-      }[status] || status || "—"
-    );
-  }
-
-  const pendingApprovalPrompts = new Set();
-  const dockedApprovals = new Map(); // approvalId -> { jobId, payload }
-
-  function clearApprovalDock() {
-    dockedApprovals.clear();
-    pendingApprovalPrompts.clear();
-    if (!els.approvalDock) return;
-    els.approvalDock.innerHTML = "";
-    els.approvalDock.hidden = true;
-  }
-
-  function renderApprovalDock() {
-    if (!els.approvalDock) return;
-    els.approvalDock.innerHTML = "";
-    if (!dockedApprovals.size) {
-      els.approvalDock.hidden = true;
-      return;
-    }
-    els.approvalDock.hidden = false;
-
-    for (const [approvalId, item] of dockedApprovals) {
-      const card = document.createElement("div");
-      card.className = "approval-dock-card";
-      card.dataset.approvalId = approvalId;
-
-      const title = document.createElement("div");
-      title.className = "approval-title";
-      title.textContent = "需要你确认下载";
-      card.appendChild(title);
-
-      const meta = document.createElement("div");
-      meta.className = "approval-meta";
-      meta.innerHTML =
-        `<div><span>URL</span><code>${escapeHtml(item.url || "")}</code></div>` +
-        `<div><span>保存到</span><code>${escapeHtml(item.path || "")}</code></div>`;
-      card.appendChild(meta);
-
-      const hint = document.createElement("p");
-      hint.className = "approval-hint";
-      hint.textContent = "任务已暂停。请选择允许或拒绝后继续。";
-      card.appendChild(hint);
-
-      const actions = document.createElement("div");
-      actions.className = "approval-actions";
-      const btnAllow = document.createElement("button");
-      btnAllow.type = "button";
-      btnAllow.className = "primary-btn";
-      btnAllow.textContent = "允许下载";
-      const btnDeny = document.createElement("button");
-      btnDeny.type = "button";
-      btnDeny.className = "ghost-btn";
-      btnDeny.textContent = "拒绝";
-
-      const setBusy = (busy) => {
-        btnAllow.disabled = busy;
-        btnDeny.disabled = busy;
-      };
-
-      const decide = async (approved) => {
-        setBusy(true);
-        try {
-          await client.resolveApproval(item.jobId, approvalId, approved);
-          dockedApprovals.delete(approvalId);
-          pendingApprovalPrompts.delete(`${item.jobId}:${approvalId}`);
-          renderApprovalDock();
-          appendStatusChip(approved ? "已允许下载" : "已拒绝下载", approved ? "ok" : "err");
-          markApprovalCardResolved({
-            approval_id: approvalId,
-            decision: approved ? "approved" : "rejected",
-          });
-        } catch (err) {
-          setBusy(false);
-          appendStatusChip(`确认失败: ${err.message}`, "err");
-          toast(err.message);
-        }
-      };
-
-      btnAllow.addEventListener("click", () => decide(true));
-      btnDeny.addEventListener("click", () => decide(false));
-      actions.appendChild(btnAllow);
-      actions.appendChild(btnDeny);
-      card.appendChild(actions);
-      els.approvalDock.appendChild(card);
-    }
-  }
-
-  function upsertPendingApproval(event) {
-    const approvalId = event.approval_id;
-    const jobId = event.job_id || state.currentJobId;
-    if (!approvalId || !jobId) return;
-    const key = `${jobId}:${approvalId}`;
-    if (dockedApprovals.has(approvalId)) {
-      renderApprovalDock();
-      return;
-    }
-    dockedApprovals.set(approvalId, {
-      jobId,
-      url: event.url || (event.payload && event.payload.url) || "",
-      path: event.path || (event.payload && event.payload.path) || "",
-      max_bytes: event.max_bytes,
-      kind: event.kind || "download_file",
-    });
-    pendingApprovalPrompts.add(key);
-    renderApprovalDock();
-
-    // Also leave a marker in the chat transcript (non-interactive; actions are in the dock)
-    if (!els.aiMessages.querySelector(`.approval-card[data-approval-id="${approvalId}"]`)) {
-      appendApprovalCard(event, { interactive: false });
-    }
-    appendStatusChip("请在下方确认条选择：允许 / 拒绝下载", "running");
-    scrollMessages();
-    els.approvalDock?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-  }
-
-  function appendApprovalCard(event, { interactive }) {
-    clearEmpty();
-    const approvalId = event.approval_id;
-    const jobId = event.job_id || state.currentJobId;
-    const card = document.createElement("div");
-    card.className = "approval-card";
-    card.dataset.approvalId = approvalId || "";
-    card.dataset.jobId = jobId || "";
-
-    const title = document.createElement("div");
-    title.className = "approval-title";
-    title.textContent = interactive ? "需要你确认：允许下载文件？" : "下载确认请求";
-    card.appendChild(title);
-
-    const meta = document.createElement("div");
-    meta.className = "approval-meta";
-    meta.innerHTML =
-      `<div><span>URL</span><code>${escapeHtml(event.url || "")}</code></div>` +
-      `<div><span>保存到</span><code>${escapeHtml(event.path || "")}</code></div>`;
-    card.appendChild(meta);
-
-    const hint = document.createElement("p");
-    hint.className = "approval-hint";
-    hint.textContent = interactive
-      ? "也可使用下方固定确认条操作。"
-      : "请到输入框上方的黄色确认条操作。";
-    card.appendChild(hint);
-
-    if (interactive && approvalId && jobId) {
-      const actions = document.createElement("div");
-      actions.className = "approval-actions";
-      const btnAllow = document.createElement("button");
-      btnAllow.type = "button";
-      btnAllow.className = "primary-btn";
-      btnAllow.textContent = "允许下载";
-      const btnDeny = document.createElement("button");
-      btnDeny.type = "button";
-      btnDeny.className = "ghost-btn";
-      btnDeny.textContent = "拒绝";
-      const decide = async (approved) => {
-        btnAllow.disabled = true;
-        btnDeny.disabled = true;
-        try {
-          await client.resolveApproval(jobId, approvalId, approved);
-          dockedApprovals.delete(approvalId);
-          renderApprovalDock();
-          card.classList.add(approved ? "approved" : "rejected");
-          hint.textContent = approved ? "已允许" : "已拒绝";
-          actions.remove();
-        } catch (err) {
-          btnAllow.disabled = false;
-          btnDeny.disabled = false;
-          toast(err.message);
-        }
-      };
-      btnAllow.addEventListener("click", () => decide(true));
-      btnDeny.addEventListener("click", () => decide(false));
-      actions.appendChild(btnAllow);
-      actions.appendChild(btnDeny);
-      card.appendChild(actions);
-    } else {
-      card.classList.add("historical");
-    }
-
-    els.aiMessages.appendChild(card);
-    scrollMessages();
-  }
-
-  function markApprovalCardResolved(event) {
-    const approvalId = event.approval_id;
-    if (!approvalId) return;
-    dockedApprovals.delete(approvalId);
-    renderApprovalDock();
-    const card = els.aiMessages.querySelector(`.approval-card[data-approval-id="${approvalId}"]`);
-    if (!card) return;
-    const decision = event.decision || "";
-    card.classList.add(decision === "approved" ? "approved" : "rejected");
-    const hint = card.querySelector(".approval-hint");
-    if (hint) {
-      const labels = {
-        approved: "已允许下载",
-        rejected: "已拒绝下载",
-        timeout: "确认超时，未下载",
-        canceled: "任务取消，下载中止",
-      };
-      hint.textContent = labels[decision] || `结果: ${decision}`;
-    }
-    card.querySelector(".approval-actions")?.remove();
-  }
-
-  async function syncPendingApprovals(jobId) {
-    if (!jobId || !state.connected) return;
-    try {
-      const data = await client.listApprovals(jobId);
-      const pending = data.approvals || [];
-      for (const item of pending) {
-        upsertPendingApproval({
-          approval_id: item.id,
-          job_id: jobId,
-          kind: item.kind,
-          ...(item.payload || {}),
-        });
-      }
-      const liveIds = new Set(pending.map((p) => p.id));
-      for (const id of [...dockedApprovals.keys()]) {
-        if (!liveIds.has(id)) dockedApprovals.delete(id);
-      }
-      renderApprovalDock();
-
-      // Orphaned wait: job says awaiting_approval but server has no live approval
-      if (!pending.length) {
-        const jobData = await client.job(jobId);
-        const job = jobData.job;
-        if (job?.status === "awaiting_approval") {
-          showOrphanApprovalDock(jobId, job);
-        }
-      }
-    } catch (_) {
-      /* ignore */
-    }
-  }
-
-  function showOrphanApprovalDock(jobId, job) {
-    if (!els.approvalDock) return;
-    const events = job.events || [];
-    let lastReq = null;
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      if (events[i].type === "approval_required") {
-        lastReq = events[i];
-        break;
-      }
-      if (events[i].type === "approval_resolved") break;
-    }
-    els.approvalDock.hidden = false;
-    els.approvalDock.innerHTML = "";
-    const card = document.createElement("div");
-    card.className = "approval-dock-card";
-    card.innerHTML =
-      `<div class="approval-title">下载确认已失效</div>` +
-      `<p class="approval-hint">任务仍在等待确认，但确认通道已断开（常见于服务重启）。` +
-      `${lastReq?.path ? `<br>上次请求保存到：<code>${escapeHtml(lastReq.path)}</code>` : ""}` +
-      `</p>`;
-    const actions = document.createElement("div");
-    actions.className = "approval-actions";
-    const btnStop = document.createElement("button");
-    btnStop.type = "button";
-    btnStop.className = "danger-btn";
-    btnStop.textContent = "停止并重试";
-    btnStop.addEventListener("click", async () => {
-      try {
-        await client.cancel(jobId);
-        clearApprovalDock();
-        appendStatusChip("已停止失效任务，请重新发送需求", "err");
-      } catch (err) {
-        toast(err.message);
-      }
-    });
-    actions.appendChild(btnStop);
-    card.appendChild(actions);
-    els.approvalDock.appendChild(card);
-  }
-
-  function eventKey(event) {
-    if (event.id != null) return `id:${event.id}`;
-    return `${event.type}:${event.ts}:${event.message || ""}:${event.content || ""}:${event.name || ""}`;
-  }
-
-  function handleEvent(event) {
-    if (!event || !event.type) return;
-    const key = eventKey(event);
-    if (state.seenEventIds.has(key)) return;
-    state.seenEventIds.add(key);
-
-    switch (event.type) {
-      case "started":
-        appendStatusChip("任务开始", "running");
-        break;
-      case "plan":
-      case "turn":
-      case "auto_continue":
-        // Cursor-like: keep the transcript continuous — skip turn banners
-        break;
-      case "model_switch":
-      case "provider_switch":
-        appendStatusChip(event.message || event.type);
-        break;
-      case "text_delta":
-        appendAssistantDelta(event.content || event.delta || event.message || "");
-        break;
-      case "text":
-        state.sawTextForJob = true;
-        if (event.streamed || state.streamActive) {
-          // Already rendered via text_delta; just finalize the bubble
-          state.streamActive = false;
-        } else {
-          appendAssistantText(event.content || event.message || "");
-        }
-        break;
-      case "tool_call":
-      case "tool_result":
-        state.streamActive = false;
-        appendToolCard(event);
-        break;
-      case "usage": {
-        const u = event.usage || {};
-        window.EditorApp?.setStatus?.(
-          `Token 输入 ${u.input_tokens ?? "?"} · 输出 ${u.output_tokens ?? "?"} · 合计 ${u.total_tokens ?? "?"}`,
-        );
-        break;
-      }
-      case "changes":
-        appendChanges(event.files || []);
-        break;
-      case "completed":
-        // Final text is applied once in watchJob's done handler to avoid duplicates
-        break;
-      case "failed":
-        appendStatusChip(`失败: ${event.error || event.message || "未知错误"}`, "err");
-        break;
-      case "canceled":
-      case "cancel_requested":
-        appendStatusChip(event.message || "已停止", "err");
-        break;
-      case "honesty_nudge":
-        appendStatusChip(event.message || "系统要求真实改文件", "err");
-        break;
-      case "approval_required":
-        if (event.kind === "download_file" || !event.kind) {
-          upsertPendingApproval(event);
-        } else {
-          appendStatusChip(event.message || "等待用户确认", "running");
-        }
-        break;
-      case "approval_resolved":
-        markApprovalCardResolved(event);
-        appendStatusChip(event.message || `确认结果: ${event.decision || ""}`);
-        break;
-      default:
-        if (event.message) appendStatusChip(event.message);
-        break;
-    }
-  }
-
-  function setRunning(running) {
-    state.running = running;
-    els.btnStop.disabled = !running;
-    const canSend = state.connected && state.selectedProjectId && !running;
-    els.btnSend.disabled = !canSend;
-    els.promptInput.disabled = !state.connected || !state.selectedProjectId;
-    els.btnUseCurrentFile.disabled = !state.selectedProjectId;
-    window.EditorApp?.setStatus?.(running ? "Agent 运行中…" : "就绪");
-  }
-
-  function stopWatcher() {
-    if (state.watcher) {
-      state.watcher.close();
-      state.watcher = null;
-    }
-    state.liveWatching = false;
-  }
-
-  async function refreshOpenFilesAfterJob(job) {
-    const files = job?.changed_files || [];
-    const project = state.projects.find((p) => p.id === state.selectedProjectId);
-    const base = project?.workspace || window.EditorApp?.getRoot?.();
-    if (base) {
-      await window.EditorApp?.refreshTree?.({ silent: true });
-    }
-    for (const file of files) {
-      const rel = typeof file === "string" ? file : file.path;
-      if (!rel || !base) continue;
-      const abs = await desktop.joinPath(base, rel);
-      await window.EditorApp?.reloadPathIfOpen?.(abs);
-    }
-  }
-
-  function watchJob(jobId) {
-    stopWatcher();
-    state.currentJobId = jobId;
-    state.sawTextForJob = false;
-    state.liveWatching = true;
-    setRunning(true);
-    // Immediately pull any pending approvals (covers missed WS events / resume)
-    syncPendingApprovals(jobId);
-    state.watcher = client.watchJob(jobId, async (payload) => {
-      if (payload.kind === "event" && payload.event) {
-        handleEvent(payload.event);
-      }
-      if (payload.kind === "job" && payload.job) {
-        if (payload.job.status === "awaiting_approval") {
-          await syncPendingApprovals(jobId);
-        }
-      }
-      if (payload.kind === "done") {
-        // Ignore stale done callbacks after the user switched conversations
-        if (state.currentJobId !== jobId) return;
-        stopWatcher();
-        setRunning(false);
-        clearApprovalDock();
-        const status = payload.status;
-        try {
-          const data = await client.job(jobId);
-          if (state.currentJobId !== jobId) return;
-          if (data.job?.changed_files?.length) appendChanges(data.job.changed_files);
-          const finalText = data.job?.result || data.job?.final_message || payload.result;
-          if (finalText && status === "succeeded") {
-            if (!state.sawTextForJob) {
-              appendAssistantText(finalText);
-            } else {
-              const noteMatch = String(finalText).match(/【系统(?:校验|说明)】[\s\S]*/);
-              if (noteMatch) {
-                appendAssistantText(noteMatch[0].trim());
-              }
-            }
-          }
-          if (status === "succeeded") {
-            appendStatusChip("本轮结束", "ok");
-          } else if (status === "failed") {
-            appendStatusChip(`任务失败: ${payload.error || data.job?.error || data.job?.error_message || ""}`, "err");
-          } else if (status === "canceled") {
-            appendStatusChip("任务已停止", "err");
-          }
-          await refreshOpenFilesAfterJob(data.job);
-          await loadJobHistory(state.selectedProjectId, state.conversationId);
-          if (state.selectedProjectId) {
-            await loadConversations(state.selectedProjectId, {
-              preferId: state.conversationId,
-              loadHistory: false,
-            });
-          }
-        } catch (_) {
-          if (state.currentJobId !== jobId) return;
-          if (status === "succeeded") appendStatusChip("本轮结束", "ok");
-          else if (status === "failed") appendStatusChip(`任务失败: ${payload.error || ""}`, "err");
-          else if (status === "canceled") appendStatusChip("任务已停止", "err");
-        }
-      }
-      if (payload.kind === "error") {
-        if (state.currentJobId === jobId) {
-          appendStatusChip(`连接异常: ${payload.error}`, "err");
-        }
-      }
-    });
-  }
-
   async function connect({ silent = false } = {}) {
     const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
     const token = els.apiToken.value.trim();
@@ -841,6 +612,8 @@
       setConn("err", "需要 Token");
       els.settingsHint.textContent = "请输入服务端生成的访问 Token";
       if (!silent) els.settingsDialog.showModal();
+      updateComposer();
+      updateStatusDot();
       return;
     }
     setConn("busy", "连接中");
@@ -864,7 +637,8 @@
       await loadModels();
       await refreshProjects({ silent: true });
       await maybeAutoSelectProject();
-      updateComposerEnabled();
+      updateComposer();
+      updateStatusDot();
       if (desktop?.setCredential) {
         try {
           await desktop.setCredential(baseUrl, token);
@@ -877,16 +651,15 @@
       state.connected = false;
       setConn("err", "连接失败");
       els.settingsHint.textContent = err.message;
-      updateComposerEnabled();
+      updateComposer();
+      updateStatusDot();
       if (!silent) toast(`连接失败: ${err.message}`);
       throw err;
     }
   }
 
   async function pair() {
-    const baseUrl = (
-      els.serverUrl.value || "http://127.0.0.1:8000"
-    ).trim().replace(/\/+$/, "");
+    const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
     const secret = els.registrationToken.value.trim();
     if (!secret) {
       toast("请输入服务端配对密钥");
@@ -900,10 +673,12 @@
     toast(`配对成功: ${account.user_id}`);
   }
 
+  // —— Projects / conversations ——
+
   async function loadModels() {
     try {
       const data = await client.models();
-      els.modelSelect.innerHTML = "";
+      els.modelSelect.textContent = "";
       const def = document.createElement("option");
       def.value = "";
       def.textContent = "默认模型";
@@ -930,12 +705,11 @@
 
   function renderProjectSelect() {
     const prev = state.selectedProjectId;
-    els.projectSelect.innerHTML = "";
+    els.projectSelect.textContent = "";
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = state.projects.length ? "选择项目…" : "暂无项目";
     els.projectSelect.appendChild(placeholder);
-
     for (const p of state.projects) {
       const opt = document.createElement("option");
       opt.value = p.id;
@@ -943,15 +717,11 @@
       opt.textContent = `${p.name || p.id}${badge}`;
       els.projectSelect.appendChild(opt);
     }
-
     const create = document.createElement("option");
     create.value = "__create__";
     create.textContent = "＋ 新建项目…";
     els.projectSelect.appendChild(create);
-
-    if (prev && state.projects.some((p) => p.id === prev)) {
-      els.projectSelect.value = prev;
-    }
+    if (prev && state.projects.some((p) => p.id === prev)) els.projectSelect.value = prev;
   }
 
   async function maybeAutoSelectProject() {
@@ -965,7 +735,6 @@
         await selectProject(p.id, { openWorkspace: false });
         return;
       }
-      // match by path segments workspaces/<user>/<project>
       const parts = root.split(/[/\\]/);
       const idx = parts.lastIndexOf("workspaces");
       if (idx >= 0 && parts[idx + 2] === p.id) {
@@ -978,14 +747,20 @@
   async function selectProject(projectId, { openWorkspace = false } = {}) {
     state.selectedProjectId = projectId || null;
     if (projectId) els.projectSelect.value = projectId;
-    updateComposerEnabled();
+    updateComposer();
 
     if (!projectId) {
+      state.loadToken += 1; // drop any in-flight conversation loads
       state.conversations = [];
       state.conversationId = null;
+      state.historyCursor = null;
       renderConversationSelect();
-      els.jobHistory.innerHTML = '<option value="">本轮任务</option>';
+      els.jobHistory.textContent = "";
       els.jobHistory.disabled = true;
+      timeline.reset();
+      view?.reset();
+      updateLoadEarlierButton();
+      showEmpty();
       return;
     }
 
@@ -994,7 +769,6 @@
       const exists = await desktop.exists(project.workspace);
       if (exists) await window.EditorApp?.openFolder?.(project.workspace);
     }
-
     await loadConversations(projectId);
   }
 
@@ -1007,7 +781,7 @@
   function renderConversationSelect() {
     const select = els.conversationSelect;
     if (!select) return;
-    select.innerHTML = "";
+    select.textContent = "";
     if (!state.conversations.length) {
       const opt = document.createElement("option");
       opt.value = "";
@@ -1040,15 +814,12 @@
           : state.conversationId && state.conversations.some((c) => c.id === state.conversationId)
             ? state.conversationId
             : null;
-      // Avoid landing on an empty "新对话" when older chats with history exist
       if (!preferred) {
         const withTurns = state.conversations.find(
           (c) => (c.turn_count || (c.turns || []).length || 0) > 0,
         );
         preferred = (withTurns || state.conversations[0]).id;
       }
-
-      // Soft refresh (e.g. after send): update titles only — do not kill the live job watcher
       if (!loadHistory && preferred === state.conversationId) {
         renderConversationSelect();
         return;
@@ -1062,6 +833,73 @@
     }
   }
 
+  // —— Progressive history loading ——
+  //
+  // First screen = the newest page of events (last few turns). Older history
+  // is paged backward on demand via before_seq; nothing is ever silently
+  // truncated at a fixed loop count.
+
+  function updateLoadEarlierButton() {
+    if (!loadEarlierBtn) return;
+    const hasMore = Boolean(state.historyCursor && state.historyCursor.hasMore);
+    loadEarlierBtn.hidden = !hasMore;
+    loadEarlierBtn.disabled = loadingEarlier;
+    loadEarlierBtn.textContent = loadingEarlier ? "正在加载更早记录…" : "加载更早记录";
+  }
+
+  /** Load the newest page of a conversation. Caller checks the load token. */
+  async function loadLatestHistory(conversationId) {
+    const data = await client.conversationEvents(conversationId, {
+      beforeSeq: Number.MAX_SAFE_INTEGER,
+      limit: HISTORY_PAGE_LIMIT,
+    });
+    const events = data.events || [];
+    timeline.ingestConversationEvents(events);
+    state.historyCursor = {
+      minSeq: events.length ? events[0].seq : data.next_before_seq ?? null,
+      hasMore: Boolean(data.has_more),
+    };
+    updateLoadEarlierButton();
+  }
+
+  /** Prepend one older page, keeping the visible content anchored. */
+  async function loadEarlierHistory({ silent = false } = {}) {
+    const conversationId = state.conversationId;
+    if (!conversationId || loadingEarlier) return;
+    if (!state.historyCursor || !state.historyCursor.hasMore) return;
+    const token = state.loadToken;
+    const beforeSeq = state.historyCursor.minSeq;
+    if (beforeSeq == null) return;
+    loadingEarlier = true;
+    updateLoadEarlierButton();
+    try {
+      const data = await client.conversationEvents(conversationId, {
+        beforeSeq,
+        limit: HISTORY_PAGE_LIMIT,
+      });
+      if (token !== state.loadToken) return; // conversation switched mid-flight
+      const events = data.events || [];
+      // Anchor: keep the distance from the bottom constant so prepended
+      // history does not make the viewport jump.
+      const scroller = els.aiMessages;
+      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop;
+      timeline.ingestConversationEvents(events);
+      if (events.length) state.historyCursor.minSeq = events[0].seq;
+      state.historyCursor.hasMore = Boolean(data.has_more);
+      renderTimeline({ immediate: true });
+      requestAnimationFrame(() => {
+        if (token === state.loadToken) {
+          scroller.scrollTop = scroller.scrollHeight - distanceFromBottom;
+        }
+      });
+    } catch (err) {
+      if (!silent && token === state.loadToken) toast(err.message);
+    } finally {
+      loadingEarlier = false;
+      if (token === state.loadToken) updateLoadEarlierButton();
+    }
+  }
+
   async function selectConversation(conversationId, { loadHistory = true } = {}) {
     if (!conversationId) return;
     const switching = conversationId !== state.conversationId;
@@ -1069,18 +907,47 @@
       stopWatcher();
       setRunning(false);
       state.currentJobId = null;
-      state.sawTextForJob = false;
+      state.jobStatus = null;
+      // Save where the user was reading before leaving this conversation.
+      if (state.conversationId) {
+        state.scrollTops.set(state.conversationId, els.aiMessages.scrollTop);
+      }
     }
+    const token = ++state.loadToken; // invalidates every in-flight load
     state.conversationId = conversationId;
+    state.historyCursor = null;
+    loadingEarlier = false;
+    view?.setConversationId(conversationId);
     renderConversationSelect();
     if (loadHistory) {
-      await renderConversationHistory(conversationId);
+      timeline.reset();
+      view?.reset();
+      showEmpty();
+      updateLoadEarlierButton();
+      renderTimeline({ immediate: true });
+      try {
+        await loadLatestHistory(conversationId);
+        if (token !== state.loadToken) return; // stale response: drop it
+        renderTimeline({ immediate: true });
+      } catch (err) {
+        if (token === state.loadToken) toast(err.message);
+        return;
+      }
+      // Restore the saved scroll position, or jump to the newest content.
+      const saved = state.scrollTops.get(conversationId);
+      requestAnimationFrame(() => {
+        if (token !== state.loadToken) return;
+        els.aiMessages.scrollTop =
+          saved != null && saved > 0 ? saved : els.aiMessages.scrollHeight;
+      });
     }
     if (switching || loadHistory) {
       await loadJobHistory(state.selectedProjectId, conversationId);
+      if (token !== state.loadToken) return;
       await resumeActiveJobForConversation(conversationId);
+      if (token !== state.loadToken) return;
     }
-    updateComposerEnabled();
+    updateComposer();
   }
 
   async function resumeActiveJobForConversation(conversationId) {
@@ -1091,41 +958,12 @@
         (j) => j.status === "queued" || j.status === "running" || j.status === "awaiting_approval",
       );
       if (!active) return;
-      state.seenEventIds = new Set();
-      state.assistantMsgEl = null;
-      state.assistantTextEl = null;
-      state.sawTextForJob = false;
-      appendStatusChip(`恢复进行中的任务 ${active.id}`, "running");
-      watchJob(active.id);
+      state.currentJobId = active.id;
+      state.jobStatus = active.status;
       if (els.jobHistory) els.jobHistory.value = active.id;
+      watchJob(active.id);
     } catch (_) {
       /* ignore */
-    }
-  }
-
-  async function renderConversationHistory(conversationId) {
-    clearMessages();
-    try {
-      const conv = await client.getConversation(conversationId);
-      const turns = conv.turns || [];
-      if (!turns.length) {
-        appendStatusChip("新对话 — 发送第一条消息开始");
-        return;
-      }
-      for (const turn of turns) {
-        if (turn.user) appendUserMessage(turn.user);
-        if (turn.assistant) {
-          state.assistantMsgEl = null;
-          state.assistantTextEl = null;
-          appendAssistantText(turn.assistant);
-        }
-        if (turn.changed_files?.length) appendChanges(turn.changed_files);
-        state.assistantMsgEl = null;
-        state.assistantTextEl = null;
-      }
-      appendStatusChip(`已加载 ${turns.length} 轮历史`);
-    } catch (err) {
-      toast(err.message);
     }
   }
 
@@ -1151,7 +989,11 @@
     try {
       const data = await client.jobs(projectId, conversationId || undefined);
       const jobs = data.jobs || [];
-      els.jobHistory.innerHTML = '<option value="">本轮任务</option>';
+      els.jobHistory.textContent = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "历史任务…";
+      els.jobHistory.appendChild(placeholder);
       for (const job of jobs.slice(0, 30)) {
         const opt = document.createElement("option");
         opt.value = job.id;
@@ -1165,50 +1007,293 @@
     }
   }
 
+  /**
+   * Expand + scroll to the Turn that owns a historical job. Pages backward
+   * through older history when the turn is not in the initially loaded page.
+   */
+  async function revealJobTurn(job) {
+    const turnId = job.turn_id || null;
+    if (!turnId) {
+      toast("该任务缺少轮次信息，无法定位");
+      return false;
+    }
+    for (let guard = 0; guard < 25; guard += 1) {
+      if (view && view.revealTurn(turnId)) return true;
+      if (!state.historyCursor || !state.historyCursor.hasMore) break;
+      await loadEarlierHistory({ silent: true });
+    }
+    toast("未找到该任务对应的轮次（可能已被归档）");
+    return false;
+  }
+
   async function loadHistoricalJob(jobId) {
     if (!jobId) return;
-    stopWatcher();
     try {
       const data = await client.job(jobId);
       const job = data.job;
+      if (!job) {
+        toast("任务不存在或已归档");
+        return;
+      }
       if (job.conversation_id && job.conversation_id !== state.conversationId) {
         await selectConversation(job.conversation_id, { loadHistory: true });
+      } else if (!state.conversationId && job.conversation_id) {
+        await selectConversation(job.conversation_id, { loadHistory: true });
       }
-      appendStatusChip(`回看任务 ${job.id}`);
-      appendUserMessage(job.prompt || "(无提示词)");
-      state.assistantMsgEl = null;
-      state.assistantTextEl = null;
-      for (const event of job.events || []) handleEvent(event);
-      if (job.result || job.final_message) appendAssistantText(job.result || job.final_message);
-      if (job.changed_files?.length) appendChanges(job.changed_files);
-      if (job.status === "queued" || job.status === "running" || job.status === "awaiting_approval") {
+      if (["queued", "running", "awaiting_approval"].includes(job.status)) {
+        // Still active: re-attach the live watcher instead of just showing history.
+        state.currentJobId = job.id;
+        state.jobStatus = job.status;
         watchJob(job.id);
-      } else {
-        appendStatusChip(statusLabel(job.status), job.status === "succeeded" ? "ok" : "err");
-        setRunning(false);
       }
-      state.currentJobId = job.id;
+      if (els.jobHistory) els.jobHistory.value = "";
+      await revealJobTurn(job);
     } catch (err) {
       toast(err.message);
     }
   }
 
-  function updateComposerEnabled() {
-    const ok = state.connected && state.selectedProjectId && state.conversationId && !state.running;
-    els.promptInput.disabled = !state.connected || !state.selectedProjectId || !state.conversationId;
-    els.btnSend.disabled = !ok;
-    els.btnUseCurrentFile.disabled = !state.selectedProjectId;
-    const convDisabled = !state.connected || !state.selectedProjectId || state.running;
-    if (els.btnNewConversation) els.btnNewConversation.disabled = convDisabled;
-    if (els.btnSidebarNewConversation) els.btnSidebarNewConversation.disabled = convDisabled;
+  // —— Job watching ——
+
+  function setRunning(running) {
+    state.running = running;
+    updateComposer();
+    window.EditorApp?.setStatus?.(running ? "Agent 运行中…" : "就绪");
+    updateStatusDot();
+  }
+
+  function stopWatcher() {
+    if (state.watcher) {
+      state.watcher.close();
+      state.watcher = null;
+    }
+  }
+
+  async function refreshOpenFilesAfterJob(job) {
+    const files = job?.changed_files || [];
+    const project = state.projects.find((p) => p.id === state.selectedProjectId);
+    const base = project?.workspace || window.EditorApp?.getRoot?.();
+    if (base) await window.EditorApp?.refreshTree?.({ silent: true });
+    for (const file of files) {
+      const rel = typeof file === "string" ? file : file.path;
+      if (!rel || !base) continue;
+      const abs = await desktop.joinPath(base, rel);
+      await window.EditorApp?.reloadPathIfOpen?.(abs);
+    }
+  }
+
+  async function syncPendingApprovals(jobId) {
+    if (!jobId || !state.connected) return;
+    try {
+      const data = await client.listApprovals(jobId);
+      const pending = data.approvals || [];
+      const liveIds = new Set(pending.map((p) => p.id));
+      // Re-sync: approvals still pending server-side must be present locally…
+      for (const item of pending) {
+        timeline.ingestTaskEvents(
+          [
+            {
+              type: "approval_required",
+              job_id: jobId,
+              approval_id: item.id,
+              kind: item.kind,
+              created_at: item.created_at,
+              ...(item.payload || {}),
+            },
+          ],
+          { jobId },
+        );
+      }
+      // …and approvals no longer pending server-side must not stay actionable.
+      for (const item of timeline.pendingApprovals()) {
+        if ((item.jobId || jobId) === jobId && !liveIds.has(item.approvalId)) {
+          timeline.setApprovalDecision(item.approvalId, item.metadata.decision || "canceled");
+        }
+      }
+      renderTimeline();
+    } catch (_) {
+      /* transient */
+    }
+  }
+
+  function watchJob(jobId) {
+    stopWatcher();
+    state.currentJobId = jobId;
+    setRunning(true);
+    syncPendingApprovals(jobId);
+    state.watcher = client.watchJob(jobId, async (payload) => {
+      if (state.currentJobId !== jobId) return;
+      if (payload.kind === "event" && payload.event) {
+        timeline.ingestTaskEvents([payload.event], { jobId });
+        renderTimeline();
+        return;
+      }
+      if (payload.kind === "job" && payload.job) {
+        state.jobStatus = payload.job.status;
+        if (payload.job.status === "awaiting_approval") {
+          await syncPendingApprovals(jobId);
+        }
+        updateStatusDot();
+        return;
+      }
+      if (payload.kind === "done") {
+        stopWatcher();
+        setRunning(false);
+        state.jobStatus = payload.status;
+        try {
+          const data = await client.job(jobId);
+          if (state.currentJobId !== jobId) return;
+          // Authoritative reconciliation: persisted conversation events are the
+          // source of truth. Re-ingest the newest page (idempotent by seq) so
+          // the final assistant message, after_turn checkpoint and lifecycle
+          // events settle into the same items the live stream created.
+          if (state.conversationId) {
+            try {
+              const tail = await client.conversationEvents(state.conversationId, {
+                beforeSeq: Number.MAX_SAFE_INTEGER,
+                limit: HISTORY_PAGE_LIMIT,
+              });
+              if (state.currentJobId !== jobId && state.currentJobId !== null) return;
+              timeline.ingestConversationEvents(tail.events || []);
+            } catch (_) {
+              /* fall back to task events below */
+            }
+          }
+          timeline.ingestTaskEvents(data.job?.events || [], { jobId });
+          renderTimeline();
+          await refreshOpenFilesAfterJob(data.job);
+          await loadJobHistory(state.selectedProjectId, state.conversationId);
+          if (state.selectedProjectId) {
+            await loadConversations(state.selectedProjectId, {
+              preferId: state.conversationId,
+              loadHistory: false,
+            });
+          }
+        } catch (_) {
+          renderTimeline();
+        }
+        return;
+      }
+      if (payload.kind === "error") {
+        toast(`连接异常: ${payload.error}`);
+      }
+    });
+  }
+
+  // —— Composer ——
+
+  function updateComposer() {
+    const ready = state.connected && state.selectedProjectId && state.conversationId;
+    els.promptInput.disabled = !ready;
+    const running = state.running;
+    els.btnSend.hidden = running;
+    els.btnStop.hidden = !running;
+    els.btnSteer.hidden = !running;
+    els.btnFollowUp.hidden = !running;
+    els.btnSend.disabled = !ready || running;
+    els.btnStop.disabled = !running;
+    els.btnAddContext.disabled = !state.selectedProjectId;
+    els.promptInput.placeholder = running
+      ? "任务运行中：输入后可引导或追问…"
+      : "描述要完成的任务";
+  }
+
+  function autosizePrompt() {
+    const el = els.promptInput;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(200, Math.max(56, el.scrollHeight))}px`;
+  }
+
+  function renderChips() {
+    const host = els.aiContext;
+    host.textContent = "";
+    const chips = state.contextChips;
+    host.hidden = !chips.length;
+    for (const chip of chips) {
+      const node = document.createElement("span");
+      node.className = "composer-chip";
+      const kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = { file: "文件", folder: "目录", selection: "选区" }[chip.kind] || chip.kind;
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = chip.label || "";
+      label.title = chip.path || chip.label || "";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `移除上下文 ${chip.label || ""}`);
+      remove.addEventListener("click", () => {
+        state.contextChips = state.contextChips.filter((c) => c.key !== chip.key);
+        renderChips();
+      });
+      node.append(kind, label, remove);
+      host.appendChild(node);
+    }
+  }
+
+  async function addContextChip(kind) {
+    if (kind === "file") {
+      const tab = window.EditorApp?.getActiveTab?.();
+      if (!tab?.path) {
+        toast("当前没有打开的文件");
+        return;
+      }
+      const root = window.EditorApp?.getRoot?.();
+      let label = tab.title;
+      if (root) {
+        try {
+          label = await desktop.relative(root, tab.path);
+        } catch (_) {
+          /* keep title */
+        }
+      }
+      pushChip({ key: `file:${tab.path}`, kind: "file", label, path: tab.path });
+    } else if (kind === "folder") {
+      const root = window.EditorApp?.getRoot?.();
+      if (!root) {
+        toast("未打开文件夹");
+        return;
+      }
+      pushChip({
+        key: `folder:${root}`,
+        kind: "folder",
+        label: root.split(/[/\\]/).pop() || root,
+        path: root,
+      });
+    } else if (kind === "selection") {
+      const sel = window.EditorApp?.getSelection?.();
+      if (!sel?.text) {
+        toast("当前没有选区");
+        return;
+      }
+      pushChip({
+        key: `selection:${Date.now()}`,
+        kind: "selection",
+        label: `${(sel.path || "").split(/[/\\]/).pop() || "选区"} L${sel.startLine}-L${sel.endLine}`,
+        text: sel.text,
+        path: sel.path,
+      });
+    }
+    els.promptInput.focus();
+  }
+
+  function pushChip(chip) {
+    state.contextChips = [...state.contextChips.filter((c) => c.key !== chip.key), chip];
+    renderChips();
   }
 
   function buildPrompt() {
     let prompt = els.promptInput.value.trim();
     if (!prompt) return "";
-    if (state.contextFile) {
-      prompt = `当前聚焦文件: ${state.contextFile}\n\n${prompt}`;
+    const blocks = [];
+    for (const chip of state.contextChips) {
+      if (chip.kind === "file") blocks.push(`当前聚焦文件: ${chip.path || chip.label}`);
+      else if (chip.kind === "folder") blocks.push(`相关目录: ${chip.path || chip.label}`);
+      else if (chip.kind === "selection") blocks.push(`选区 (${chip.path || ""}):\n${chip.text || ""}`);
     }
+    if (blocks.length) prompt = `${blocks.join("\n\n")}\n\n${prompt}`;
     return prompt;
   }
 
@@ -1220,7 +1305,6 @@
       toast("请选择项目并输入问题");
       return;
     }
-
     if (!conversationId) {
       try {
         const conv = await client.createConversation(projectId, "新对话");
@@ -1237,32 +1321,29 @@
     const body = {
       prompt,
       auto_fallback: els.autoFallback.checked,
+      run_mode: state.runMode,
     };
     const provider = els.modelSelect.value;
     if (provider) body.provider = provider;
 
-    // Continuous stream: do not clear the panel between turns in the same conversation
-    state.assistantMsgEl = null;
-    state.assistantTextEl = null;
-    state.seenEventIds = new Set();
-    appendUserMessage(prompt);
+    timeline.addLocalUserMessage(prompt, {});
     els.promptInput.value = "";
     autosizePrompt();
     setRunning(true);
+    renderTimeline();
 
     try {
       const data = await client.askConversation(conversationId, body);
       const job = data.job;
       state.currentJobId = job.id;
+      state.jobStatus = job.status;
       if (data.conversation_id) state.conversationId = data.conversation_id;
-      els.jobHistory.value = job.id;
-      appendStatusChip(`任务 ${job.id}`, "running");
       watchJob(job.id);
       await loadJobHistory(projectId, state.conversationId);
     } catch (err) {
       setRunning(false);
-      appendStatusChip(err.message, "err");
       toast(err.message);
+      renderTimeline();
     }
   }
 
@@ -1271,7 +1352,8 @@
     els.btnStop.disabled = true;
     try {
       await client.cancel(state.currentJobId);
-      appendStatusChip("已请求停止…");
+      timeline.cancelPending();
+      renderTimeline();
       toast("已请求停止");
     } catch (err) {
       els.btnStop.disabled = false;
@@ -1279,42 +1361,21 @@
     }
   }
 
-  function setContextFile(relOrName) {
-    state.contextFile = relOrName;
-    if (!relOrName) {
-      els.aiContext.hidden = true;
-      els.aiContext.innerHTML = "";
-      return;
+  async function sendJobMessage(kind) {
+    const text = els.promptInput.value.trim();
+    if (!text || !state.currentJobId) return;
+    try {
+      if (kind === "steer") await client.steerJob(state.currentJobId, text);
+      else await client.followUpJob(state.currentJobId, text);
+      els.promptInput.value = "";
+      autosizePrompt();
+      toast(kind === "steer" ? "已发送引导" : "已加入追问，本轮结束后继续");
+    } catch (err) {
+      toast(`${kind === "steer" ? "引导" : "追问"}失败: ${err.message}`);
     }
-    els.aiContext.hidden = false;
-    els.aiContext.innerHTML = `<span class="chip">@ ${escapeHtml(relOrName)} <button type="button" class="icon-btn" id="btnClearContext" title="移除">×</button></span>`;
-    document.getElementById("btnClearContext")?.addEventListener("click", () => setContextFile(null));
   }
 
-  async function useCurrentFile() {
-    const tab = window.EditorApp?.getActiveTab?.();
-    if (!tab?.path) {
-      toast("当前没有打开的文件");
-      return;
-    }
-    const root = window.EditorApp?.getRoot?.();
-    let label = tab.title;
-    if (root) {
-      try {
-        label = await desktop.relative(root, tab.path);
-      } catch (_) {
-        /* keep title */
-      }
-    }
-    setContextFile(label);
-    els.promptInput.focus();
-  }
-
-  function autosizePrompt() {
-    const el = els.promptInput;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(180, Math.max(72, el.scrollHeight))}px`;
-  }
+  // —— Settings / dialogs ——
 
   function openSettings() {
     els.settingsDialog.showModal();
@@ -1329,53 +1390,121 @@
     els.promptInput.focus();
   }
 
-  function onActiveFileChanged(tab) {
-    /* keep context sticky unless cleared */
+  function onActiveFileChanged() {
+    /* context chips are explicit; keep sticky */
   }
 
-  async function onWorkspaceChanged(rootDir) {
-    if (state.connected) {
-      await maybeAutoSelectProject();
-    }
+  async function onWorkspaceChanged() {
+    if (state.connected) await maybeAutoSelectProject();
   }
+
+  function toggleMenu(menu) {
+    if (!menu) return;
+    const next = menu.hidden;
+    document.querySelectorAll(".ai-menu").forEach((m) => {
+      m.hidden = true;
+    });
+    menu.hidden = !next;
+  }
+
+  // —— Bindings ——
 
   function bind() {
     loadPrefs();
+    if (els.runModeSelect) {
+      els.runModeSelect.value = state.runMode;
+      els.runModeSelect.addEventListener("change", () => {
+        state.runMode = els.runModeSelect.value;
+        savePrefs();
+      });
+    }
 
-    els.btnAiSettings.addEventListener("click", () => openSettings());
+    els.btnOpenSettings?.addEventListener("click", () => {
+      toggleMenu(els.aiMoreMenu);
+      openSettings();
+    });
     els.statusConn.addEventListener("click", () => openSettings());
     els.btnCloseAi.addEventListener("click", () => window.EditorApp?.toggleAi?.());
+    els.btnAiMore?.addEventListener("click", () => toggleMenu(els.aiMoreMenu));
+    document.addEventListener("mousedown", (ev) => {
+      if (
+        els.aiMoreMenu &&
+        !els.aiMoreMenu.hidden &&
+        !els.aiMoreMenu.contains(ev.target) &&
+        ev.target !== els.btnAiMore
+      ) {
+        els.aiMoreMenu.hidden = true;
+      }
+      if (
+        els.contextMenu &&
+        !els.contextMenu.hidden &&
+        !els.contextMenu.contains(ev.target) &&
+        ev.target !== els.btnAddContext
+      ) {
+        els.contextMenu.hidden = true;
+      }
+    });
+
     els.btnStartServer.addEventListener("click", () => startServer());
     els.btnStopServer.addEventListener("click", () => stopServer());
     els.btnCopyPhoneUrl.addEventListener("click", () => copyPhoneUrl());
-    els.btnPair?.addEventListener("click", () =>
-      pair().catch((err) => toast(`配对失败: ${err.message}`)));
+    els.btnPair?.addEventListener("click", () => pair().catch((err) => toast(`配对失败: ${err.message}`)));
     els.phoneUrl.addEventListener("click", () => copyPhoneUrl());
     desktop.onAgentServerExit?.(async () => {
       state.serverManaged = false;
       state.connected = false;
       setConn("idle", "未连接");
-      updateComposerEnabled();
+      updateComposer();
+      updateStatusDot();
       await refreshServerStatus();
       toast("Agent 服务已退出");
     });
+
     els.btnNewChat.addEventListener("click", () => createNewConversation());
-    els.btnNewConversation?.addEventListener("click", () => createNewConversation());
     els.btnSidebarNewConversation?.addEventListener("click", () => createNewConversation());
+    els.btnPauseJob?.addEventListener("click", async () => {
+      if (!state.currentJobId) return;
+      try {
+        await client.pauseJob(state.currentJobId);
+        toast("已请求暂停");
+      } catch (err) {
+        toast(`暂停失败: ${err.message}`);
+      }
+    });
+    els.btnResumeJob?.addEventListener("click", async () => {
+      if (!state.currentJobId) return;
+      try {
+        await client.resumeJob(state.currentJobId);
+        toast("已请求继续");
+      } catch (err) {
+        toast(`继续失败: ${err.message}`);
+      }
+    });
     els.conversationSelect?.addEventListener("change", async () => {
       const id = els.conversationSelect.value;
       if (id && id !== state.conversationId) await selectConversation(id);
     });
+
     els.btnSend.addEventListener("click", () => sendAsk());
     els.btnStop.addEventListener("click", () => stopJob());
-    els.btnUseCurrentFile.addEventListener("click", () => useCurrentFile());
+    els.btnSteer?.addEventListener("click", () => sendJobMessage("steer"));
+    els.btnFollowUp?.addEventListener("click", () => sendJobMessage("follow_up"));
     els.autoFallback.addEventListener("change", savePrefs);
+
+    els.btnAddContext?.addEventListener("click", () => toggleMenu(els.contextMenu));
+    els.contextMenu?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-context]");
+      if (!btn) return;
+      els.contextMenu.hidden = true;
+      addContextChip(btn.dataset.context);
+    });
 
     els.promptInput.addEventListener("input", autosizePrompt);
     els.promptInput.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
-        if (!els.btnSend.disabled) sendAsk();
+        if (state.running) sendJobMessage("steer");
+        else if (!els.btnSend.disabled) sendAsk();
       }
     });
 
@@ -1429,17 +1558,47 @@
         toast(err.message);
       }
     });
+
+    // Diff review cleanup when the diff host closes (editor disposal included).
+    const cleanupReview = () => {
+      closeReviewSession();
+      window.EditorApp?.closeDiff?.();
+    };
+    els.btnCloseDiff?.addEventListener("click", cleanupReview);
+    els.btnRejectDiff?.addEventListener("click", cleanupReview);
+    els.btnAcceptDiff?.addEventListener("click", cleanupReview);
   }
 
   async function init() {
+    emptyNode = els.aiEmpty;
+    if (emptyNode?.parentElement) emptyNode.parentElement.removeChild(emptyNode);
+    view = window.AgentTimeline.createTimelineView(els.aiMessages, callbacks);
+
+    // Progressive history: "load earlier" button pinned above the newest turns.
+    loadEarlierBtn = document.createElement("button");
+    loadEarlierBtn.type = "button";
+    loadEarlierBtn.className = "tl-load-earlier";
+    loadEarlierBtn.textContent = "加载更早记录";
+    loadEarlierBtn.hidden = true;
+    loadEarlierBtn.addEventListener("click", () => loadEarlierHistory());
+    els.aiMessages.prepend(loadEarlierBtn);
+    view.setHeaderNode(loadEarlierBtn);
+    // Auto-page when scrolling close to the top of a long history.
+    els.aiMessages.addEventListener("scroll", () => {
+      if (els.aiMessages.scrollTop < 80 && state.historyCursor?.hasMore) {
+        loadEarlierHistory();
+      }
+    });
+
     bind();
-    clearMessages();
+    showEmpty();
     setRunning(false);
+    renderChips();
+    updateComposer();
+    updateStatusDot();
     await refreshServerStatus();
     if (desktop?.getCredential) {
-      const baseUrl = (
-        els.serverUrl.value || "http://127.0.0.1:8000"
-      ).trim().replace(/\/+$/, "");
+      const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
       els.apiToken.value = await desktop.getCredential(baseUrl);
     }
     try {
@@ -1459,15 +1618,38 @@
     focusComposer,
     onActiveFileChanged,
     onWorkspaceChanged,
+    openJob: loadHistoricalJob,
     client,
     getState: () => state,
     dispatch: (action) => {
       if (typeof action === "object" && action) {
         Object.assign(state, action.patch || {});
+        if (action.patch && action.patch.conversations) {
+          renderConversationSelect();
+        }
         if (action.patch && action.patch.conversationId !== undefined) {
           selectConversation(action.patch.conversationId).catch(() => {});
         }
       }
+    },
+    // Deterministic hooks for tests/screenshots.
+    debug: {
+      timeline,
+      renderTimeline,
+      getView: () => view,
+      ingestTaskEvents: (events, opts) => {
+        timeline.ingestTaskEvents(events, opts);
+        renderTimeline();
+      },
+      ingestConversationEvents: (events) => {
+        timeline.ingestConversationEvents(events);
+        renderTimeline();
+      },
+      setRunning,
+      openTurnDiffReview,
+      closeReviewSession,
+      selectConversation,
+      setState: (patch) => Object.assign(state, patch || {}),
     },
   };
 })();

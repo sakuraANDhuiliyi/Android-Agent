@@ -178,6 +178,24 @@ def _find_replay(
     )
 
 
+def _mcp_server_tool(name: str) -> tuple[str | None, str | None]:
+    """Split an MCP tool name (mcp__server__tool) into its parts."""
+    if not name.startswith("mcp__"):
+        return None, None
+    rest = name[len("mcp__"):]
+    if "__" not in rest:
+        return rest or None, None
+    server, tool = rest.split("__", 1)
+    return server or None, tool or None
+
+
+def _domain_of(url: Any) -> str | None:
+    if not isinstance(url, str) or not url:
+        return None
+    match = re.match(r"^https?://([^/?#]+)", url.strip(), re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _build_approval_payload(
     decision: PermissionDecision,
     tool_input: dict[str, Any],
@@ -185,16 +203,33 @@ def _build_approval_payload(
     *,
     recovery_tool_call_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build the approval payload shown in the UI card."""
+    """Build the approval payload shown in the UI card.
+
+    Besides the human-readable message, the payload carries structured,
+    server-verified fields (risk, reason, requested_capability, tool_name,
+    and kind-specific details such as argv/cwd, url/target path, or the MCP
+    server/tool pair) so clients never need to guess risk from tool names.
+    All fields are additive; older clients can ignore them.
+    """
     kind = decision.approval_kind
+    base: dict[str, Any] = {
+        "risk": decision.risk,
+        "reason": decision.reason,
+        "requested_capability": kind,
+        "tool_name": spec.name,
+    }
 
     if kind == "download_file":
         path = tool_input.get("path", "")
+        url = tool_input.get("url", "")
         return {
             "message": f"请求下载文件到 {path}（请在对话确认卡片中选择允许或拒绝）",
-            "url": tool_input.get("url", ""),
+            "url": url,
             "path": path,
             "max_bytes": int(tool_input.get("max_bytes", 50 * 1024 * 1024)),
+            "domains": [d for d in [_domain_of(url)] if d],
+            "target_paths": [path] if path else [],
+            **base,
         }
 
     if kind == "recovery_tool_replay":
@@ -206,12 +241,52 @@ def _build_approval_payload(
             "name": spec.name,
             "input": tool_input,
             "interrupted_tool_call_id": recovery_tool_call_id,
+            **base,
+        }
+
+    if kind == "mcp_tool":
+        server, tool = _mcp_server_tool(spec.name)
+        return {
+            "message": (
+                f"请求调用外部 MCP 工具 {spec.name}"
+                "（请在对话确认卡片中选择允许或拒绝）"
+            ),
+            "name": spec.name,
+            "mcp_server": server,
+            "mcp_tool": tool,
+            "input": tool_input,
+            **base,
+        }
+
+    if kind in {"network", "process"}:
+        extra: dict[str, Any] = {}
+        argv = tool_input.get("argv")
+        if isinstance(argv, list) and argv:
+            extra["argv"] = [str(part) for part in argv]
+            extra["command"] = " ".join(str(part) for part in argv)
+        cwd = tool_input.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            extra["cwd"] = cwd
+        domains = [
+            d
+            for d in [_domain_of(tool_input.get("url"))]
+            if d
+        ]
+        if domains:
+            extra["domains"] = domains
+        return {
+            "message": f"请求执行 {spec.name}（请在对话确认卡片中选择允许或拒绝）",
+            "name": spec.name,
+            **tool_input,
+            **extra,
+            **base,
         }
 
     return {
         "message": f"请求执行 {spec.name}（请在对话确认卡片中选择允许或拒绝）",
         "name": spec.name,
         **tool_input,
+        **base,
     }
 
 

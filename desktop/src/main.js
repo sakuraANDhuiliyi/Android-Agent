@@ -7,6 +7,12 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 
+// Smoke/CI isolation: run against a throwaway profile instead of the user's
+// real app data (credentials, localStorage) when explicitly requested.
+if (process.env.AGENT_DESKTOP_USER_DATA) {
+  app.setPath("userData", process.env.AGENT_DESKTOP_USER_DATA);
+}
+
 const IGNORE_NAMES = new Set([
   ".git",
   "node_modules",

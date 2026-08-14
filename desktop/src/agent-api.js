@@ -96,6 +96,16 @@
       return this.request(`/api/conversations/${encodeURIComponent(conversationId)}`);
     }
 
+    conversationEvents(conversationId, { afterSeq = 0, beforeSeq = null, limit = 500 } = {}) {
+      const params = new URLSearchParams();
+      if (beforeSeq != null) params.set("before_seq", String(beforeSeq));
+      else params.set("after_seq", String(afterSeq));
+      params.set("limit", String(limit));
+      return this.request(
+        `/api/conversations/${encodeURIComponent(conversationId)}/events?${params}`,
+      );
+    }
+
     askConversation(conversationId, body) {
       return this.request(`/api/conversations/${encodeURIComponent(conversationId)}/ask`, {
         method: "POST",
@@ -226,6 +236,22 @@
 
     turnDiff(projectId, turnId) {
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/diff?turn_id=${encodeURIComponent(turnId)}`);
+    }
+
+    /** Exact before/after content of one file from checkpoint blobs. */
+    turnDiffFile(projectId, turnId, path) {
+      const params = new URLSearchParams();
+      params.set("turn_id", turnId);
+      params.set("path", path);
+      return this.request(
+        `/api/projects/${encodeURIComponent(projectId)}/diff/file?${params}`,
+      );
+    }
+
+    readProjectFile(projectId, path) {
+      return this.request(
+        `/api/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(path)}`,
+      );
     }
 
     // —— Terminals ——

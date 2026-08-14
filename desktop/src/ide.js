@@ -17,29 +17,6 @@
     btnSearch: document.getElementById("btnSearch"),
     btnRefreshJobs: document.getElementById("btnRefreshJobs"),
     btnArchiveConversation: document.getElementById("btnArchiveConversation"),
-    conversationSelect: document.getElementById("conversationSelect"),
-    aiContext: document.getElementById("aiContext"),
-    aiPlan: document.getElementById("aiPlan"),
-    planBody: document.getElementById("planBody"),
-    btnTogglePlan: document.getElementById("btnTogglePlan"),
-    aiTools: document.getElementById("aiTools"),
-    toolsBody: document.getElementById("toolsBody"),
-    approvalDock: document.getElementById("approvalDock"),
-    aiMeta: document.getElementById("aiMeta"),
-    tokenMeta: document.getElementById("tokenMeta"),
-    timingMeta: document.getElementById("timingMeta"),
-    modelMeta: document.getElementById("modelMeta"),
-    fallbackMeta: document.getElementById("fallbackMeta"),
-    aiActions: document.getElementById("aiActions"),
-    btnSteer: document.getElementById("btnSteer"),
-    btnFollowUp: document.getElementById("btnFollowUp"),
-    btnPause: document.getElementById("btnPause"),
-    btnResume: document.getElementById("btnResume"),
-    btnCancel: document.getElementById("btnCancel"),
-    promptInput: document.getElementById("promptInput"),
-    btnUseCurrentFile: document.getElementById("btnUseCurrentFile"),
-    btnUseSelection: document.getElementById("btnUseSelection"),
-    btnUseFolder: document.getElementById("btnUseFolder"),
     bottomTabs: document.getElementById("bottomTabs"),
     bottomContent: document.getElementById("bottomContent"),
     bottomPanel: document.getElementById("bottomPanel"),
@@ -138,7 +115,6 @@
         const updated = (s.conversations || []).map((c) => (c.id === id ? { ...c, title } : c));
         ai().dispatch?.({ patch: { conversations: updated } });
         renderConversationList();
-        refreshConversationSelect();
       } catch (err) {
         editor().toast?.(`重命名失败: ${err.message}`);
       }
@@ -160,7 +136,6 @@
         });
       }
       renderConversationList();
-      refreshConversationSelect();
     } catch (err) {
       editor().toast?.(`归档失败: ${err.message}`);
     }
@@ -180,7 +155,6 @@
         });
       }
       renderConversationList();
-      refreshConversationSelect();
     } catch (err) {
       editor().toast?.(`恢复失败: ${err.message}`);
     }
@@ -188,20 +162,6 @@
 
   function selectConversation(id) {
     ai().dispatch?.({ patch: { conversationId: id } });
-  }
-
-  function refreshConversationSelect() {
-    if (!els.conversationSelect) return;
-    const s = ai().getState?.() || {};
-    const list = s.conversations || [];
-    els.conversationSelect.innerHTML = '<option value="">切换对话…</option>';
-    for (const c of list) {
-      const opt = document.createElement("option");
-      opt.value = c.id;
-      opt.textContent = c.title || c.id;
-      if (c.id === s.conversationId) opt.selected = true;
-      els.conversationSelect.appendChild(opt);
-    }
   }
 
   // —— Jobs ——
@@ -235,49 +195,8 @@
   }
 
   async function loadJob(jobId) {
-    try {
-      const data = await api().job(jobId);
-      const job = data.job;
-      ai().dispatch?.({ patch: { currentJobId: job.id, jobStatus: job.status } });
-      dispatch({ type: "SET_CURRENT_JOB", jobId: job.id, status: job.status });
-      dispatch({
-        type: "JOB_EVENTS",
-        events: job.events || [],
-        status: job.status,
-        plan: job.plan || [],
-        approvals: job.approvals || [],
-      });
-      syncFromJob(job);
-      renderPlan();
-      renderTools();
-      renderApprovals();
-      renderMeta();
-      renderActions();
-    } catch (_) {}
-  }
-
-  function syncFromJob(job) {
-    if (!job) return;
-    const toolCalls = [];
-    const toolResults = [];
-    for (const ev of job.events || []) {
-      if (ev.type === "tool_call") toolCalls.push(ev);
-      if (ev.type === "tool_result") toolResults.push(ev);
-    }
-    dispatch({
-      type: "JOB_EVENTS",
-      events: job.events || [],
-      status: job.status,
-      plan: job.plan || [],
-      approvals: job.approvals || [],
-      toolCalls,
-      toolResults,
-      tokenEstimate: job.token_estimate,
-      timingMs: job.duration_ms,
-      providerModel: job.provider ? `${job.provider}/${job.model || ""}` : null,
-      fallbackUsed: job.fallback_used,
-      recovery: job.recovery_mode,
-    });
+    // Delegate to the AI panel — the timeline is its single rendering authority.
+    await ai().openJob?.(jobId);
   }
 
   // —— Search ——
@@ -315,211 +234,7 @@
     }
   }
 
-  // —— Context chips ——
-  function updateContextChips() {
-    if (!els.aiContext) return;
-    const chips = [];
-    const tab = editor().getActiveTab?.();
-    if (tab?.path) {
-      chips.push({ key: "file", kind: "file", label: tab.path.split(/[/\\]/).pop() || tab.path, path: tab.path });
-    }
-    const root = editor().getRoot?.();
-    if (root) {
-      // No folder chip by default; user clicks @folder to add.
-    }
-    const s = state();
-    for (const c of s.contextChips || []) {
-      if (!chips.find((x) => x.key === c.key)) chips.push(c);
-    }
-    dispatch({ type: "PATCH", patch: { contextChips: chips } });
-    renderContextChips();
-  }
-
-  function renderContextChips() {
-    if (!els.aiContext) return;
-    const chips = state().contextChips || [];
-    els.aiContext.hidden = !chips.length;
-    els.aiContext.innerHTML = "";
-    for (const chip of chips) {
-      const el = document.createElement("span");
-      el.className = "context-chip";
-      el.innerHTML = `<span class="kind">${chip.kind}</span>
-        <span class="label" title="${escapeHtml(chip.path || chip.label || "")}">${escapeHtml(chip.label || "")}</span>
-        <span class="remove" data-key="${chip.key}">×</span>`;
-      el.querySelector(".remove")?.addEventListener("click", () => {
-        dispatch({ type: "REMOVE_CONTEXT_CHIP", key: chip.key });
-        renderContextChips();
-      });
-      els.aiContext.appendChild(el);
-    }
-  }
-
-  function addContextChip(kind) {
-    const tab = editor().getActiveTab?.();
-    if (kind === "file" && tab?.path) {
-      dispatch({
-        type: "ADD_CONTEXT_CHIP",
-        chip: { key: `file:${tab.path}`, kind: "file", label: tab.path.split(/[/\\]/).pop() || tab.path, path: tab.path },
-      });
-    } else if (kind === "folder") {
-      const root = editor().getRoot?.();
-      if (root) {
-        dispatch({
-          type: "ADD_CONTEXT_CHIP",
-          chip: { key: `folder:${root}`, kind: "folder", label: root.split(/[/\\]/).pop() || root, path: root },
-        });
-      }
-    } else if (kind === "selection") {
-      const sel = editor().getSelection?.();
-      if (sel?.text) {
-        dispatch({
-          type: "ADD_CONTEXT_CHIP",
-          chip: { key: `selection:${Date.now()}`, kind: "selection", label: `${sel.path || ""} 选区`, text: sel.text },
-        });
-      }
-    }
-    renderContextChips();
-  }
-
-  // —— Plan ——
-  function renderPlan() {
-    if (!els.aiPlan || !els.planBody) return;
-    const plan = state().plan || [];
-    if (!plan.length) {
-      els.aiPlan.hidden = true;
-      return;
-    }
-    els.aiPlan.hidden = false;
-    els.planBody.innerHTML = "";
-    for (const item of plan) {
-      const el = document.createElement("div");
-      el.className = "todo-item" + (item.status ? " " + item.status : "");
-      el.innerHTML = `<input type="checkbox" disabled ${item.status === "done" ? "checked" : ""} />
-        <span>${escapeHtml(item.title || item.text || "")}</span>`;
-      els.planBody.appendChild(el);
-    }
-  }
-
-  // —— Tools ——
-  function renderTools() {
-    if (!els.aiTools || !els.toolsBody) return;
-    const calls = state().toolCalls || [];
-    const results = state().toolResults || [];
-    if (!calls.length && !results.length) {
-      els.aiTools.hidden = true;
-      return;
-    }
-    els.aiTools.hidden = false;
-    els.toolsBody.innerHTML = "";
-    const resultByCall = new Map();
-    for (const r of results) resultByCall.set(r.tool_call_id, r);
-    for (const call of calls) {
-      const el = document.createElement("div");
-      el.className = "tool-call";
-      const risk = call.risk || "read";
-      el.innerHTML = `<div class="tool-header">
-          <span>${escapeHtml(call.name || call.tool || "tool")}</span>
-          <span class="risk ${risk}">${risk}</span>
-        </div>
-        <div class="tool-body">${escapeHtml(JSON.stringify(call.input || call.arguments || {}, null, 2))}</div>`;
-      el.querySelector(".tool-header").addEventListener("click", () => el.classList.toggle("open"));
-      els.toolsBody.appendChild(el);
-      const result = resultByCall.get(call.tool_call_id || call.id);
-      if (result) {
-        const rel = document.createElement("div");
-        rel.className = "tool-result" + (result.ok ? " ok" : " error");
-        rel.innerHTML = `<div class="tool-header"><span>result</span></div>
-          <div class="tool-body">${escapeHtml(JSON.stringify(result.output || result.result || result, null, 2))}</div>`;
-        rel.querySelector(".tool-header").addEventListener("click", () => rel.classList.toggle("open"));
-        els.toolsBody.appendChild(rel);
-      }
-    }
-  }
-
-  // —— Approvals ——
-  function renderApprovals() {
-    if (!els.approvalDock) return;
-    const approvals = state().approvals || [];
-    const pending = approvals.filter((a) => a.status === "pending");
-    els.approvalDock.hidden = !pending.length;
-    els.approvalDock.innerHTML = "";
-    for (const a of pending) {
-      const card = document.createElement("div");
-      card.className = "approval-card";
-      const risk = a.risk || "process";
-      card.innerHTML = `<div class="approval-header">
-          <span class="risk ${risk}">${risk}</span>
-          <span class="muted">${escapeHtml(a.kind || a.approval_kind || "approval")}</span>
-        </div>
-        <div class="approval-body">${escapeHtml(JSON.stringify(a.payload || a, null, 2))}</div>
-        <div class="approval-actions">
-          <button class="ghost-btn sm" data-action="reject" data-id="${a.id}">拒绝</button>
-          <button class="primary-btn sm" data-action="approve" data-id="${a.id}">批准</button>
-        </div>`;
-      card.addEventListener("click", (e) => {
-        const btn = e.target.closest("button[data-action]");
-        if (!btn) return;
-        resolveApproval(a.id, btn.dataset.action === "approve");
-      });
-      els.approvalDock.appendChild(card);
-    }
-  }
-
-  async function resolveApproval(approvalId, approved) {
-    const jobId = (ai().getState?.() || {}).currentJobId;
-    if (!jobId) return;
-    try {
-      await api().resolveApproval(jobId, approvalId, approved);
-      editor().toast?.(approved ? "已批准" : "已拒绝");
-      loadJob(jobId);
-    } catch (err) {
-      editor().toast?.(`审批失败: ${err.message}`);
-    }
-  }
-
-  // —— Meta ——
-  function renderMeta() {
-    if (!els.aiMeta) return;
-    const s = state();
-    const any = s.tokenEstimate || s.timingMs || s.providerModel || s.fallbackUsed || s.recovery;
-    els.aiMeta.hidden = !any;
-    if (els.tokenMeta) els.tokenMeta.textContent = s.tokenEstimate ? `~${s.tokenEstimate} tokens` : "—";
-    if (els.timingMeta) els.timingMeta.textContent = s.timingMs ? `${s.timingMs}ms` : "—";
-    if (els.modelMeta) els.modelMeta.textContent = s.providerModel || "—";
-    if (els.fallbackMeta) els.fallbackMeta.textContent = s.fallbackUsed ? "已降级" : s.recovery ? "恢复中" : "—";
-  }
-
-  // —— Actions ——
-  function renderActions() {
-    if (!els.aiActions) return;
-    const s = state();
-    const running = s.running || s.awaitingApproval || s.jobStatus === "paused";
-    els.aiActions.hidden = !running;
-    if (els.btnPause) els.btnPause.hidden = s.jobStatus !== "running";
-    if (els.btnResume) els.btnResume.hidden = s.jobStatus !== "paused";
-  }
-
-  async function doAction(action) {
-    const jobId = (ai().getState?.() || {}).currentJobId;
-    if (!jobId) return;
-    try {
-      if (action === "pause") await api().pauseJob(jobId);
-      else if (action === "resume") await api().resumeJob(jobId);
-      else if (action === "cancel") await api().cancel(jobId);
-      else if (action === "steer") {
-        const text = els.promptInput?.value?.trim();
-        if (!text) return;
-        await api().steerJob(jobId, text);
-      } else if (action === "follow_up") {
-        const text = els.promptInput?.value?.trim();
-        if (!text) return;
-        await api().followUpJob(jobId, text);
-      }
-      loadJob(jobId);
-    } catch (err) {
-      editor().toast?.(`${action} 失败: ${err.message}`);
-    }
-  }
+  // —— Context chips live in the AI panel composer now ——
 
   // —— Bottom panel ——
   function initBottomPanel() {
@@ -591,22 +306,12 @@
   function initKeyboard() {
     document.addEventListener("keydown", (e) => {
       const meta = e.metaKey || e.ctrlKey;
-      // Cmd/Ctrl+Enter to send
-      if (meta && e.key === "Enter" && els.promptInput && document.activeElement === els.promptInput) {
-        e.preventDefault();
-        els.btnSend?.click();
-      }
-      // Escape closes dialogs and stops if running
+      // Escape closes dialogs and transient panels; it never cancels a task.
       if (e.key === "Escape") {
         const openDialog = document.querySelector("dialog[open]");
         if (openDialog) {
           e.preventDefault();
           openDialog.close("cancel");
-          return;
-        }
-        if (state().running && els.btnCancel) {
-          e.preventDefault();
-          doAction("cancel");
           return;
         }
         if (els.bottomPanel && !els.bottomPanel.hidden) {
@@ -650,23 +355,8 @@
     if (aiState.conversationId !== state().conversationId) {
       dispatch({ type: "SELECT_CONVERSATION", conversationId: aiState.conversationId });
     }
-    if (aiState.currentJobId && aiState.currentJobId !== state().currentJobId) {
-      dispatch({ type: "SET_CURRENT_JOB", jobId: aiState.currentJobId, status: aiState.jobStatus });
-    }
     if (state().sidebarView === "jobs" || state().bottomView === "terminal") {
       await loadJobs();
-    }
-    const currentJob = aiState.currentJobId;
-    if (currentJob && (state().running || state().awaitingApproval)) {
-      try {
-        const data = await api().job(currentJob);
-        syncFromJob(data.job);
-        renderPlan();
-        renderTools();
-        renderApprovals();
-        renderMeta();
-        renderActions();
-      } catch (_) {}
     }
     renderSidebarView();
     renderProblems();
@@ -731,29 +421,6 @@
         els.renameConversationDialog?.close("ok");
       });
     }
-    if (els.btnUseCurrentFile) {
-      els.btnUseCurrentFile.addEventListener("click", () => addContextChip("file"));
-    }
-    if (els.btnUseSelection) {
-      els.btnUseSelection.addEventListener("click", () => addContextChip("selection"));
-    }
-    if (els.btnUseFolder) {
-      els.btnUseFolder.addEventListener("click", () => addContextChip("folder"));
-    }
-    if (els.btnTogglePlan) {
-      els.btnTogglePlan.addEventListener("click", () => {
-        els.planBody?.classList.toggle("hidden");
-      });
-    }
-    if (els.btnSteer) els.btnSteer.addEventListener("click", () => doAction("steer"));
-    if (els.btnFollowUp) els.btnFollowUp.addEventListener("click", () => doAction("follow_up"));
-    if (els.btnPause) els.btnPause.addEventListener("click", () => doAction("pause"));
-    if (els.btnResume) els.btnResume.addEventListener("click", () => doAction("resume"));
-    if (els.btnCancel) els.btnCancel.addEventListener("click", () => doAction("cancel"));
-
-    // Sync context chips on active tab change.
-    window.addEventListener("editor-tab-changed", () => updateContextChips());
-    updateContextChips();
 
     setInterval(tick, 2000);
     tick();

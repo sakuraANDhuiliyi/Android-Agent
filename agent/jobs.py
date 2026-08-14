@@ -131,6 +131,21 @@ def list_jobs(
     return _store.list_tasks(user_id, project_id, conversation_id)
 
 
+def _turn_id_for_task(task_id: str) -> str | None:
+    """Resolve the conversation turn that owns a task (job)."""
+    if not task_id:
+        return None
+    try:
+        with _store._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM conversation_turns WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        return row["id"] if row else None
+    except Exception:
+        return None
+
+
 def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     private_fields = {
         "apk_path",
@@ -149,7 +164,14 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     }
     result["result"] = result.get("final_message")
     result["error"] = result.get("error_message")
+    ctx = job.get("context")
+    if not isinstance(ctx, dict):
+        ctx = {}
+    result["run_mode"] = ctx.get("run_mode") or "workspace"
     task_id = result.get("id")
+    # The desktop needs the turn identity to locate the Turn in the timeline
+    # and to request the checkpoint-based diff review.
+    result["turn_id"] = _turn_id_for_task(task_id)
     result["has_apk"] = bool(job.get("apk_path"))
     result["has_build_log"] = bool(job.get("build_log_path"))
     result["apk_url"] = f"/api/jobs/{task_id}/apk" if job.get("apk_path") else None
@@ -259,6 +281,7 @@ def list_conversation_events(
     user_id: str,
     *,
     after_seq: int | None = None,
+    before_seq: int | None = None,
     limit: int = 200,
     context_only: bool = False,
 ) -> list[dict[str, Any]] | None:
@@ -269,6 +292,7 @@ def list_conversation_events(
         conversation_id,
         user_id=user_id,
         after_seq=after_seq,
+        before_seq=before_seq,
         limit=limit,
         context_only=context_only,
     )
@@ -346,6 +370,19 @@ def workspace_diff(
     return repo.git_diff()
 
 
+def workspace_diff_file(
+    user_id: str,
+    project_id: str,
+    *,
+    turn_id: str,
+    path: str,
+) -> dict[str, Any]:
+    """Exact before/after content of one file, read from checkpoint blobs."""
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    return repo.turn_diff_file(turn_id, path)
+
+
 def list_checkpoints(user_id: str, project_id: str) -> list[dict[str, Any]]:
     load_project_meta(user_id, project_id)
     repo = WorkspaceRepository(user_id, project_id, task_store=_store)
@@ -366,6 +403,19 @@ def restore_file(
     return repo.restore_file(checkpoint_id, rel_path)
 
 
+RUN_MODES = frozenset({"read_only", "workspace", "ask"})
+
+
+def _normalize_run_mode(run_mode: str | None) -> str:
+    """Validate a client-supplied run mode, falling back to the safe default."""
+    if run_mode is None:
+        return "workspace"
+    value = str(run_mode).strip()
+    if value not in RUN_MODES:
+        raise RuntimeError(f"非法 run_mode: {run_mode}")
+    return value
+
+
 def start_ask_job(
     user_id: str,
     project_id: str,
@@ -375,6 +425,7 @@ def start_ask_job(
     conversation_id: str | None = None,
     continue_session: bool = True,
     reset_session: bool = False,
+    run_mode: str | None = None,
 ) -> dict[str, Any]:
     with project_operation(user_id, project_id):
         return _start_ask_job_unlocked(
@@ -385,6 +436,7 @@ def start_ask_job(
             conversation_id=conversation_id,
             continue_session=continue_session,
             reset_session=reset_session,
+            run_mode=run_mode,
         )
 
 
@@ -397,9 +449,11 @@ def _start_ask_job_unlocked(
     conversation_id: str | None = None,
     continue_session: bool = True,
     reset_session: bool = False,
+    run_mode: str | None = None,
 ) -> dict[str, Any]:
     load_project_meta(user_id, project_id)
     settings = settings or load_settings()
+    run_mode = _normalize_run_mode(run_mode)
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -437,7 +491,7 @@ def _start_ask_job_unlocked(
             "model": settings.model,
             "created_at": created_at,
             "write_lock_key": write_lock_key,
-            "context": {"write_lock_key": write_lock_key},
+            "context": {"write_lock_key": write_lock_key, "run_mode": run_mode},
         })
         task_created = True
         turn = event_store.create_turn(
@@ -818,6 +872,7 @@ def _run_job(
     recovery_mode: bool = False,
     lease_check: Any | None = None,
     defer_project_unlock: bool = False,
+    run_mode: str = "workspace",
 ) -> None:
     if not conversation_id:
         raise RuntimeError("任务缺少 conversation_id")
@@ -843,6 +898,8 @@ def _run_job(
     token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     edit_state: dict[str, Any] = {"successful_edits": 0, "approval_decisions": []}
     changes_recorded = False
+    after_checkpoint_done = False
+    after_checkpoint_status: dict[str, Any] = {"diff_status": "preparing"}
 
     def create_checkpoint(kind: str, idempotency_key: str) -> dict[str, Any] | None:
         try:
@@ -952,6 +1009,11 @@ def _run_job(
         ui_payload = dict(payload)
         ui_payload.pop("model_output", None)
         ui_payload.pop("structured_output", None)
+        # UI identity fields: the desktop must never have to guess which
+        # turn/conversation a live task event belongs to.
+        ui_payload.setdefault("task_id", task_id)
+        ui_payload.setdefault("turn_id", turn_id)
+        ui_payload.setdefault("conversation_id", conversation_id)
         _store.add_event(task_id, event_type, ui_payload)
 
         if event_type == EventType.ASSISTANT_MESSAGE:
@@ -1117,8 +1179,55 @@ def _run_job(
             event_key=f"assistant:{message_id}",
         )
 
+    def ensure_after_checkpoint() -> dict[str, Any]:
+        """Create the after_turn checkpoint at most once and report diff readiness.
+
+        This MUST run before the terminal lifecycle event becomes observable
+        so the desktop can open an accurate diff review immediately after the
+        turn reaches its terminal state.  Failures are never swallowed
+        silently: the terminal payloads carry ``diff_status=unavailable`` plus
+        a reason, and a diagnostic record is written.
+        """
+        nonlocal after_checkpoint_done
+        if after_checkpoint_done:
+            return dict(after_checkpoint_status)
+        after_checkpoint_done = True
+        cp = create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
+        if cp:
+            after_checkpoint_status.clear()
+            after_checkpoint_status.update(
+                {"diff_status": "ready", "after_checkpoint_id": cp["id"]}
+            )
+        else:
+            after_checkpoint_status.clear()
+            after_checkpoint_status.update(
+                {
+                    "diff_status": "unavailable",
+                    "diff_reason": "after_turn checkpoint 创建失败",
+                }
+            )
+            try:
+                from agent.diagnostics import get_diagnostic_store
+
+                get_diagnostic_store(_store.db_path).record(
+                    "jobs",
+                    "after_turn_checkpoint_failed",
+                    "after_turn checkpoint 创建失败，改动审查不可用",
+                    severity="error",
+                    user_id=user_id,
+                    project_id=project_id,
+                    task_id=task_id,
+                    turn_id=turn_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to record checkpoint diagnostic for %s", task_id
+                )
+        return dict(after_checkpoint_status)
+
     def mark_failed(exc: Exception) -> None:
         error = str(exc)
+        diff_state = ensure_after_checkpoint() if not lease_lost else {}
         try:
             failed_at = time.time()
             event_store.finalize_lifecycle(
@@ -1128,7 +1237,7 @@ def _run_job(
                 user_id=user_id,
                 event_type=EventType.TURN_FAILED,
                 event_key=f"turn:{turn_id}:failed",
-                event_payload={"error": error},
+                event_payload={"error": error, **diff_state},
                 status="failed",
                 finished_at=failed_at,
                 error_message=error,
@@ -1136,6 +1245,7 @@ def _run_job(
                 task_event_payload={
                     "message": "任务失败",
                     "error": error,
+                    **diff_state,
                 },
             )
         except Exception as terminal_exc:
@@ -1213,6 +1323,7 @@ def _run_job(
             turn_id=turn_id,
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
+            run_mode=run_mode,
         )
         check_cancel()
         check_pause()
@@ -1380,6 +1491,10 @@ def _run_job(
                 task_id=task_id,
                 turn_id=turn_id,
             )
+        # after_turn checkpoint MUST exist before the terminal lifecycle event
+        # is published, otherwise the desktop may offer "review changes" before
+        # the diff data is ready.
+        diff_state = ensure_after_checkpoint()
         try:
             from agent.memory_extract import generate_candidates_for_turn
             from agent.memory_store import get_memory_store
@@ -1424,14 +1539,14 @@ def _run_job(
             user_id=user_id,
             event_type=EventType.TURN_COMPLETED,
             event_key=f"turn:{turn_id}:completed",
-            event_payload={"status": "succeeded", "result": answer},
+            event_payload={"status": "succeeded", "result": answer, **diff_state},
             status="succeeded",
             finished_at=completed_at,
             final_message=answer,
             apk_path=str(task_apk) if task_apk else None,
             build_log_path=str(logs[-1]) if logs and logs[-1].stat().st_mtime >= task_started else None,
             task_event_type="completed",
-            task_event_payload={"message": "本轮完成", "result": answer},
+            task_event_payload={"message": "本轮完成", "result": answer, **diff_state},
         )
     except TaskLeaseLost:
         lease_lost = True
@@ -1439,6 +1554,7 @@ def _run_job(
     except CancellationRequested as exc:
         try:
             record_changes()
+            diff_state = ensure_after_checkpoint()
             canceled_at = time.time()
             event_store.finalize_lifecycle(
                 conversation_id=conversation_id,
@@ -1447,12 +1563,12 @@ def _run_job(
                 user_id=user_id,
                 event_type=EventType.TURN_CANCELED,
                 event_key=f"turn:{turn_id}:canceled",
-                event_payload={"error": str(exc)},
+                event_payload={"error": str(exc), **diff_state},
                 status="canceled",
                 finished_at=canceled_at,
                 error_message=str(exc),
                 task_event_type="canceled",
-                task_event_payload={"message": str(exc)},
+                task_event_payload={"message": str(exc), **diff_state},
             )
         except Exception as terminal_exc:
             mark_failed(
@@ -1501,7 +1617,10 @@ def _run_job(
                     task_id=task_id,
                     turn_id=turn_id,
                 )
-            create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
+            # Fallback for paths that did not create it before the terminal
+            # state (e.g. pause). Idempotent via the stable idempotency key.
+            if not after_checkpoint_done:
+                create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
             logs = sorted(
                 (user_builds_dir(user_id) / project_id).glob("*.log"),
                 key=lambda path: path.stat().st_mtime,

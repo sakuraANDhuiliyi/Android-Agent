@@ -54,7 +54,14 @@ class StreamedCompletion:
 
 
 class _DeltaFlusher:
-    """Coalesce tiny token deltas so the event store/UI are not flooded."""
+    """Coalesce tiny token deltas so the event store/UI are not flooded.
+
+    Every emitted ``text_delta`` carries the stable identity of the model
+    output it belongs to (``message_id`` / ``stream_id``) so the UI can
+    append fragments to exactly one streaming message.  The payload uses
+    ``delta``/``content`` for the incremental text and intentionally has no
+    ``message`` key so it can never be mistaken for a status line.
+    """
 
     def __init__(
         self,
@@ -62,10 +69,14 @@ class _DeltaFlusher:
         *,
         min_chars: int = 12,
         max_interval: float = 0.05,
+        message_id: str | None = None,
+        stream_id: str | None = None,
     ) -> None:
         self._on_event = on_event
         self._min_chars = min_chars
         self._max_interval = max_interval
+        self._message_id = message_id
+        self._stream_id = stream_id or message_id
         self._buf: list[str] = []
         self._last = time.monotonic()
 
@@ -86,10 +97,12 @@ class _DeltaFlusher:
         text = "".join(self._buf)
         self._buf.clear()
         self._last = time.monotonic()
-        self._on_event(
-            "text_delta",
-            {"content": text, "delta": text, "message": text},
-        )
+        payload: dict[str, Any] = {"content": text, "delta": text}
+        if self._message_id:
+            payload["message_id"] = self._message_id
+        if self._stream_id:
+            payload["stream_id"] = self._stream_id
+        self._on_event("text_delta", payload)
 
 
 def stream_openai_chat(
@@ -98,6 +111,8 @@ def stream_openai_chat(
     model: str,
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    message_id: str | None = None,
+    stream_id: str | None = None,
     **kwargs: Any,
 ) -> StreamedCompletion:
     """Stream an OpenAI-compatible chat completion and emit text_delta events."""
@@ -120,7 +135,7 @@ def stream_openai_chat(
     tool_acc: dict[int, dict[str, str]] = {}
     finish_reason: str | None = None
     usage: _Usage | None = None
-    flusher = _DeltaFlusher(on_event)
+    flusher = _DeltaFlusher(on_event, message_id=message_id, stream_id=stream_id)
 
     for event in stream:
         if cancel_check:
@@ -208,10 +223,12 @@ def stream_anthropic_message(
     model: str,
     on_event: EventCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    message_id: str | None = None,
+    stream_id: str | None = None,
     **kwargs: Any,
 ) -> StreamedCompletion:
     """Stream an Anthropic messages response and emit text_delta events."""
-    flusher = _DeltaFlusher(on_event)
+    flusher = _DeltaFlusher(on_event, message_id=message_id, stream_id=stream_id)
     text_parts: list[str] = []
     tool_uses: list[_AnthropicToolUse] = []
     stop_reason: str | None = None

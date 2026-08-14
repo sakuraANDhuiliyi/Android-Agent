@@ -628,9 +628,17 @@ class ConversationEventStore:
         *,
         user_id: str | None = None,
         after_seq: int | None = None,
+        before_seq: int | None = None,
         limit: int | None = None,
         context_only: bool = False,
     ) -> list[dict[str, Any]]:
+        """List conversation events ordered by seq.
+
+        ``after_seq`` pages forward (events with seq > after_seq, ascending).
+        ``before_seq`` pages backward: it returns the LAST ``limit`` events
+        with seq < before_seq, still in ascending order, so the desktop can
+        prepend older history without jumping the scroll anchor.
+        """
         query = """
             SELECT e.*
             FROM conversation_events AS e
@@ -644,9 +652,13 @@ class ConversationEventStore:
         if after_seq is not None:
             query += " AND e.seq>?"
             params.append(after_seq)
+        if before_seq is not None:
+            query += " AND e.seq<?"
+            params.append(before_seq)
         if context_only:
             query += " AND e.context_visible=1"
-        query += " ORDER BY e.seq"
+        backward = before_seq is not None and after_seq is None
+        query += " ORDER BY e.seq DESC" if backward else " ORDER BY e.seq"
         if limit is not None:
             if limit < 1:
                 raise ConversationEventError("limit must be at least 1")
@@ -654,7 +666,10 @@ class ConversationEventStore:
             params.append(limit)
         with self._store._connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [self._row_to_event(row) for row in rows]
+        events = [self._row_to_event(row) for row in rows]
+        if backward:
+            events.reverse()
+        return events
 
     def list_turn_events(
         self,

@@ -221,6 +221,9 @@ class TaskWorker:
             recovery_mode = bool(
                 context.get("recovery_mode") or task.get("recovery_of_task_id")
             )
+            run_mode = context.get("run_mode")
+            if run_mode not in {"read_only", "workspace", "ask"}:
+                run_mode = "workspace"
             check_lease()
             self.run_fn(
                 task["id"],
@@ -236,6 +239,7 @@ class TaskWorker:
                 recovery_mode,
                 check_lease,
                 self.project_lock_release is not None,
+                run_mode,
             )
         except PauseRequested:
             self.store.release_task(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
@@ -423,21 +424,240 @@ class WorkspaceRepository:
         target = {e["path"]: e["sha256"] for e in checkpoint["files"]}
         return self._diff_manifests(target, current, label_a=f"checkpoint:{checkpoint_id}", label_b="workspace")
 
-    def turn_diff(self, turn_id: str) -> dict[str, Any]:
+    def _turn_checkpoints(self, turn_id: str) -> dict[str, Any]:
+        """Return the latest before_turn / after_turn checkpoint rows of a turn."""
         with self.store._connect() as conn:
             rows = conn.execute(
-                """SELECT id, kind, manifest_json FROM checkpoints
+                """SELECT id, kind, manifest_json, created_at FROM checkpoints
                    WHERE user_id=? AND project_id=? AND turn_id=?
                    ORDER BY created_at ASC""",
                 (self.user_id, self.project_id, turn_id),
             ).fetchall()
-        if len(rows) < 2:
-            return {"ok": False, "error": "insufficient_checkpoints", "files": [], "diff": ""}
-        before = json.loads(rows[0]["manifest_json"] or "{}")
-        after = json.loads(rows[-1]["manifest_json"] or "{}")
-        before_files = {e["path"]: e["sha256"] for e in before.get("files", [])}
-        after_files = {e["path"]: e["sha256"] for e in after.get("files", [])}
-        return self._diff_manifests(before_files, after_files, label_a="before_turn", label_b="after_turn")
+        before_row = None
+        after_row = None
+        for row in rows:
+            if row["kind"] == "before_turn":
+                before_row = row
+            elif row["kind"] == "after_turn":
+                after_row = row
+        return {"before": before_row, "after": after_row, "count": len(rows)}
+
+    def _turn_is_active(self, turn_id: str) -> bool:
+        with self.store._connect() as conn:
+            row = conn.execute(
+                """SELECT status FROM conversation_turns WHERE id=?""",
+                (turn_id,),
+            ).fetchone()
+        if not row:
+            return False
+        return row["status"] in {"queued", "running", "awaiting_approval", "paused"}
+
+    def turn_diff(self, turn_id: str) -> dict[str, Any]:
+        """Structured TurnDiff built strictly from checkpoint snapshot blobs.
+
+        Never reads the live workspace, so the review is accurate even if the
+        user kept editing files after the turn finished.
+        """
+        cps = self._turn_checkpoints(turn_id)
+        before_row = cps["before"]
+        after_row = cps["after"]
+        if before_row is None and after_row is None:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "error": "missing_checkpoints",
+                "message": "该轮次没有 Checkpoint 数据，无法审查改动",
+                "turn_id": turn_id,
+                "files": [],
+                "diff": "",
+            }
+        if before_row is None or after_row is None:
+            if self._turn_is_active(turn_id):
+                return {
+                    "ok": False,
+                    "status": "preparing",
+                    "error": "checkpoint_pending",
+                    "message": "改动审查正在准备中，任务尚未结束",
+                    "turn_id": turn_id,
+                    "files": [],
+                    "diff": "",
+                }
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "error": "insufficient_checkpoints",
+                "message": "该轮次缺少 before/after Checkpoint，无法审查改动",
+                "turn_id": turn_id,
+                "files": [],
+                "diff": "",
+            }
+        before = json.loads(before_row["manifest_json"] or "{}")
+        after = json.loads(after_row["manifest_json"] or "{}")
+        before_entries = {e["path"]: e for e in before.get("files", [])}
+        after_entries = {e["path"]: e for e in after.get("files", [])}
+        before_hashes = {p: e["sha256"] for p, e in before_entries.items()}
+        after_hashes = {p: e["sha256"] for p, e in after_entries.items()}
+
+        # Rename detection: same content hash deleted at one path and added at
+        # another within the same turn.
+        deleted = {p for p in before_hashes if p not in after_hashes}
+        added = {p for p in after_hashes if p not in before_hashes}
+        renamed: dict[str, str] = {}  # new_path -> old_path
+        for new_path in sorted(added):
+            new_hash = after_hashes[new_path]
+            for old_path in sorted(deleted):
+                if before_hashes[old_path] == new_hash:
+                    renamed[new_path] = old_path
+                    deleted.discard(old_path)
+                    break
+
+        files: list[dict[str, Any]] = []
+        diff_parts: list[str] = []
+        for rel in sorted(set(before_hashes) | set(after_hashes)):
+            a_hash = before_hashes.get(rel)
+            b_hash = after_hashes.get(rel)
+            if a_hash == b_hash:
+                continue
+            if rel in renamed:
+                kind = "renamed"
+                old_path = renamed[rel]
+                a_hash = None
+                b_hash = after_hashes[rel]
+            elif rel not in before_hashes:
+                kind = "added"
+                old_path = None
+            elif rel not in after_hashes:
+                kind = "deleted"
+                old_path = None
+            else:
+                kind = "modified"
+                old_path = None
+            if kind == "renamed":
+                old_lines: list[str] = []
+                new_lines: list[str] = []
+                additions = 0
+                deletions = 0
+            elif kind == "added":
+                old_lines = []
+                new_lines = _blob_lines(self.user_id, b_hash)
+                additions = len(new_lines)
+                deletions = 0
+            elif kind == "deleted":
+                old_lines = _blob_lines(self.user_id, a_hash)
+                new_lines = []
+                additions = 0
+                deletions = len(old_lines)
+            else:
+                old_lines = _blob_lines(self.user_id, a_hash)
+                new_lines = _blob_lines(self.user_id, b_hash)
+                additions = 0
+                deletions = 0
+                for line in difflib_unified(old_lines, new_lines):
+                    if line.startswith("+") and not line.startswith("+++"):
+                        additions += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        deletions += 1
+            files.append(
+                {
+                    "path": rel,
+                    "old_path": old_path,
+                    "change": kind,
+                    "before_hash": a_hash,
+                    "after_hash": b_hash,
+                    "additions": additions,
+                    "deletions": deletions,
+                    "binary": _blob_is_binary(self.user_id, b_hash or a_hash),
+                }
+            )
+            if kind != "renamed":
+                diff_parts.extend(
+                    difflib.unified_diff(
+                        old_lines,
+                        new_lines,
+                        fromfile=f"before_turn/{rel}",
+                        tofile=f"after_turn/{rel}",
+                    )
+                )
+        diff_text = "".join(diff_parts)
+        truncated = len(diff_text) > MAX_DIFF_CHARS
+        return {
+            "ok": True,
+            "status": "ready" if files else "empty",
+            "turn_id": turn_id,
+            "before_checkpoint_id": before_row["id"],
+            "after_checkpoint_id": after_row["id"],
+            "files": files,
+            "diff": diff_text[:MAX_DIFF_CHARS],
+            "truncated": truncated,
+            "total_chars": len(diff_text),
+        }
+
+    def turn_diff_file(self, turn_id: str, path: str) -> dict[str, Any]:
+        """Return exact before/after contents of one file from checkpoint blobs."""
+        cps = self._turn_checkpoints(turn_id)
+        before_row = cps["before"]
+        after_row = cps["after"]
+        if before_row is None or after_row is None:
+            if self._turn_is_active(turn_id):
+                return {
+                    "ok": False,
+                    "status": "preparing",
+                    "error": "checkpoint_pending",
+                    "message": "改动审查正在准备中，任务尚未结束",
+                    "path": path,
+                }
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "error": "insufficient_checkpoints",
+                "message": "该轮次缺少 before/after Checkpoint",
+                "path": path,
+            }
+        before = json.loads(before_row["manifest_json"] or "{}")
+        after = json.loads(after_row["manifest_json"] or "{}")
+        before_entries = {e["path"]: e for e in before.get("files", [])}
+        after_entries = {e["path"]: e for e in after.get("files", [])}
+        before_entry = before_entries.get(path)
+        after_entry = after_entries.get(path)
+        # Renamed files: the requested path may be the old name.
+        old_path = None
+        if before_entry and not after_entry:
+            for new_path, entry in after_entries.items():
+                if new_path not in before_entries and entry["sha256"] == before_entry["sha256"]:
+                    old_path = new_path
+                    break
+        before_content, before_binary = _blob_text(self.user_id, before_entry["sha256"] if before_entry else None)
+        after_content, after_binary = _blob_text(self.user_id, after_entry["sha256"] if after_entry else None)
+        truncated = False
+        cap = 1_000_000
+        if before_content and len(before_content) > cap:
+            before_content = before_content[:cap]
+            truncated = True
+        if after_content and len(after_content) > cap:
+            after_content = after_content[:cap]
+            truncated = True
+        change = (
+            "modified"
+            if before_entry and after_entry
+            else "added"
+            if after_entry
+            else "deleted"
+            if before_entry
+            else "unknown"
+        )
+        return {
+            "ok": True,
+            "status": "ready",
+            "turn_id": turn_id,
+            "path": path,
+            "old_path": old_path,
+            "change": change,
+            "before_content": before_content,
+            "after_content": after_content,
+            "language": _language_for(path),
+            "binary": before_binary or after_binary,
+            "truncated": truncated,
+        }
 
     def _diff_manifests(
         self,
@@ -600,3 +820,77 @@ def _blob_lines(user_id: str, sha256: str | None) -> list[str]:
     except UnicodeDecodeError:
         return ["<binary>\n"]
     return text.splitlines(keepends=True)
+
+
+def _blob_text(user_id: str, sha256: str | None) -> tuple[str, bool]:
+    """Return (text, is_binary) for a stored blob. Missing blob -> ("", False)."""
+    if not sha256:
+        return "", False
+    try:
+        data = _load_blob(user_id, sha256)
+    except FileNotFoundError:
+        return "", False
+    if b"\x00" in data[:8192]:
+        return "", True
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return "", True
+
+
+def _blob_is_binary(user_id: str, sha256: str | None) -> bool:
+    if not sha256:
+        return False
+    try:
+        data = _load_blob(user_id, sha256)
+    except FileNotFoundError:
+        return False
+    if b"\x00" in data[:8192]:
+        return True
+    try:
+        data[:4096].decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def difflib_unified(old_lines: list[str], new_lines: list[str]) -> list[str]:
+    return list(difflib.unified_diff(old_lines, new_lines))
+
+
+_LANGUAGE_BY_EXT = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".json": "json",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
+    ".xml": "xml",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".java": "java",
+    ".gradle": "groovy",
+    ".sh": "shell",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".toml": "ini",
+    ".ini": "ini",
+    ".sql": "sql",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".rs": "rust",
+    ".go": "go",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+    ".txt": "plaintext",
+}
+
+
+def _language_for(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    return _LANGUAGE_BY_EXT.get(suffix, "plaintext")

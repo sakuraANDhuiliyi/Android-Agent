@@ -181,115 +181,100 @@
 
       <aside class="ai-pane" id="aiPane">
         <div class="ai-header">
-          <div class="ai-header-left">
-            <span class="ai-title">Chat</span>
-            <select id="projectSelect" class="ai-select" title="选择项目">
-              <option value="">选择项目…</option>
-            </select>
-          </div>
-          <div class="ai-header-right">
-            <button type="button" class="icon-btn" id="btnNewChat" title="新对话">＋</button>
-            <button type="button" class="icon-btn" id="btnAiSettings" title="连接设置">⚙</button>
-            <button type="button" class="icon-btn" id="btnCloseAi" title="关闭面板">×</button>
-          </div>
-        </div>
-
-        <div class="ai-toolbar">
-          <select id="modelSelect" class="ai-select sm" disabled>
-            <option value="">默认模型</option>
-          </select>
-          <label class="ai-check" title="提供商失败时自动降级">
-            <input type="checkbox" id="autoFallback" />
-            自动降级
-          </label>
-          <select id="jobHistory" class="ai-select sm" disabled>
-            <option value="">本轮任务</option>
-          </select>
-        </div>
-
-        <div class="ai-conv-bar" id="aiConvBar">
-          <select id="conversationSelect" class="ai-select" title="切换对话">
+          <span class="ai-status-dot" id="aiStatusDot" data-state="off" title="未连接"></span>
+          <select id="conversationSelect" class="ai-select ai-conv-select" title="当前任务/会话">
             <option value="">暂无对话</option>
           </select>
-          <button type="button" class="ghost-btn sm" id="btnNewConversation" title="新开独立对话">新对话</button>
-        </div>
-
-        <div class="ai-server-bar" id="aiServerBar">
-          <button type="button" class="ghost-btn sm" id="btnStartServer" title="运行 python3 -m agent serve">
-            启动服务
-          </button>
-          <button type="button" class="danger-btn sm" id="btnStopServer" hidden title="停止由桌面端拉起的服务">
-            停止服务
-          </button>
-          <div class="server-meta">
-            <span class="server-port" id="serverPortLabel">端口 —</span>
-            <span class="server-divider">·</span>
-            <span class="muted">手机</span>
-            <code class="phone-url" id="phoneUrl" title="手机端填写此地址">—</code>
-            <button type="button" class="icon-btn" id="btnCopyPhoneUrl" title="复制手机连接地址">复制</button>
+          <select id="projectSelect" class="ai-select ai-project-select" title="选择项目">
+            <option value="">项目…</option>
+          </select>
+          <div class="ai-header-right">
+            <button type="button" class="icon-btn" id="btnNewChat" title="新任务" aria-label="新任务">＋</button>
+            <button type="button" class="icon-btn" id="btnAiMore" title="更多设置" aria-label="更多设置" aria-haspopup="true">⋯</button>
+            <button type="button" class="icon-btn" id="btnCloseAi" title="关闭面板" aria-label="关闭面板">×</button>
           </div>
         </div>
 
-        <div class="ai-messages" id="aiMessages" role="log" aria-live="polite">
-          <div class="ai-empty" id="aiEmpty">
-            <h3>与 Agent 对话</h3>
-            <p>描述要生成或修改的 Android 功能。Agent 会编辑工程并执行 <code>assembleDebug</code>。</p>
-            <p class="muted">请先连接服务并选择项目。</p>
+        <div class="ai-menu" id="aiMoreMenu" hidden role="menu" aria-label="Agent 更多设置">
+          <div class="ai-menu-section">
+            <div class="ai-menu-title">任务</div>
+            <select id="jobHistory" class="ai-select sm" disabled aria-label="历史任务"></select>
+            <div class="ai-menu-row">
+              <button type="button" class="ghost-btn sm" id="btnPauseJob" title="暂停当前任务">暂停</button>
+              <button type="button" class="ghost-btn sm" id="btnResumeJob" title="继续已暂停任务">继续</button>
+            </div>
+          </div>
+          <div class="ai-menu-section">
+            <div class="ai-menu-title">模型</div>
+            <label class="ai-check" title="提供商失败时自动降级">
+              <input type="checkbox" id="autoFallback" />
+              提供商失败时自动降级
+            </label>
+          </div>
+          <div class="ai-menu-section">
+            <div class="ai-menu-title">服务</div>
+            <div class="ai-menu-row">
+              <button type="button" class="ghost-btn sm" id="btnStartServer" title="运行 python3 -m agent serve">启动服务</button>
+              <button type="button" class="danger-btn sm" id="btnStopServer" hidden title="停止由桌面端拉起的服务">停止服务</button>
+            </div>
+            <div class="server-meta">
+              <span class="server-port" id="serverPortLabel">端口 —</span>
+            </div>
+            <div class="server-meta">
+              <span class="muted">手机</span>
+              <code class="phone-url" id="phoneUrl" title="手机端填写此地址">—</code>
+              <button type="button" class="icon-btn" id="btnCopyPhoneUrl" title="复制手机连接地址">复制</button>
+            </div>
+          </div>
+          <div class="ai-menu-section">
+            <button type="button" class="ghost-btn sm" id="btnOpenSettings">连接设置…</button>
           </div>
         </div>
 
-        <div class="ai-context" id="aiContext" hidden></div>
-
-        <div class="ai-plan" id="aiPlan" hidden>
-          <div class="plan-header">
-            <span>Plan</span>
-            <button type="button" class="icon-btn" id="btnTogglePlan" title="折叠/展开">▾</button>
+        <div class="ai-timeline-wrap">
+          <div class="ai-messages" id="aiMessages" role="log" aria-live="polite">
+            <div class="ai-empty" id="aiEmpty">
+              <h3>Android Agent 任务</h3>
+              <p>描述要生成或修改的 Android 功能。Agent 会编辑工程并在需要时执行 <code>assembleDebug</code>。</p>
+              <p class="muted">请先连接服务并选择项目。</p>
+            </div>
           </div>
-          <div class="plan-body" id="planBody"></div>
         </div>
 
         <div class="approval-dock" id="approvalDock" hidden></div>
 
-        <div class="ai-tools" id="aiTools" hidden>
-          <div class="tools-header">工具调用</div>
-          <div class="tools-body" id="toolsBody"></div>
-        </div>
-
-        <div class="ai-meta" id="aiMeta" hidden>
-          <span id="tokenMeta" title="token 估算">—</span>
-          <span id="timingMeta" title="耗时">—</span>
-          <span id="modelMeta" title="Provider/Model">—</span>
-          <span id="fallbackMeta" title="降级状态">—</span>
-        </div>
-
-        <div class="ai-actions" id="aiActions" hidden>
-          <button type="button" class="ghost-btn sm" id="btnSteer" title="steer">引导</button>
-          <button type="button" class="ghost-btn sm" id="btnFollowUp" title="follow_up">追问</button>
-          <button type="button" class="ghost-btn sm" id="btnPause" title="pause">暂停</button>
-          <button type="button" class="ghost-btn sm" id="btnResume" title="resume">继续</button>
-          <button type="button" class="danger-btn sm" id="btnCancel" title="cancel">取消</button>
-        </div>
-
         <div class="ai-composer">
+          <div class="composer-chips" id="aiContext" hidden></div>
           <textarea
             id="promptInput"
-            rows="3"
-            placeholder="询问 Agent…（Enter 发送，⇧Enter 换行）"
+            rows="2"
+            placeholder="描述要完成的任务"
+            aria-label="任务描述"
             disabled
           ></textarea>
           <div class="composer-bar">
-            <button type="button" class="ghost-btn" id="btnUseCurrentFile" title="附加当前文件" disabled>
-              @文件
+            <button type="button" class="ghost-btn sm" id="btnAddContext" disabled aria-haspopup="true">
+              ＋ 上下文
             </button>
-            <button type="button" class="ghost-btn" id="btnUseSelection" title="附加选区" disabled>
-              @选区
-            </button>
-            <button type="button" class="ghost-btn" id="btnUseFolder" title="附加文件夹" disabled>
-              @文件夹
-            </button>
+            <div class="ai-menu composer-menu" id="contextMenu" hidden role="menu" aria-label="添加上下文">
+              <button type="button" data-context="file" role="menuitem">当前文件</button>
+              <button type="button" data-context="selection" role="menuitem">编辑器选区</button>
+              <button type="button" data-context="folder" role="menuitem">工作区文件夹</button>
+            </div>
+            <select id="modelSelect" class="ai-select sm" disabled title="模型" aria-label="模型">
+              <option value="">默认模型</option>
+            </select>
+            <select id="runModeSelect" class="ai-select sm" title="权限模式" aria-label="权限模式">
+              <option value="read_only">只读</option>
+              <option value="workspace" selected>工作区</option>
+              <option value="ask">每次询问</option>
+            </select>
+            <span class="composer-env" title="执行环境">本地</span>
             <div class="spacer"></div>
-            <button type="button" class="danger-btn" id="btnStop" disabled>停止</button>
-            <button type="button" class="primary-btn" id="btnSend" disabled>发送</button>
+            <button type="button" class="ghost-btn sm" id="btnSteer" hidden title="在任务运行中插入引导">引导</button>
+            <button type="button" class="ghost-btn sm" id="btnFollowUp" hidden title="本轮结束后继续追问">追问</button>
+            <button type="button" class="danger-btn sm" id="btnStop" hidden>停止</button>
+            <button type="button" class="primary-btn sm" id="btnSend" disabled>发送</button>
           </div>
         </div>
       </aside>
@@ -386,6 +371,8 @@
   <script src="../node_modules/xterm-addon-web-links/lib/xterm-addon-web-links.js"></script>
   <script src="agent-api.js"></script>
   <script src="state.js"></script>
+  <script src="timeline.js"></script>
+  <script src="agent-timeline.js"></script>
   <script src="layout-preview.js"></script>
   <script src="terminal.js"></script>
   <script src="renderer.js"></script>

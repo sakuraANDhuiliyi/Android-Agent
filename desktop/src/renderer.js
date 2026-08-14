@@ -175,7 +175,9 @@
   }
 
   function updateEmpty() {
-    els.emptyState.classList.toggle("hidden", state.tabs.length > 0);
+    // The welcome overlay must never cover an open diff review.
+    const diffOpen = els.monacoDiffHost && !els.monacoDiffHost.hidden;
+    els.emptyState.classList.toggle("hidden", state.tabs.length > 0 || diffOpen);
   }
 
   function updateWindowTitle() {
@@ -826,7 +828,7 @@
       });
     };
     bind(els.sashSidebar, "--sidebar-w", 160, 480);
-    bind(els.sashAi, "--ai-w", 280, 560);
+    bind(els.sashAi, "--ai-w", 360, 640);
     if (els.sashPreview) {
       const sash = els.sashPreview;
       let startX = 0;
@@ -984,17 +986,54 @@
       let diffModified = "";
       let diffPath = "";
 
-      function openDiff({ original, modified, path, language = "plaintext" }) {
+      /** Dispose the diff editor AND its original/modified models (no leaks). */
+      function disposeDiffEditor() {
+        if (!diffEditor) return;
+        let pair = null;
+        try {
+          pair = diffEditor.getModel();
+        } catch (_) {}
+        // Monaco requires the widget to release its model reference BEFORE
+        // the TextModels are disposed, otherwise it logs
+        // "TextModel got disposed before DiffEditorWidget model got reset".
+        try {
+          diffEditor.setModel(null);
+        } catch (_) {}
+        try {
+          diffEditor.dispose();
+        } catch (_) {}
+        if (pair) {
+          try {
+            if (pair.original && !pair.original.isDisposed()) pair.original.dispose();
+            if (pair.modified && !pair.modified.isDisposed()) pair.modified.dispose();
+          } catch (_) {}
+        }
+        diffEditor = null;
+      }
+
+      function hideDiffNotice() {
+        const notice = document.getElementById("diffNotice");
+        if (notice) notice.hidden = true;
+        els.diffMonaco.style.display = "";
+      }
+
+      function openDiff({ original, modified, path, language = "plaintext", title, review = false }) {
         els.monacoDiffHost.hidden = false;
-        els.diffTitle.textContent = path ? `Diff: ${basenameSync(path)}` : "Diff";
+        updateEmpty();
+        hideDiffNotice();
+        els.diffMonaco.style.display = "";
+        // Review mode (checkpoint diffs) is read-only by contract: the
+        // accept/reject actions do not apply and must not be offered.
+        if (els.btnAcceptDiff) els.btnAcceptDiff.hidden = review;
+        if (els.btnRejectDiff) els.btnRejectDiff.hidden = review;
+        els.diffTitle.textContent =
+          title || (path ? `Diff: ${basenameSync(path)}` : "Diff");
         diffOriginal = original || "";
         diffModified = modified || "";
         diffPath = path || "";
-        if (diffEditor) {
-          try {
-            diffEditor.dispose();
-          } catch (_) {}
-        }
+        // Release the previous editor + models before creating new ones so
+        // reopening the same file never accumulates models.
+        disposeDiffEditor();
         diffEditor = monaco.editor.createDiffEditor(els.diffMonaco, {
           theme: "vs-dark",
           automaticLayout: true,
@@ -1008,14 +1047,33 @@
         });
       }
 
+      /** Metadata-only notice (e.g. binary files) shown instead of a text diff. */
+      function openDiffNotice({ title, message }) {
+        els.monacoDiffHost.hidden = false;
+        updateEmpty();
+        els.diffTitle.textContent = title || "Diff";
+        disposeDiffEditor();
+        els.diffMonaco.style.display = "none";
+        let notice = document.getElementById("diffNotice");
+        if (!notice) {
+          notice = document.createElement("div");
+          notice.id = "diffNotice";
+          notice.className = "diff-notice";
+          els.monacoDiffHost.appendChild(notice);
+        }
+        notice.hidden = false;
+        notice.textContent = "";
+        const pre = document.createElement("pre");
+        pre.className = "diff-notice-text";
+        pre.textContent = message || "";
+        notice.appendChild(pre);
+      }
+
       function closeDiff() {
         els.monacoDiffHost.hidden = true;
-        if (diffEditor) {
-          try {
-            diffEditor.dispose();
-          } catch (_) {}
-          diffEditor = null;
-        }
+        disposeDiffEditor();
+        hideDiffNotice();
+        updateEmpty();
       }
 
       function acceptDiff() {
@@ -1053,6 +1111,7 @@
         togglePreview,
         refreshPreview,
         openDiff,
+        openDiffNotice,
         closeDiff,
         acceptDiff,
         setStatus: (text) => {
