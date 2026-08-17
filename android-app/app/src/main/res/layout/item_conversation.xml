@@ -1,55 +1,108 @@
 <?xml version="1.0" encoding="utf-8"?>
 <com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_margin="6dp"
+    android:layout_marginHorizontal="8dp"
+    android:layout_marginVertical="4dp"
     android:clickable="true"
-    android:focusable="true"
-    android:minHeight="56dp">
+    android:focusable="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp">
-
-        <TextView
-            android:id="@+id/textTitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceTitleSmall"
-            tools:text="Conversation" />
-
-        <TextView
-            android:id="@+id/textMeta"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            tools:text="updated" />
+        android:paddingStart="14dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="6dp"
+        android:paddingBottom="10dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnRename"
-                style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="wrap_content"
+            <TextView
+                android:id="@+id/textTitle"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="@string/rename" />
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                tools:text="修复登录崩溃" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnArchive"
-                style="@style/Widget.Material3.Button.TextButton"
+            <ImageButton
+                android:id="@+id/btnMore"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/more_options"
+                android:src="@drawable/ic_more_vert" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary"
+            tools:text="帮我修复登录页在 Android 12 上崩溃的问题，堆栈指向…" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:background="@drawable/status_dot" />
+
+            <TextView
+                android:id="@+id/textStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="@string/archive" />
+                android:layout_marginStart="6dp"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="?android:attr/textColorSecondary"
+                tools:text="已完成" />
+
+            <TextView
+                android:id="@+id/textPendingBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/badge_pending"
+                android:paddingHorizontal="6dp"
+                android:paddingVertical="1dp"
+                android:text="@string/status_awaiting"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="@color/badge_pending_text"
+                android:visibility="gone"
+                tools:visibility="visible" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/textTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="?android:attr/textColorSecondary"
+                tools:text="3 小时前" />
         </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

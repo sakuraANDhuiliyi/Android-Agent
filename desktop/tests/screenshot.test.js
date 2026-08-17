@@ -468,6 +468,77 @@ async function run() {
   await page.waitForFunction(() => window.EditorApp && window.EditorApp.openDiff, null, { timeout: 20000 });
   await page.waitForTimeout(800);
 
+  // Header status and task controls must reflect the real state. This catches
+  // the regression where the global connection pill said "已连接" while the
+  // Agent panel kept its static "未连接" label, and verifies that active-job
+  // controls are discoverable without opening the overflow menu.
+  const initialHeader = await page.evaluate(() => ({
+    status: document.getElementById("aiStatusText").textContent.trim(),
+    controlsHidden: document.getElementById("aiTaskControls").hidden,
+  }));
+  assert.deepStrictEqual(initialHeader, { status: "未连接", controlsHidden: true });
+
+  const runningHeader = await page.evaluate(() => {
+    window.AiPanel.debug.setState({
+      connected: true,
+      selectedProjectId: "p-control",
+      conversationId: "c-control",
+      currentJobId: "j-control",
+      jobStatus: "running",
+      running: true,
+    });
+    const visible = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+    return {
+      status: document.getElementById("aiStatusText").textContent.trim(),
+      pause: visible("btnPauseJob"),
+      resume: visible("btnResumeJob"),
+      stop: visible("btnHeaderStop"),
+      composerStop: visible("btnStop"),
+    };
+  });
+  assert.deepStrictEqual(runningHeader, {
+    status: "正在运行",
+    pause: true,
+    resume: false,
+    stop: true,
+    composerStop: true,
+  });
+
+  const pausedHeader = await page.evaluate(() => {
+    window.AiPanel.debug.setState({
+      running: true,
+      jobStatus: "paused",
+      pauseRequested: false,
+    });
+    const visible = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+    return {
+      status: document.getElementById("aiStatusText").textContent.trim(),
+      pause: visible("btnPauseJob"),
+      resume: visible("btnResumeJob"),
+      stop: visible("btnHeaderStop"),
+    };
+  });
+  assert.deepStrictEqual(pausedHeader, {
+    status: "已暂停",
+    pause: false,
+    resume: true,
+    stop: true,
+  });
+
+  await page.evaluate(() => {
+    window.AiPanel.debug.setState({
+      connected: false,
+      selectedProjectId: null,
+      conversationId: null,
+      currentJobId: null,
+      jobStatus: null,
+      running: false,
+      pauseRequested: false,
+      cancelRequested: false,
+      controlBusy: null,
+    });
+  });
+
   async function setScene(name) {
     await page.evaluate((sceneName) => {
       const debug = window.AiPanel.debug;
@@ -660,7 +731,7 @@ async function run() {
 
   assert.ok(checks.singleApprovalCard, "exactly one approval card in timeline");
   assert.ok(checks.dockVisible, "approval dock visible above composer");
-  assert.ok(checks.dockLabel.includes("1 个操作等待批准"), "dock shows pending count");
+  assert.ok(checks.dockLabel.includes("1 项操作等待确认"), "dock shows pending count");
   assert.ok(checks.showsFullCommand, "approval shows the full command");
   assert.ok(checks.showsCwd, "approval shows cwd");
   assert.ok(checks.showsRisk, "approval shows textual risk label");

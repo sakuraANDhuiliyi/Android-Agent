@@ -25,6 +25,11 @@
     btnRefreshPreview: document.getElementById("btnRefreshPreview"),
     btnClosePreview: document.getElementById("btnClosePreview"),
     emptyState: document.getElementById("emptyState"),
+    welcomeRecent: document.getElementById("welcomeRecent"),
+    btnWelcomeOpen: document.getElementById("btnWelcomeOpen"),
+    btnWelcomeNewProject: document.getElementById("btnWelcomeNewProject"),
+    btnWelcomeConnect: document.getElementById("btnWelcomeConnect"),
+    focusSwitch: document.getElementById("focusSwitch"),
     sidebar: document.getElementById("sidebar"),
     aiPane: document.getElementById("aiPane"),
     sashSidebar: document.getElementById("sashSidebar"),
@@ -644,8 +649,73 @@
     els.explorerRootName.textContent = basenameSync(rootDir);
     await refreshTree({ silent: true });
     updateWindowTitle();
+    pushRecentWorkspace(rootDir);
     window.AiPanel?.onWorkspaceChanged(rootDir);
     toast(`已打开 ${basenameSync(rootDir)}`);
+  }
+
+  // —— Recent workspaces (welcome page "继续工作") ——
+
+  const RECENT_KEY = "androidAgentDesktop.recentWorkspaces";
+
+  function loadRecentWorkspaces() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(arr) ? arr.filter((e) => e && typeof e.path === "string") : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function pushRecentWorkspace(dir) {
+    let list = loadRecentWorkspaces().filter((e) => e.path !== dir);
+    list.unshift({ path: dir, at: Date.now() });
+    list = list.slice(0, 6);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    } catch (_) {
+      /* storage unavailable */
+    }
+    renderWelcomeRecent();
+  }
+
+  function formatRecentTime(at) {
+    if (!at) return "";
+    const diff = Date.now() - at;
+    if (diff < 60000) return "刚刚";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+    const d = new Date(at);
+    if (d.toDateString() === new Date().toDateString()) return "今天";
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+
+  function renderWelcomeRecent() {
+    const host = els.welcomeRecent;
+    if (!host) return;
+    host.textContent = "";
+    const list = loadRecentWorkspaces();
+    if (!list.length) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "暂无最近项目";
+      host.appendChild(p);
+      return;
+    }
+    for (const entry of list) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "welcome-recent-item";
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = basenameSync(entry.path);
+      const desc = document.createElement("span");
+      desc.className = "desc";
+      desc.textContent = `${entry.path} · ${formatRecentTime(entry.at)}`;
+      desc.title = entry.path;
+      btn.append(name, desc);
+      btn.addEventListener("click", () => openFolder(entry.path));
+      host.appendChild(btn);
+    }
   }
 
   async function refreshTree({ silent = false } = {}) {
@@ -915,6 +985,50 @@
     api.onMenu("toggle-sidebar", () => toggleSidebar());
     api.onMenu("toggle-ai", () => toggleAi());
 
+    // Welcome page actions + recent workspaces
+    els.btnWelcomeOpen?.addEventListener("click", () => openFolderDialog());
+    els.btnWelcomeNewProject?.addEventListener("click", () => window.AiPanel?.openCreateProject?.());
+    els.btnWelcomeConnect?.addEventListener("click", () => window.AiPanel?.openSettings?.());
+    renderWelcomeRecent();
+
+    // Focus mode: 代码 / Agent / 审阅 (narrow-window single-pane switch)
+    if (els.focusSwitch) {
+      let focusMode = "code";
+      const applyFocusMode = (mode, { quiet = false } = {}) => {
+        focusMode = mode;
+        els.focusSwitch.querySelectorAll(".focus-switch-btn").forEach((btn) => {
+          const active = btn.dataset.mode === mode;
+          btn.classList.toggle("active", active);
+          btn.setAttribute("aria-selected", String(active));
+        });
+        document.body.dataset.focusMode = mode;
+        const narrow = window.matchMedia("(max-width: 900px)").matches;
+        if (mode === "agent") {
+          els.aiPane.classList.remove("collapsed");
+          if (narrow) els.sidebar.classList.add("collapsed");
+          if (!quiet) window.AiPanel?.focusComposer?.();
+        } else if (mode === "code") {
+          if (narrow) els.aiPane.classList.add("collapsed");
+          else els.aiPane.classList.remove("collapsed");
+          els.sidebar.classList.remove("collapsed");
+        } else {
+          // 审阅: maximal editor/diff space
+          els.aiPane.classList.add("collapsed");
+          if (!narrow) els.sidebar.classList.remove("collapsed");
+        }
+      };
+      els.focusSwitch.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".focus-switch-btn");
+        if (btn) applyFocusMode(btn.dataset.mode);
+      });
+      let resizeTimer = null;
+      window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => applyFocusMode(focusMode, { quiet: true }), 150);
+      });
+      applyFocusMode("code", { quiet: true });
+    }
+
     window.addEventListener("keydown", (ev) => {
       const mod = ev.metaKey || ev.ctrlKey;
       if (mod && ev.key.toLowerCase() === "s") {
@@ -956,6 +1070,21 @@
     amdRequire.config({
       paths: { vs: "../node_modules/monaco-editor/min/vs" },
     });
+    // file:// pages cannot create cross-file workers directly: the worker URL
+    // would resolve against the filesystem root. Proxy through a blob URL so
+    // Monaco's worker loads its chunks from the real vs/ directory.
+    window.MonacoEnvironment = {
+      getWorkerUrl() {
+        const url = amdRequire.toUrl("vs/base/worker/workerMain.js");
+        const base = url.replace(/workerMain\.js.*$/, "");
+        return URL.createObjectURL(
+          new Blob(
+            [`self.MonacoEnvironment={baseUrl:'${base}'};importScripts('${url}');`],
+            { type: "text/javascript" },
+          ),
+        );
+      },
+    };
 
     amdRequire(["vs/editor/editor.main"], async () => {
       monaco = window.monaco;
@@ -977,6 +1106,16 @@
       });
 
       editor.onDidChangeCursorPosition(() => updateStatusFromEditor());
+
+      // monaco.editor.create() without a `model` option auto-creates an
+      // anonymous plaintext model (inmemory://model/1). Once the first tab
+      // calls setModel(), that default is orphaned but stays alive in
+      // monaco.editor.getModels() forever. Detach and dispose it now.
+      const defaultModel = editor.getModel();
+      if (defaultModel) {
+        editor.setModel(null);
+        defaultModel.dispose();
+      }
 
       bindUi();
       updateEmpty();

@@ -30,6 +30,7 @@ from agent.jobs import (
     list_checkpoints,
     list_conversation_events,
     list_conversations,
+    conversation_list_previews,
     list_job_approvals,
     list_job_messages,
     list_jobs,
@@ -639,6 +640,18 @@ def create_app(
             items = list_conversations(user_id, project_id, include_archived=archived)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        try:
+            previews = conversation_list_previews(
+                user_id, project_id, [item["id"] for item in items]
+            )
+            for item in items:
+                preview = previews.get(item["id"], {})
+                item["summary"] = preview.get("summary", "")
+                item["last_turn_status"] = preview.get("last_turn_status", "")
+        except Exception:  # pragma: no cover - 摘要失败不阻塞列表
+            for item in items:
+                item.setdefault("summary", "")
+                item.setdefault("last_turn_status", "")
         return {"user_id": user_id, "project_id": project_id, "conversations": items}
 
     @app.post("/api/projects/{project_id}/conversations", status_code=201)

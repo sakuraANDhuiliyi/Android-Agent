@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rowStatus"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="36dp"
+    android:background="?attr/selectableItemBackground"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/space_small"
+    android:paddingEnd="@dimen/space_tiny">
+
+    <ImageView
+        android:id="@+id/iconStatusExpand"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:contentDescription="@string/expand"
+        android:padding="5dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_expand_arrow"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/textStatusLine"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_small"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="3"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        tools:text="已连接模型服务" />
+
+    <TextView
+        android:id="@+id/textStatusCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_small"
+        android:textAppearance="?attr/textAppearanceLabelSmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone"
+        tools:text="共 3 条"
+        tools:visibility="visible" />
+</LinearLayout>

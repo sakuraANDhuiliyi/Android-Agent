@@ -212,6 +212,89 @@ class OpenAIContextTests(unittest.TestCase):
 
         self.assertEqual(json.loads(arguments), {"path": "来自 OpenAI.kt"})
 
+    def test_interleaved_tool_result_immediately_follows_assistant(self) -> None:
+        events = [
+            user_event(1, "第一问"),
+            assistant_event(2, "我查一下", message_id="message-1"),
+            tool_call_event(
+                3,
+                message_id="message-1",
+                tool_call_id="call-1",
+                block_index=1,
+            ),
+            user_event(4, "怎么还没好"),
+            tool_result_event(5, "call-1", "迟到结果"),
+            assistant_event(6, "最终回答"),
+        ]
+
+        messages = build_openai_messages(events)
+
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["user", "assistant", "tool", "user", "assistant"],
+        )
+        self.assertEqual(messages[2]["tool_call_id"], "call-1")
+        self.assertEqual(messages[2]["content"], "迟到结果")
+        self.assertEqual(messages[4]["content"], "最终回答")
+        self.assert_no_dangling_tool_calls(messages)
+
+    def test_interleaved_results_follow_call_order_without_duplicates(self) -> None:
+        events = [
+            assistant_event(1, "", message_id="message-1"),
+            tool_call_event(
+                2,
+                message_id="message-1",
+                tool_call_id="call-a",
+                block_index=1,
+            ),
+            tool_call_event(
+                3,
+                message_id="message-1",
+                tool_call_id="call-b",
+                block_index=2,
+                name="glob_files",
+            ),
+            user_event(4, "催一下"),
+            tool_result_event(5, "call-b", "结果B"),
+            tool_result_event(6, "call-a", "结果A"),
+            tool_result_event(7, "call-a", "重复结果A"),
+        ]
+
+        messages = build_openai_messages(events)
+
+        self.assertEqual(
+            [
+                (message["tool_call_id"], message["content"])
+                for message in messages
+                if message["role"] == "tool"
+            ],
+            [("call-a", "结果A"), ("call-b", "结果B")],
+        )
+        self.assert_no_dangling_tool_calls(messages)
+
+    def assert_no_dangling_tool_calls(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        for index, message in enumerate(messages):
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                continue
+            followed: set[str] = set()
+            cursor = index + 1
+            while (
+                cursor < len(messages)
+                and messages[cursor].get("role") == "tool"
+            ):
+                followed.add(messages[cursor].get("tool_call_id"))
+                cursor += 1
+            expected = {call["id"] for call in tool_calls}
+            self.assertEqual(
+                expected - followed,
+                set(),
+                f"assistant message at {index} has dangling tool_calls",
+            )
+
 
 class AnthropicContextTests(unittest.TestCase):
     def test_plain_multiturn_messages(self) -> None:
@@ -285,8 +368,34 @@ class AnthropicContextTests(unittest.TestCase):
         )
         self.assertEqual(
             [block["tool_use_id"] for block in tool_results],
-            ["call-b", "call-a"],
+            ["call-a", "call-b"],
         )
+
+    def test_interleaved_tool_result_immediately_follows_assistant(self) -> None:
+        events = [
+            user_event(1, "第一问"),
+            assistant_event(2, "我查一下", message_id="message-1"),
+            tool_call_event(
+                3,
+                message_id="message-1",
+                tool_call_id="call-1",
+                block_index=1,
+            ),
+            user_event(4, "怎么还没好"),
+            tool_result_event(5, "call-1", "迟到结果"),
+            assistant_event(6, "最终回答"),
+        ]
+
+        messages = build_anthropic_messages(events)
+
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["user", "assistant", "user", "assistant"],
+        )
+        self.assertEqual(messages[2]["content"][0]["type"], "tool_result")
+        self.assertEqual(messages[2]["content"][0]["tool_use_id"], "call-1")
+        self.assertEqual(messages[2]["content"][1], {"type": "text", "text": "怎么还没好"})
+        self.assertEqual(messages[3]["content"][0], {"type": "text", "text": "最终回答"})
 
     def test_failed_result_sets_is_error(self) -> None:
         events = [

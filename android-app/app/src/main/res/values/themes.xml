@@ -1,5 +1,33 @@
 <resources>
-    <style name="Base.Theme.AndroidAgentClient" parent="Theme.Material3.DayNight.NoActionBar" />
+    <style name="Base.Theme.AndroidAgentClient" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/signal_primary</item>
+        <item name="colorOnPrimary">@color/signal_on_primary</item>
+        <item name="colorPrimaryContainer">@color/signal_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/signal_on_primary_container</item>
+        <item name="colorSecondary">@color/signal_secondary</item>
+        <item name="colorOnSecondary">@color/signal_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/signal_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/signal_on_secondary_container</item>
+        <item name="colorTertiary">@color/signal_tertiary</item>
+        <item name="colorOnTertiary">@color/signal_on_tertiary</item>
+    </style>
 
     <style name="Theme.AndroidAgentClient" parent="Base.Theme.AndroidAgentClient" />
+
+    <style name="JobDetailsLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">@dimen/space_medium</item>
+        <item name="android:textAppearance">?attr/textAppearanceLabelMedium</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <style name="JobDetailsValue">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">@dimen/space_tiny</item>
+        <item name="android:textAppearance">?attr/textAppearanceBodyMedium</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+        <item name="android:textIsSelectable">true</item>
+    </style>
 </resources>

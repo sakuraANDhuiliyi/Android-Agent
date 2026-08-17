@@ -512,4 +512,51 @@ test("private reasoning is dropped", () => {
   assert.strictEqual(assistants[0].content.text, "visible answer");
 });
 
+// 23. M4: history-first reconciliation. The conversation page (canonical
+// assistant_message) is loaded BEFORE the job watcher replays its task events
+// from cursor 0. Replayed text_delta/text events must adopt the settled item
+// instead of opening a second bubble that duplicates the turn's text.
+test("history-first replay never duplicates turn text", () => {
+  const s = Timeline.createStore();
+  s.ingestConversationEvents([
+    convEvent(1, "user_message", { content: "帮我分析" }),
+    convEvent(
+      2,
+      "assistant_message",
+      { message_id: "m1", is_final: false, text_blocks: [{ type: "text", text: "先看一下文件。" }] },
+    ),
+    convEvent(3, "tool_call", { tool_call_id: "c1", name: "read_file", input: {} }),
+    convEvent(4, "tool_result", { tool_call_id: "c1", ok: true }),
+    convEvent(
+      5,
+      "assistant_message",
+      { message_id: "m2", is_final: true, text_blocks: [{ type: "text", text: "分析完成，共两个问题。" }] },
+    ),
+  ]);
+  // Watcher replay of the same job from cursor 0 (restart / switch back).
+  s.ingestTaskEvents(
+    [
+      { id: 1, type: "text_delta", delta: "先看", message_id: "m1" },
+      { id: 2, type: "text_delta", delta: "一下文件。", message_id: "m1" },
+      { id: 3, type: "text", content: "先看一下文件。", message_id: "m1", streamed: true },
+      { id: 4, type: "assistant_message", message_id: "m1", text_blocks: [{ type: "text", text: "先看一下文件。" }] },
+      { id: 5, type: "text_delta", delta: "分析完成，", message_id: "m2" },
+      { id: 6, type: "text_delta", delta: "共两个问题。", message_id: "m2" },
+      { id: 7, type: "assistant_message", message_id: "m2", is_final: true, text_blocks: [{ type: "text", text: "分析完成，共两个问题。" }] },
+    ],
+    { jobId: "j1", turnId: "t1" },
+  );
+  const assistants = s.items().filter((i) => i.type === "assistant_message");
+  assert.strictEqual(assistants.length, 2, "no extra bubbles from replay");
+  assert.strictEqual(assistants[0].content.text, "先看一下文件。", "m1 text not doubled");
+  assert.strictEqual(assistants[1].content.text, "分析完成，共两个问题。", "m2 text not doubled");
+  const full = JSON.stringify(s.items());
+  assert.strictEqual(full.indexOf("先看一下文件。"), full.lastIndexOf("先看一下文件。"), "m1 text appears exactly once");
+  assert.strictEqual(
+    full.indexOf("分析完成，共两个问题。"),
+    full.lastIndexOf("分析完成，共两个问题。"),
+    "m2 text appears exactly once",
+  );
+});
+
 console.log(`timeline.test: OK (${passed} tests)`);

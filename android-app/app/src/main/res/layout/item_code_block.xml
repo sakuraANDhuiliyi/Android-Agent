@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="@dimen/space_small"
+    android:layout_marginBottom="@dimen/space_small"
+    android:background="@drawable/bg_code_block"
+    android:orientation="vertical"
+    android:padding="@dimen/space_small">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/textCodeLang"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textAppearance="?attr/textAppearanceLabelSmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            tools:text="kotlin" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCopyCode"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:icon="@drawable/ic_copy"
+            android:minWidth="48dp"
+            android:text="@string/copy" />
+    </LinearLayout>
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none">
+
+        <TextView
+            android:id="@+id/textCodeContent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:paddingStart="@dimen/space_tiny"
+            android:paddingEnd="@dimen/space_tiny"
+            android:textColor="?attr/colorOnSurface"
+            android:textIsSelectable="true"
+            android:textSize="@dimen/code_text_size"
+            tools:text="fun main() {\n    println()\n}" />
+    </HorizontalScrollView>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnToggleCode"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:text="@string/code_block_expand"
+        android:visibility="gone"
+        tools:visibility="visible" />
+</LinearLayout>

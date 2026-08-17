@@ -847,6 +847,124 @@
     return root;
   }
 
+  // ————————————————————————————————————————————————
+  // Tool clusters: consecutive same-category tool calls merge into one row
+  // ("读取 5 个文件" / "搜索 3 次") with per-tool details behind expansion.
+  // ————————————————————————————————————————————————
+
+  const CLUSTER_LABEL = {
+    read: (n) => `读取 ${n} 个文件`,
+    search: (n) => `搜索 ${n} 次`,
+    write: (n) => `修改 ${n} 个文件`,
+    command: (n) => `执行 ${n} 条命令`,
+  };
+
+  function toolGroupOf(item) {
+    if (!item || item.type !== "tool") return null;
+    const name = item.content && item.content.name;
+    if (READ_TOOLS.has(name)) return "read";
+    if (SEARCH_TOOLS.has(name)) return "search";
+    if (WRITE_TOOLS.has(name)) return "write";
+    if (COMMAND_TOOLS.has(name)) return "command";
+    return null;
+  }
+
+  /**
+   * Merge runs of >=2 consecutive same-category tools into synthetic
+   * `tool_cluster` items shaped like normal items so reconcileSequence can
+   * key/patch them like everything else. Non-tool items break runs, so
+   * approvals/changes/narration never get buried inside a cluster.
+   */
+  function groupedSequence(items) {
+    const out = [];
+    let run = null; // { group, items }
+    const flush = () => {
+      if (!run) return;
+      if (run.items.length >= 2) {
+        const first = run.items[0];
+        let failed = 0;
+        let active = 0;
+        let version = 7;
+        for (const m of run.items) {
+          version += itemVersion(m) * 31 + 1;
+          if (m.status === "failed") failed += 1;
+          if (m.status === "running" || m.status === "waiting_approval") active += 1;
+        }
+        out.push({
+          type: "tool_cluster",
+          key: `cluster:${run.group}:${first.key}`,
+          timestamp: first.timestamp,
+          content: { group: run.group, items: run.items.slice() },
+          metadata: { version: version + failed * 1009 + active * 613 },
+        });
+      } else {
+        out.push(run.items[0]);
+      }
+      run = null;
+    };
+    for (const item of Array.isArray(items) ? items : []) {
+      const group = toolGroupOf(item);
+      if (group && (!run || run.group === group)) {
+        if (!run) run = { group, items: [] };
+        run.items.push(item);
+      } else {
+        flush();
+        if (group) run = { group, items: [item] };
+        else out.push(item);
+      }
+    }
+    flush();
+    return out;
+  }
+
+  function clusterDurationMs(items) {
+    let total = 0;
+    for (const m of items) {
+      const d = Number(m && m.metadata ? m.metadata.durationMs : NaN);
+      if (Number.isFinite(d) && d > 0) total += d;
+    }
+    return total || null;
+  }
+
+  function renderToolCluster(item, callbacks, vs, turn) {
+    const group = item.content.group;
+    const items = item.content.items || [];
+    const failed = items.filter((i) => i.status === "failed").length;
+    const active = items.some((i) => i.status === "running" || i.status === "waiting_approval");
+    const root = el("div", `tl-item tl-cluster is-${failed ? "failed" : active ? "running" : "done"}`);
+    root.dataset.key = item.key;
+    const head = el("button", "tl-cluster-head");
+    head.type = "button";
+    head.appendChild(el("span", `tl-cluster-dot is-${group}`));
+    head.appendChild(
+      el("span", "tl-cluster-name", (CLUSTER_LABEL[group] || ((n) => `${n} 个操作`))(items.length)),
+    );
+    if (failed) head.appendChild(el("span", "tl-cluster-state is-danger", `${failed} 失败`));
+    else if (active) head.appendChild(el("span", "tl-cluster-state", "进行中"));
+    const dur = formatDuration(clusterDurationMs(items));
+    if (dur) head.appendChild(el("span", "tl-cluster-duration", dur));
+    const chevron = el("span", "tl-chevron");
+    chevron.setAttribute("aria-hidden", "true");
+    head.appendChild(chevron);
+
+    // Failed runs auto-expand so the error is one glance away; user wins.
+    const expanded = vs ? vs.isItemExpanded(item.key, failed > 0) : failed > 0;
+    head.setAttribute("aria-expanded", String(expanded));
+    const body = el("div", "tl-cluster-body");
+    body.hidden = !expanded;
+    for (const member of items) body.appendChild(renderTool(member, callbacks, vs, turn));
+
+    head.addEventListener("click", () => {
+      const next = body.hidden;
+      body.hidden = !next;
+      head.setAttribute("aria-expanded", String(next));
+      if (vs) vs.setItemExpanded(item.key, next);
+    });
+    root.appendChild(head);
+    root.appendChild(body);
+    return root;
+  }
+
   function approvalRiskBadge(content) {
     const risk = content.risk || "process";
     return el("span", `tl-risk is-${risk}`, RISK_LABEL[risk] || risk);
@@ -1099,6 +1217,8 @@
         return renderPlan(item, callbacks, vs);
       case "tool":
         return renderTool(item, callbacks, vs);
+      case "tool_cluster":
+        return renderToolCluster(item, callbacks, vs, turn);
       case "approval":
         return renderApproval(item, callbacks);
       case "changes":
@@ -1147,11 +1267,12 @@
     return item.type === "assistant_message" && item.status === "streaming";
   }
 
+  // Every assistant text stays visible in the answer area: intermediate
+  // messages (is_final:false, e.g. narration before tool calls) used to be
+  // demoted into the collapsible work group the moment their stream ended,
+  // making text visibly vanish mid-generation. Keep them pinned instead.
   function isFinalAssistant(item) {
-    return (
-      item.type === "assistant_message" &&
-      (item.metadata.isFinal === true || isStreamingAssistant(item))
-    );
+    return item.type === "assistant_message";
   }
 
   function isNoiseItem(item) {
@@ -1366,7 +1487,6 @@
 
   function createViewState(conversationId) {
     const turnOverride = new Map(); // turnKey -> boolean (explicit user choice)
-    const sessionKept = new Map(); // turnKey -> boolean (kept after finishing this session)
     const itemExpanded = new Map(); // itemKey -> boolean
     const convId = conversationId || "_";
 
@@ -1415,21 +1535,15 @@
     return {
       conversationId: convId,
 
-      /** Effective expansion of a turn: user override > session keep > default. */
+      /** Effective expansion of a turn: user override > default policy. */
       isTurnExpanded(turn, isLast) {
         if (turnOverride.has(turn.key)) return turnOverride.get(turn.key);
-        if (sessionKept.has(turn.key)) return sessionKept.get(turn.key);
         return defaultTurnExpanded(turn, isLast);
       },
 
       setTurnExpanded(turnKey, value) {
         turnOverride.set(turnKey, Boolean(value));
         persistSoon();
-      },
-
-      /** A turn finished during THIS session keeps whatever the user saw. */
-      keepSessionState(turnKey, currentValue) {
-        if (!turnOverride.has(turnKey)) sessionKept.set(turnKey, Boolean(currentValue));
       },
 
       isItemExpanded(itemKey, fallback) {
@@ -1488,7 +1602,6 @@
     let vs = createViewState(null);
     const turnNodeByKey = new Map(); // turnKey -> section element
     const itemNodeByKey = new Map(); // itemKey -> { node, version }
-    let prevActiveKeys = new Set();
     let rafPending = false;
     let flashTimer = null;
     // Optional non-turn node (e.g. the "load earlier" button) that always
@@ -1617,7 +1730,7 @@
       }
     }
 
-    function patchTurnWork(node, turn, expanded) {
+    function patchTurnWork(node, turn, expanded, seq) {
       const work = node.querySelector(":scope > .tl-work");
       if (!work) return;
       const hasWork = turn.workItems.length > 0;
@@ -1648,7 +1761,7 @@
       head.setAttribute("aria-expanded", String(expanded));
       body.hidden = !expanded;
       if (expanded) {
-        reconcileSequence(body, turn.workItems, turn);
+        reconcileSequence(body, seq || turn.workItems, turn);
       } else if (body.childNodes.length) {
         // Collapsed: defer DOM — drop children until expanded again.
         body.textContent = "";
@@ -1673,30 +1786,12 @@
       if (!container) return;
       const turns = buildTurns(latestItems);
 
-      // Turns that finished during this session keep the expansion the user
-      // currently sees (user overrides still win).
-      const nowActive = new Set();
-      for (const turn of turns) {
-        if (ACTIVE_TURN_STATUSES.has(turn.status)) nowActive.add(turn.key);
-      }
-      for (const key of prevActiveKeys) {
-        if (!nowActive.has(key)) {
-          const turn = turns.find((t) => t.key === key);
-          if (turn) {
-            const node = turnNodeByKey.get(key);
-            const body = node ? node.querySelector(".tl-work-body") : null;
-            const current = body ? !body.hidden : vs.isTurnExpanded(turn, false);
-            vs.keepSessionState(key, current);
-          }
-        }
-      }
-      prevActiveKeys = nowActive;
-
       const liveItemKeys = new Set();
       let prevNode = null;
       turns.forEach((turn, idx) => {
+        const seq = groupedSequence(turn.workItems);
+        for (const entry of seq) liveItemKeys.add(entry.key);
         if (turn.userMessage) liveItemKeys.add(turn.userMessage.key);
-        for (const i of turn.workItems) liveItemKeys.add(i.key);
         for (const i of turn.finalMessages) liveItemKeys.add(i.key);
 
         let node = turnNodeByKey.get(turn.key);
@@ -1708,7 +1803,7 @@
         const isLast = idx === turns.length - 1;
         const expanded = vs.isTurnExpanded(turn, isLast);
         patchTurnUser(node, turn);
-        patchTurnWork(node, turn, expanded);
+        patchTurnWork(node, turn, expanded, seq);
         patchTurnFinal(node, turn);
 
         const expectedPrev = prevNode;
@@ -1774,7 +1869,6 @@
 
       reset() {
         latestItems = [];
-        prevActiveKeys = new Set();
         turnNodeByKey.clear();
         itemNodeByKey.clear();
         if (container) container.textContent = "";
@@ -1857,14 +1951,18 @@
 
   // ————————————————————————————————————————————————
   // Approval dock (sticky pending-approval reminder at the panel bottom).
+  // Single pending: one button jumps to the card. Multiple pending: the
+  // button opens a queue popover instead of stacking above the composer.
   // ————————————————————————————————————————————————
 
   function renderApprovalDock(host, pending, cbs = {}) {
     if (!host) return;
+    const wasOpen = host.dataset.queueOpen === "1";
     host.textContent = "";
     const list = Array.isArray(pending) ? pending : [];
     if (!list.length) {
       host.hidden = true;
+      delete host.dataset.queueOpen;
       return;
     }
     host.hidden = false;
@@ -1872,18 +1970,46 @@
     const btn = el("button", "tl-dock-btn");
     btn.type = "button";
     btn.appendChild(el("span", "tl-dock-dot"));
-    btn.appendChild(
-      el(
-        "span",
-        "tl-dock-label",
-        list.length > 1 ? `${list.length} 个操作等待批准` : "1 个操作等待批准",
-      ),
-    );
-    btn.appendChild(el("span", "tl-dock-cta", "查看"));
-    btn.addEventListener("click", () => {
-      if (typeof cbs.onJump === "function") cbs.onJump(list[0].approvalId);
-    });
+    btn.appendChild(el("span", "tl-dock-label", `${list.length} 项操作等待确认`));
+    btn.appendChild(el("span", "tl-dock-cta", list.length > 1 ? "查看队列" : "查看"));
+
+    let queue = null;
+    if (list.length > 1) {
+      btn.setAttribute("aria-haspopup", "true");
+      btn.setAttribute("aria-expanded", String(wasOpen));
+      queue = el("div", "tl-dock-queue");
+      queue.setAttribute("role", "menu");
+      queue.setAttribute("aria-label", "待审批队列");
+      queue.hidden = !wasOpen;
+      for (const item of list) {
+        const row = el("button", "tl-dock-queue-item");
+        row.type = "button";
+        row.setAttribute("role", "menuitem");
+        row.appendChild(approvalRiskBadge(item.content));
+        const kind = (item.metadata && item.metadata.kind) || (item.content && item.content.requested_capability) || "tool";
+        row.appendChild(el("span", "tl-dock-queue-title", APPROVAL_TITLE[kind] || "需要审批的操作"));
+        if (item.timestamp) row.appendChild(el("span", "tl-dock-queue-time", formatTime(item.timestamp)));
+        row.addEventListener("click", () => {
+          host.dataset.queueOpen = "0";
+          queue.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+          if (typeof cbs.onJump === "function") cbs.onJump(item.approvalId);
+        });
+        queue.appendChild(row);
+      }
+      btn.addEventListener("click", () => {
+        const next = queue.hidden;
+        queue.hidden = !next;
+        btn.setAttribute("aria-expanded", String(next));
+        host.dataset.queueOpen = next ? "1" : "0";
+      });
+    } else {
+      btn.addEventListener("click", () => {
+        if (typeof cbs.onJump === "function") cbs.onJump(list[0].approvalId);
+      });
+    }
     host.appendChild(btn);
+    if (queue) host.appendChild(queue);
   }
 
   // ————————————————————————————————————————————————
@@ -1994,7 +2120,7 @@
     buildTurns,
     splitUnifiedDiff,
     reverseApplyPatch,
-    _internal: { parseInline, parseHunks, computeTurnSummary, defaultTurnExpanded, formatWorked },
+    _internal: { parseInline, parseHunks, computeTurnSummary, defaultTurnExpanded, formatWorked, groupedSequence },
   };
   if (typeof window !== "undefined") window.AgentTimeline = api;
   if (typeof globalThis !== "undefined") globalThis.AgentTimeline = api;

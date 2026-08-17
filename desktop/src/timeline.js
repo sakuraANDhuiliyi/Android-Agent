@@ -316,15 +316,24 @@
       const key = `stream:${identity}`;
       let item = byKey.get(key);
       if (!item && messageId) {
-        // Compatibility: adopt the turn's open UNIDENTIFIED legacy stream
-        // (created by old events without message_id) instead of opening a
-        // second stream for the same model output.
-        const legacy = byKey.get(`stream:turn:${turnId || "_"}`);
-        if (legacy && legacy.status === "streaming" && !legacy.messageId) {
-          item = legacy;
-          rekey(item, key);
-          item.messageId = messageId;
-          msgById.set(messageId, item);
+        // Reconciliation ordering: the canonical assistant_message may already
+        // exist because conversation history was loaded before the watcher
+        // replayed this job's events. Adopt it instead of opening a second
+        // bubble that would duplicate the turn's text.
+        const canonical = msgById.get(messageId);
+        if (canonical) {
+          item = canonical;
+        } else {
+          // Compatibility: adopt the turn's open UNIDENTIFIED legacy stream
+          // (created by old events without message_id) instead of opening a
+          // second stream for the same model output.
+          const legacy = byKey.get(`stream:turn:${turnId || "_"}`);
+          if (legacy && legacy.status === "streaming" && !legacy.messageId) {
+            item = legacy;
+            rekey(item, key);
+            item.messageId = messageId;
+            msgById.set(messageId, item);
+          }
         }
       }
       if (!item) {
@@ -492,7 +501,9 @@
             ? p.content
             : textOfAssistantMessage(p);
       const s = streamItemFor(messageId, ctx.turnId);
-      if (fragment) s.content.text += fragment;
+      // A settled (canonical, non-streaming) item already carries the full
+      // text of this output; replayed fragments must not append to it.
+      if (fragment && (s.metadata.stream || !s.content.text)) s.content.text += fragment;
       if (ctx.timestamp && !s.timestamp) s.timestamp = ctx.timestamp;
       if (ctx.jobId && !s.jobId) s.jobId = ctx.jobId;
       s.metadata.version = (s.metadata.version || 0) + 1;

@@ -79,6 +79,7 @@ def build_openai_messages(
     """Build OpenAI Chat Completions messages from canonical events."""
     selected = select_context_events(events)
     paired_tool_calls = _paired_tool_call_ids(selected)
+    paired_results = _paired_tool_results(selected, paired_tool_calls)
     assistant_groups = _assistant_groups(selected)
     messages: list[dict[str, Any]] = []
     emitted_groups: set[str] = set()
@@ -116,6 +117,12 @@ def build_openai_messages(
             if message is not None:
                 messages.append(message)
                 available_tool_calls.update(tool_call_ids)
+                _append_openai_tool_results(
+                    messages,
+                    tool_call_ids,
+                    paired_results,
+                    emitted_tool_results,
+                )
             emitted_groups.add(group_key)
         elif event_type == EventType.TOOL_RESULT:
             tool_call_id = _tool_result_id(payload)
@@ -146,6 +153,7 @@ def build_anthropic_messages(
     """Build Anthropic Messages API messages from canonical events."""
     selected = select_context_events(events)
     paired_tool_calls = _paired_tool_call_ids(selected)
+    paired_results = _paired_tool_results(selected, paired_tool_calls)
     assistant_groups = _assistant_groups(selected)
     messages: list[dict[str, Any]] = []
     emitted_groups: set[str] = set()
@@ -183,6 +191,12 @@ def build_anthropic_messages(
             if message is not None:
                 messages.append(message)
                 available_tool_calls.update(tool_call_ids)
+                _append_anthropic_tool_results(
+                    messages,
+                    tool_call_ids,
+                    paired_results,
+                    emitted_tool_results,
+                )
             emitted_groups.add(group_key)
         elif event_type == EventType.TOOL_RESULT:
             tool_call_id = _tool_result_id(payload)
@@ -429,6 +443,65 @@ def _paired_tool_call_ids(events: list[dict[str, Any]]) -> set[str]:
             ):
                 paired.add(tool_call_id)
     return paired
+
+
+def _paired_tool_results(
+    events: list[dict[str, Any]],
+    paired_tool_calls: set[str],
+) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if event.get("event_type") != EventType.TOOL_RESULT:
+            continue
+        payload = _payload(event)
+        tool_call_id = _tool_result_id(payload)
+        if tool_call_id in paired_tool_calls and tool_call_id not in results:
+            results[tool_call_id] = payload
+    return results
+
+
+def _append_openai_tool_results(
+    messages: list[dict[str, Any]],
+    tool_call_ids: list[str],
+    paired_results: dict[str, dict[str, Any]],
+    emitted_tool_results: set[str],
+) -> None:
+    for tool_call_id in tool_call_ids:
+        payload = paired_results.get(tool_call_id)
+        if payload is None or tool_call_id in emitted_tool_results:
+            continue
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": _tool_result_content(payload),
+            }
+        )
+        emitted_tool_results.add(tool_call_id)
+
+
+def _append_anthropic_tool_results(
+    messages: list[dict[str, Any]],
+    tool_call_ids: list[str],
+    paired_results: dict[str, dict[str, Any]],
+    emitted_tool_results: set[str],
+) -> None:
+    blocks: list[dict[str, Any]] = []
+    for tool_call_id in tool_call_ids:
+        payload = paired_results.get(tool_call_id)
+        if payload is None or tool_call_id in emitted_tool_results:
+            continue
+        blocks.append(
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_call_id,
+                "content": _tool_result_content(payload),
+                "is_error": payload.get("ok") is False,
+            }
+        )
+        emitted_tool_results.add(tool_call_id)
+    if blocks:
+        messages.append({"role": "user", "content": blocks})
 
 
 def _payload(event: dict[str, Any]) -> dict[str, Any]:

@@ -30,6 +30,26 @@ class UserStore:
                 )
                 """
             )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+                """
+            )
+            # Existing installations stored one token directly on the user
+            # row. Mirror it into the token table so a desktop and an Android
+            # client can receive separate credentials without invalidating the
+            # token already in use on the other device.
+            db.execute(
+                """
+                INSERT OR IGNORE INTO user_tokens (token_hash, user_id, created_at)
+                SELECT token_hash, user_id, created_at FROM users
+                """
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=10)
@@ -49,14 +69,36 @@ class UserStore:
                 "INSERT INTO users (user_id, token_hash, created_at) VALUES (?, ?, ?)",
                 (user_id, self._token_hash(token), created_at),
             )
+            db.execute(
+                "INSERT INTO user_tokens (token_hash, user_id, created_at) VALUES (?, ?, ?)",
+                (self._token_hash(token), user_id, created_at),
+            )
         return user_id, token
+
+    def issue_token(self, user_id: str) -> str:
+        """Issue an additional credential without revoking existing clients."""
+        normalized_user_id = validate_id(user_id, kind="user_id")
+        token = secrets.token_urlsafe(32)
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            exists = db.execute(
+                "SELECT 1 FROM users WHERE user_id = ?",
+                (normalized_user_id,),
+            ).fetchone()
+            if not exists:
+                raise ValueError(f"用户不存在: {normalized_user_id}")
+            db.execute(
+                "INSERT INTO user_tokens (token_hash, user_id, created_at) VALUES (?, ?, ?)",
+                (self._token_hash(token), normalized_user_id, created_at),
+            )
+        return token
 
     def authenticate(self, token: str) -> str | None:
         if not token:
             return None
         with self._connect() as db:
             row = db.execute(
-                "SELECT user_id FROM users WHERE token_hash = ?",
+                "SELECT user_id FROM user_tokens WHERE token_hash = ?",
                 (self._token_hash(token),),
             ).fetchone()
         return str(row[0]) if row else None

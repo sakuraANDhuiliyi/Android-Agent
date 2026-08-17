@@ -253,7 +253,9 @@ function stopAgentProcess() {
   }
   setTimeout(() => {
     try {
-      if (!child.killed) child.kill("SIGKILL");
+      // child.killed only means kill() was called; exitCode == null means the
+      // process is actually still alive and ignoring SIGTERM.
+      if (child.exitCode == null && !child.signalCode) child.kill("SIGKILL");
     } catch (_) {
       /* ignore */
     }
@@ -280,6 +282,7 @@ async function startAgentProcess() {
   }
 
   agentLogTail = "";
+  let spawnError = null;
   const child = spawn("python3", ["-m", "agent", "serve"], {
     cwd: repoRoot(),
     env: agentEnv(),
@@ -292,6 +295,20 @@ async function startAgentProcess() {
   };
   child.stdout.on("data", appendLog);
   child.stderr.on("data", appendLog);
+  // Without this listener a missing python3 (ENOENT) crashes the main process
+  // with an uncaught 'error' event; 'exit' never fires for failed spawns.
+  child.on("error", (err) => {
+    spawnError = err;
+    if (agentProcess === child) agentProcess = null;
+    agentLogTail += `\n[spawn error] ${err.message}\n`;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("agent:server-exit", {
+        code: null,
+        signal: "",
+        error: err.message,
+      });
+    }
+  });
   child.on("exit", (code, signal) => {
     if (agentProcess === child) agentProcess = null;
     agentLogTail += `\n[exit code=${code} signal=${signal || ""}]\n`;
@@ -302,6 +319,14 @@ async function startAgentProcess() {
 
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
+    if (spawnError) {
+      return {
+        ok: false,
+        error: `无法启动 Agent 服务进程：${spawnError.message}（请确认已安装 python3）`,
+        logTail: agentLogTail.slice(-2000),
+        ...(await getAgentStatus()),
+      };
+    }
     if (child.exitCode != null) {
       return {
         ok: false,

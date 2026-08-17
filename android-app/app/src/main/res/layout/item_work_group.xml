@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/screen_margin"
+    android:paddingEnd="@dimen/screen_margin">
+
+    <LinearLayout
+        android:id="@+id/rowHeader"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/touch_target"
+        android:background="?attr/selectableItemBackground"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <View
+            android:id="@+id/statusDot"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="@dimen/space_tiny"
+            android:background="@drawable/bg_status_dot" />
+
+        <TextView
+            android:id="@+id/textWorkTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_small"
+            android:layout_weight="1"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            tools:text="工作了 2 分 18 秒" />
+
+        <TextView
+            android:id="@+id/textWorkSummary"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="@dimen/space_tiny"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            tools:text="查看 3 个文件 · 执行 2 条命令" />
+
+        <ImageView
+            android:id="@+id/iconExpand"
+            android:layout_width="@dimen/touch_target"
+            android:layout_height="@dimen/touch_target"
+            android:contentDescription="@string/expand"
+            android:padding="12dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_expand_arrow"
+            tools:ignore="RtlHardcoded" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/textWorkSummaryFull"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_small"
+        android:layout_marginBottom="@dimen/space_tiny"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone"
+        tools:text="查看 3 个文件 · 执行 2 条命令 · 修改 4 个文件"
+        tools:visibility="visible" />
+
+    <LinearLayout
+        android:id="@+id/layoutSteps"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        tools:visibility="visible" />
+</LinearLayout>

@@ -2,12 +2,14 @@
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fitsSystemWindows="true"
+    android:background="?attr/colorSurface"
     tools:context=".ConversationActivity">
 
     <LinearLayout
+        android:id="@+id/contentRoot"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical">
@@ -16,158 +18,84 @@
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
-            android:background="?attr/colorSurface"
-            android:minHeight="48dp" />
+            android:background="?attr/colorSurface" />
 
-        <TextView
-            android:id="@+id/textJobStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingStart="16dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="16dp"
-            android:textAppearance="?attr/textAppearanceLabelLarge"
-            tools:text="queued" />
-
-        <TextView
-            android:id="@+id/textPlan"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:visibility="gone"
-            tools:text="Plan..." />
-
-        <TextView
-            android:id="@+id/textCurrentTool"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="4dp"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            tools:text="tool..." />
-
-        <HorizontalScrollView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:scrollbars="none">
-
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnPause"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:text="@string/pause" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnResume"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:minHeight="48dp"
-                    android:text="@string/resume" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnCancel"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:minHeight="48dp"
-                    android:text="@string/stop_task" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnViewDiff"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:minHeight="48dp"
-                    android:text="@string/view_diff" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnViewLog"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:minHeight="48dp"
-                    android:text="@string/build_log" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnApk"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:minHeight="48dp"
-                    android:text="@string/apk_actions" />
-            </LinearLayout>
-        </HorizontalScrollView>
-
-        <androidx.core.widget.NestedScrollView
-            android:id="@+id/scrollContent"
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1"
-            android:clipToPadding="false"
-            android:fillViewport="true"
-            android:paddingBottom="8dp">
+            android:layout_weight="1">
 
-            <LinearLayout
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerTimeline"
                 android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingTop="@dimen/space_small"
+                android:paddingBottom="@dimen/space_small"
+                android:scrollbars="vertical" />
+
+            <TextView
+                android:id="@+id/textEmpty"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="12dp">
+                android:layout_gravity="center"
+                android:drawablePadding="@dimen/space_medium"
+                android:gravity="center"
+                android:text="@string/empty_conversation_hint"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:visibility="gone"
+                tools:visibility="visible" />
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/approvals"
-                    android:textAppearance="?attr/textAppearanceTitleSmall" />
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btnJumpLatest"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="@dimen/space_medium"
+                android:contentDescription="@string/jump_to_latest"
+                android:src="@drawable/ic_arrow_downward"
+                android:visibility="gone"
+                app:fabCustomSize="40dp"
+                app:maxImageSize="20dp"
+                tools:visibility="visible" />
+        </FrameLayout>
 
-                <LinearLayout
-                    android:id="@+id/layoutApprovals"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical" />
+        <LinearLayout
+            android:id="@+id/approvalBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?attr/colorSecondaryContainer"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:minHeight="48dp"
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="@dimen/space_small"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="@dimen/space_small"
+            android:visibility="gone"
+            tools:visibility="visible">
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/agent_events"
-                    android:textAppearance="?attr/textAppearanceTitleSmall" />
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_warning"
+                app:tint="?attr/colorOnSecondaryContainer" />
 
-                <TextView
-                    android:id="@+id/textEvents"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
-                    android:textIsSelectable="true"
-                    android:textSize="12sp"
-                    tools:text="events..." />
-
-                <TextView
-                    android:id="@+id/textResult"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textIsSelectable="true"
-                    tools:text="result" />
-            </LinearLayout>
-        </androidx.core.widget.NestedScrollView>
+            <TextView
+                android:id="@+id/textApprovalBanner"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="@string/approval_pending_banner"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="?attr/colorOnSecondaryContainer" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/composerBar"
@@ -176,56 +104,99 @@
             android:background="?attr/colorSurface"
             android:elevation="4dp"
             android:orientation="vertical"
-            android:padding="12dp">
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="@dimen/space_tiny"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="@dimen/space_tiny">
 
-            <com.google.android.material.textfield.TextInputLayout
+            <HorizontalScrollView
+                android:id="@+id/scrollMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="@string/prompt_hint">
+                android:scrollbars="none"
+                android:visibility="gone"
+                tools:visibility="visible">
 
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/editPrompt"
-                    android:layout_width="match_parent"
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipMode"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:gravity="top"
-                    android:inputType="textMultiLine"
-                    android:maxLines="5"
-                    android:minHeight="48dp" />
-            </com.google.android.material.textfield.TextInputLayout>
+                    app:selectionRequired="true"
+                    app:singleLine="true"
+                    app:singleSelection="true">
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipModeSteer"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
+                        android:text="@string/mode_steer" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipModeFollowUp"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
+                        android:text="@string/mode_follow_up" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:gravity="bottom"
                 android:orientation="horizontal">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSteer"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/inputPrompt"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:text="@string/steer" />
+                    android:hint="@string/composer_hint">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnFollowUp"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:text="@string/follow_up" />
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/editPrompt"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="top"
+                        android:imeOptions="actionSend"
+                        android:inputType="textMultiLine|textCapSentences"
+                        android:maxLines="6"
+                        android:minHeight="@dimen/touch_target"
+                        android:scrollbars="vertical" />
+                </com.google.android.material.textfield.TextInputLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSend"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:text="@string/send" />
+                <FrameLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/touch_target"
+                    android:layout_marginStart="@dimen/space_small">
+
+                    <com.google.android.material.floatingactionbutton.FloatingActionButton
+                        android:id="@+id/btnSend"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:contentDescription="@string/send"
+                        android:src="@drawable/ic_send"
+                        app:fabCustomSize="44dp"
+                        app:maxImageSize="20dp" />
+
+                    <com.google.android.material.floatingactionbutton.FloatingActionButton
+                        android:id="@+id/btnStop"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:contentDescription="@string/stop_task"
+                        android:src="@drawable/ic_stop"
+                        android:visibility="gone"
+                        app:backgroundTint="?attr/colorErrorContainer"
+                        app:fabCustomSize="44dp"
+                        app:maxImageSize="20dp"
+                        app:tint="?attr/colorError"
+                        tools:visibility="gone" />
+                </FrameLayout>
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

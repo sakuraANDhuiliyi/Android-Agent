@@ -5,51 +5,63 @@
     android:id="@+id/mainScroll"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true"
+    android:background="?attr/colorSurface"
     android:clipToPadding="false"
+    android:fillViewport="true"
     tools:context=".MainActivity">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingTop="16dp"
-        android:paddingEnd="16dp"
+        android:paddingStart="@dimen/screen_margin"
+        android:paddingTop="48dp"
+        android:paddingEnd="@dimen/screen_margin"
         android:paddingBottom="32dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/app_name"
+                android:src="@mipmap/ic_launcher_round" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/connect_to_agent"
+                android:textAppearance="?attr/textAppearanceHeadlineSmall" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/server_settings"
-            android:textAppearance="?attr/textAppearanceTitleMedium" />
+            android:layout_marginTop="12dp"
+            android:gravity="center_horizontal"
+            android:text="@string/onboarding_desc"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/layoutServerUrl"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="32dp"
             android:hint="@string/server_url_hint">
+
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/editServerUrl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="textUri"
-                android:singleLine="true" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/layoutUserId"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/user_id_hint">
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/editUserId"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:clickable="false"
-                android:focusable="false"
+                android:minHeight="@dimen/touch_target"
                 android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
 
@@ -57,223 +69,87 @@
             android:id="@+id/layoutApiToken"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/api_token_hint">
+            android:layout_marginTop="16dp"
+            android:hint="@string/api_token_hint"
+            app:endIconMode="password_toggle">
+
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/editApiToken"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="textPassword"
+                android:minHeight="@dimen/touch_target"
                 android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
 
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/layoutRegistrationToken"
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnConnect"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/registration_token_hint"
-            app:endIconMode="password_toggle">
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/editRegistrationToken"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="textPassword"
-                android:singleLine="true" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnRegister"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/register_user" />
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnConnect"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:text="@string/connect" />
-        </LinearLayout>
+            android:layout_marginTop="24dp"
+            android:minHeight="@dimen/touch_target"
+            android:text="@string/test_and_connect" />
 
         <TextView
             android:id="@+id/textStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/status_disconnected"
-            android:textAppearance="?attr/textAppearanceLabelLarge" />
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/layoutModelSelect"
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:hint="@string/model_select_hint"
-            android:visibility="gone">
-            <AutoCompleteTextView
-                android:id="@+id/dropdownModel"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="none" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/projects"
-            android:textAppearance="?attr/textAppearanceTitleMedium" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:orientation="horizontal">
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnRefreshProjects"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/refresh_projects" />
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnNewProject"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:text="@string/new_project" />
-        </LinearLayout>
+            android:layout_marginTop="12dp"
+            android:gravity="center_horizontal"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            tools:text="未连接" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnBrowseFiles"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:id="@+id/btnToggleAdvanced"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start"
+            android:layout_marginTop="8dp"
+            android:text="@string/advanced" />
+
+        <LinearLayout
+            android:id="@+id/layoutAdvanced"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/browse_files" />
+            android:orientation="vertical"
+            android:visibility="gone"
+            tools:visibility="visible">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerProjects"
-            android:layout_width="match_parent"
-            android:layout_height="132dp"
-            android:nestedScrollingEnabled="false"
-            tools:listitem="@layout/item_project" />
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/layoutPrompt"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:hint="@string/prompt_hint">
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/editPrompt"
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/layoutRegistrationToken"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="top"
-                android:inputType="textMultiLine"
-                android:minLines="3" />
-        </com.google.android.material.textfield.TextInputLayout>
+                android:hint="@string/registration_token_hint"
+                app:endIconMode="password_toggle">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSend"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/send" />
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStop"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:text="@string/stop_task"
-                android:visibility="gone" />
-        </LinearLayout>
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/editRegistrationToken"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword"
+                    android:minHeight="@dimen/touch_target"
+                    android:singleLine="true" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnDownloadApk"
+                android:id="@+id/btnRegister"
                 style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/download_apk" />
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnInstallApk"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:text="@string/install_apk" />
+                android:layout_marginTop="8dp"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/register_user" />
         </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/debug_summary"
-            android:textAppearance="?attr/textAppearanceTitleSmall" />
-
-        <TextView
-            android:id="@+id/textDebugSummary"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:background="?attr/colorSurfaceVariant"
-            android:fontFamily="monospace"
-            android:minHeight="72dp"
-            android:padding="12dp"
-            android:text="@string/no_task_selected"
-            android:textIsSelectable="true"
-            android:textSize="12sp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLoadFullLog"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/load_full_build_log"
-            android:visibility="gone" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/agent_events"
-            android:textAppearance="?attr/textAppearanceTitleSmall" />
-
-        <TextView
-            android:id="@+id/textLogs"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:background="?attr/colorSurfaceVariant"
-            android:fontFamily="monospace"
-            android:minHeight="180dp"
-            android:padding="12dp"
-            android:textIsSelectable="true"
-            android:textSize="12sp"
-            tools:text="等待连接..." />
+            android:layout_marginTop="32dp"
+            android:gravity="center_horizontal"
+            android:text="@string/security_note"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>

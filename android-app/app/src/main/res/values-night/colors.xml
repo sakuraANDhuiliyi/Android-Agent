@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Signal Workbench palette (dark) -->
+    <color name="signal_primary">#FF8EB1FF</color>
+    <color name="signal_on_primary">#FF12244A</color>
+    <color name="signal_primary_container">#FF1E3768</color>
+    <color name="signal_on_primary_container">#FFD6E2FF</color>
+    <color name="signal_secondary">#FFA3AAB5</color>
+    <color name="signal_on_secondary">#FF20242C</color>
+    <color name="signal_secondary_container">#FF262C36</color>
+    <color name="signal_on_secondary_container">#FFE3E6EB</color>
+    <color name="signal_tertiary">#FF56D6C9</color>
+    <color name="signal_on_tertiary">#FF003733</color>
+    <color name="signal_surface_dim">#FF15181D</color>
+
+    <!-- Status / semantic (dark) -->
+    <color name="status_running">#FF8AB4F8</color>
+    <color name="status_success">#FF81C995</color>
+    <color name="status_failed">#FFF28B82</color>
+    <color name="status_warning">#FFFDD663</color>
+    <color name="status_idle">#FF9AA0A6</color>
+    <color name="badge_pending_text">#FFFDD663</color>
+    <color name="badge_pending_bg">#33FDD663</color>
+</resources>

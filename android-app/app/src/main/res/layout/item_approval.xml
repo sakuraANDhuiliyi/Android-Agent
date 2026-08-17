@@ -1,84 +1,170 @@
 <?xml version="1.0" encoding="utf-8"?>
 <com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="8dp">
+    android:layout_marginStart="@dimen/screen_margin"
+    android:layout_marginTop="@dimen/space_small"
+    android:layout_marginEnd="@dimen/screen_margin"
+    android:layout_marginBottom="@dimen/space_small"
+    app:cardBackgroundColor="?attr/colorSurface"
+    app:cardCornerRadius="@dimen/radius_card"
+    app:cardElevation="2dp"
+    app:strokeColor="?attr/colorOutlineVariant"
+    app:strokeWidth="1dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="@dimen/space_medium">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/textRisk"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="?attr/colorSecondaryContainer"
-                android:paddingStart="8dp"
-                android:paddingTop="2dp"
-                android:paddingEnd="8dp"
-                android:paddingBottom="2dp"
-                android:textAllCaps="true"
-                android:textAppearance="?attr/textAppearanceLabelSmall"
-                tools:text="network" />
+            <ImageView
+                android:id="@+id/iconApproval"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_tool_generic"
+                app:tint="?attr/colorPrimary" />
 
             <TextView
-                android:id="@+id/textKind"
+                android:id="@+id/textApprovalTitle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="@dimen/space_small"
                 android:layout_weight="1"
                 android:textAppearance="?attr/textAppearanceTitleSmall"
-                tools:text="download" />
+                android:textColor="?attr/colorOnSurface"
+                tools:text="需要运行命令" />
+
+            <TextView
+                android:id="@+id/textApprovalRisk"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/colorErrorContainer"
+                android:paddingStart="@dimen/space_small"
+                android:paddingTop="2dp"
+                android:paddingEnd="@dimen/space_small"
+                android:paddingBottom="2dp"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="?attr/colorOnErrorContainer"
+                android:visibility="gone"
+                tools:text="高风险"
+                tools:visibility="visible" />
         </LinearLayout>
 
         <TextView
-            android:id="@+id/textScope"
+            android:id="@+id/textApprovalDetail"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            tools:text="scope" />
-
-        <TextView
-            android:id="@+id/textPayload"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="@dimen/space_small"
             android:fontFamily="monospace"
-            android:maxLines="8"
-            android:textSize="12sp"
-            tools:text="{}" />
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurface"
+            android:textIsSelectable="true"
+            tools:text="./gradlew assembleDebug" />
 
         <LinearLayout
+            android:id="@+id/layoutApprovalFields"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="end"
-            android:orientation="horizontal">
+            android:layout_marginTop="@dimen/space_tiny"
+            android:orientation="vertical"
+            tools:visibility="visible">
+
+            <TextView
+                android:id="@+id/textApprovalField1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                tools:text="工作目录: /project" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/rowApprovalDetailToggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center_vertical"
+            android:minHeight="44dp"
+            android:orientation="horizontal"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <ImageView
+                android:id="@+id/iconApprovalDetailToggle"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="@string/approval_view_details"
+                android:padding="4dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_expand_arrow" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_tiny"
+                android:text="@string/approval_view_details"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textApprovalTechDetail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_code_block"
+            android:fontFamily="monospace"
+            android:maxLines="12"
+            android:padding="@dimen/space_small"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textIsSelectable="true"
+            android:visibility="gone"
+            tools:text="{...}"
+            tools:visibility="visible" />
+
+        <TextView
+            android:id="@+id/textApprovalState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_small"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:visibility="gone"
+            tools:text="已批准"
+            tools:visibility="visible" />
+
+        <LinearLayout
+            android:id="@+id/layoutApprovalButtons"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_small"
+            android:orientation="vertical">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnReject"
                 style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="@string/reject" />
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/approval_reject" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnApprove"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:minHeight="48dp"
-                android:text="@string/approve" />
+                android:layout_marginTop="@dimen/space_small"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/approval_allow_once" />
         </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

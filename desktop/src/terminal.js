@@ -99,6 +99,10 @@
           term.write(`\r\n\x1b[1;33m[session ${msg.status}]\x1b[0m\r\n`);
           connected = false;
           updateTabState(id, false);
+        } else if (msg.kind === "error") {
+          term.write(`\r\n\x1b[1;31m[stream error] ${msg.error}\x1b[0m\r\n`);
+          connected = false;
+          updateTabState(id, false);
         }
       });
       connected = true;

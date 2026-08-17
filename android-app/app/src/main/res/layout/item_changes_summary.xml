@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="@dimen/screen_margin"
+    android:layout_marginTop="@dimen/space_tiny"
+    android:layout_marginEnd="@dimen/screen_margin"
+    android:layout_marginBottom="@dimen/space_small"
+    app:cardBackgroundColor="?attr/colorSurfaceVariant"
+    app:cardCornerRadius="@dimen/radius_card"
+    app:cardElevation="0dp"
+    app:strokeWidth="0dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/space_medium">
+
+        <TextView
+            android:id="@+id/textChangesCount"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?attr/colorOnSurface"
+            tools:text="3 个文件改动" />
+
+        <TextView
+            android:id="@+id/textChangesFiles"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_tiny"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:maxLines="4"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            tools:text="app/src/main.kt&#10;app/src/main.xml" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnViewChanges"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:text="@string/view_changes" />
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

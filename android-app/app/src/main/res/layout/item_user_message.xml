@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingStart="@dimen/screen_margin"
+    android:paddingTop="@dimen/space_small"
+    android:paddingEnd="@dimen/screen_margin"
+    android:paddingBottom="@dimen/space_small">
+
+    <TextView
+        android:id="@+id/textUserMessage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:background="@drawable/bg_user_bubble"
+        android:paddingStart="@dimen/space_medium"
+        android:paddingTop="@dimen/space_medium"
+        android:paddingEnd="@dimen/space_medium"
+        android:paddingBottom="@dimen/space_medium"
+        android:textColor="?attr/colorOnSecondaryContainer"
+        android:textIsSelectable="true"
+        android:textSize="@dimen/body_text_size"
+        android:lineSpacingMultiplier="1.4"
+        android:maxWidth="300dp"
+        tools:text="帮我做一个计数器 App" />
+</FrameLayout>

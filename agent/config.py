@@ -53,6 +53,19 @@ def _as_bool(value: Any, *, name: str) -> bool:
     raise ValueError(f"{name} 必须是布尔值")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Override a boolean setting from the environment; empty keeps the default."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"true", "yes", "on", "1"}:
+        return True
+    if normalized in {"false", "no", "off", "0"}:
+        return False
+    raise ValueError(f"{name} 必须是 true 或 false")
+
+
 @dataclass
 class UserAccount:
     id: str
@@ -362,9 +375,12 @@ def load_settings() -> Settings:
         "server_host": str(file_data.get("server_host", "127.0.0.1")),
         "server_port": server_port,
         "api_token": legacy_api_token,
-        "registration_enabled": _as_bool(
-            file_data.get("registration_enabled", False),
-            name="registration_enabled",
+        "registration_enabled": _env_bool(
+            "AGENT_REGISTRATION_ENABLED",
+            _as_bool(
+                file_data.get("registration_enabled", False),
+                name="registration_enabled",
+            ),
         ),
         "registration_token": str(
             os.environ.get("AGENT_REGISTRATION_TOKEN")

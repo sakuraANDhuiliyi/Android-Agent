@@ -293,9 +293,11 @@ async function run() {
     out.lastExpanded = disp(bodies[2]) !== "none";
     out.olderCollapsed = disp(bodies[0]) === "none" && disp(bodies[1]) === "none";
 
-    // Final answers stay visible even when the work session is collapsed
+    // Final answers AND intermediate narration stay visible even when the
+    // work session is collapsed
     const finals = [...turns].map((t) => t.querySelector(".tl-turn-final"));
     out.finalsVisible = finals.every((f) => f && f.textContent.includes("最终回答") && disp(f) !== "none");
+    out.intermediateVisible = finals.every((f) => f && f.textContent.includes("中间说明") && disp(f) !== "none");
     out.finalOutsideWork = finals.every((f) => !f.closest(".tl-work-body"));
 
     // Collapsed summary counts come from real data (1 read + 1 command + 1 change)
@@ -307,7 +309,7 @@ async function run() {
     const kinds = [...body2.querySelectorAll(".tl-item")].map((i) =>
       i.classList.contains("tl-tool") ? "tool" : i.classList.contains("tl-changes") ? "changes" : i.classList.contains("tl-assistant") ? "assistant" : "other",
     );
-    out.workOrder = kinds.join(",") === "assistant,tool,tool,changes";
+    out.workOrder = kinds.join(",") === "tool,tool,changes";
 
     // No private reasoning anywhere
     out.noPrivateCot = !container.textContent.includes("PRIVATE-COT-LEAK") && !container.textContent.includes("Thought");
@@ -328,11 +330,178 @@ async function run() {
     const built = AT.buildTurns(store.items());
     out.builtThree = built.length === 3;
     out.builtStatus = built.every((t) => t.status === "succeeded" || t.status === "completed");
-    out.builtFinals = built.every((t) => t.finalMessages.length === 1);
+    out.builtFinals = built.every((t) => t.finalMessages.length === 2);
 
     return out;
   });
   for (const [name, val] of Object.entries(turnChecks)) ok(val, `turns: ${name}`);
+
+  // —————————————————— Streaming narration must not vanish ——————————————————
+  // Real-model turn: streamed delta text shows in the answer area; when the
+  // canonical assistant_message lands with is_final:false (narration before
+  // tool calls) and the turn later fails, the text must STAY visible.
+
+  const streamChecks = await page.evaluate(() => {
+    const AT = window.AgentTimeline;
+    const Timeline = window.Timeline;
+    const root = document.getElementById("root");
+    root.textContent = "";
+    localStorage.removeItem("agentTimeline.viewState.v1");
+    const container = document.createElement("div");
+    container.style.cssText = "width:400px;height:600px;overflow:auto;";
+    root.appendChild(container);
+
+    const store = Timeline.createStore();
+    const T0 = 1767225600;
+    let seq = 0;
+    const ev = (type, payload) => ({ seq: ++seq, event_type: type, payload, turn_id: "t9", task_id: "j9", created_at: T0 + seq * 10 });
+
+    store.ingestConversationEvents([
+      ev("user_message", { message_id: "u9", content: [{ type: "text", text: "帮我完成一个跑酷游戏" }] }),
+    ]);
+    store.ingestTaskEvents([
+      { id: 1, type: "text_delta", message_id: "m9", delta: "我来先了解一下当前工程的状况" },
+      { id: 2, type: "text_delta", message_id: "m9", delta: "，看看已有的代码和资源。" },
+    ], { jobId: "j9", turnId: "t9" });
+
+    const view = AT.createTimelineView(container, {});
+    view.update(store.items(), { immediate: true });
+
+    const out = {};
+    out.streamingVisible = container.textContent.includes("我来先了解一下当前工程的状况，看看已有的代码和资源。");
+
+    // Canonical intermediate message lands (is_final:false) + tools + failure
+    store.ingestConversationEvents([
+      ev("assistant_message", { message_id: "m9", is_final: false, finish_reason: "tool_calls", text_blocks: [{ type: "text", text: "我来先了解一下当前工程的状况，看看已有的代码和资源。" }] }),
+      ev("tool_call", { tool_call_id: "x9", name: "run_command", input: { argv: ["./gradlew", "assembleDebug"] } }),
+      ev("tool_result", { tool_call_id: "x9", name: "run_command", ok: false, duration_ms: 800 }),
+      ev("assistant_message", { message_id: "m9b", is_final: false, text_blocks: [{ type: "text", text: "构建命令被系统拦截，代码已全部写入，但尚未构建验证。" }] }),
+      ev("turn_failed", { error: "assembleDebug 未成功" }),
+    ]);
+    view.update(store.items(), { immediate: true });
+
+    // Narration stays in the answer area, NOT demoted into the work group
+    out.narrationStaysVisible =
+      container.textContent.includes("我来先了解一下当前工程的状况") &&
+      container.textContent.includes("构建命令被系统拦截");
+    const turn = container.querySelector(".tl-turn");
+    const finalArea = turn.querySelector(".tl-turn-final");
+    out.narrationInFinalArea =
+      finalArea &&
+      !finalArea.hidden &&
+      finalArea.textContent.includes("我来先了解一下当前工程的状况") &&
+      finalArea.querySelectorAll(".tl-item").length === 2;
+    out.narrationNotInWork =
+      ![...turn.querySelectorAll(".tl-work-body .tl-item")].some((i) => i.classList.contains("tl-assistant"));
+    out.workHasToolsOnly = [...turn.querySelectorAll(".tl-work-body .tl-item")].every((i) => i.classList.contains("tl-tool"));
+    out.turnFailed = turn.classList.contains("is-failed");
+    out.noDuplicateBubble = container.textContent.split("我来先了解一下当前工程的状况").length === 2; // header summary may repeat; answer bubble once
+    out.failedNarrationVisible = turn.textContent.includes("尚未构建验证");
+
+    return out;
+  });
+  for (const [name, val] of Object.entries(streamChecks)) ok(val, `stream: ${name}`);
+
+  // —————————————————— Tool clustering ——————————————————
+  // Consecutive same-category tools merge into one row; approvals/changes and
+  // different categories break the run; failed members auto-expand.
+
+  const clusterChecks = await page.evaluate(() => {
+    const AT = window.AgentTimeline;
+    const Timeline = window.Timeline;
+    const root = document.getElementById("root");
+    root.textContent = "";
+    localStorage.removeItem("agentTimeline.viewState.v1");
+    const container = document.createElement("div");
+    container.style.cssText = "width:400px;height:600px;overflow:auto;";
+    root.appendChild(container);
+
+    const store = Timeline.createStore();
+    const T0 = 1767225600;
+    let seq = 0;
+    const ev = (type, payload) => ({ seq: ++seq, event_type: type, payload, turn_id: "tc", task_id: "jc", created_at: T0 + seq * 10 });
+
+    store.ingestConversationEvents([
+      ev("user_message", { message_id: "uc", content: [{ type: "text", text: "梳理工程结构" }] }),
+      ev("assistant_message", { message_id: "mc0", is_final: false, text_blocks: [{ type: "text", text: "先浏览文件" }] }),
+    ]);
+    // 3 consecutive reads → one cluster
+    for (let n = 1; n <= 3; n += 1) {
+      store.ingestConversationEvents([
+        ev("tool_call", { tool_call_id: `r${n}`, name: "read_file", input: { path: `src/F${n}.kt` } }),
+        ev("tool_result", { tool_call_id: `r${n}`, name: "read_file", ok: true, duration_ms: 4 }),
+      ]);
+    }
+    // 2 consecutive searches → one cluster
+    store.ingestConversationEvents([
+      ev("tool_call", { tool_call_id: "s1", name: "search_code", input: { pattern: "MainActivity" } }),
+      ev("tool_result", { tool_call_id: "s1", name: "search_code", ok: true, duration_ms: 6 }),
+      ev("tool_call", { tool_call_id: "s2", name: "web_search", input: { query: "coil docs" } }),
+      ev("tool_result", { tool_call_id: "s2", name: "web_search", ok: false, duration_ms: 30 }),
+    ]);
+    // Lone command stays a plain tool row
+    store.ingestConversationEvents([
+      ev("tool_call", { tool_call_id: "k1", name: "run_command", input: { argv: ["ls"] } }),
+      ev("tool_result", { tool_call_id: "k1", name: "run_command", ok: true, duration_ms: 8 }),
+    ]);
+    store.ingestConversationEvents([
+      ev("assistant_message", { message_id: "fc", is_final: true, text_blocks: [{ type: "text", text: "已梳理完成" }] }),
+      ev("completed", { message: "完成" }),
+    ]);
+
+    const view = AT.createTimelineView(container, {});
+    view.update(store.items(), { immediate: true });
+
+    const out = {};
+    const body = container.querySelector(".tl-work-body");
+    const clusters = [...body.querySelectorAll(":scope > .tl-cluster")];
+    out.twoClusters = clusters.length === 2;
+    const readCluster = clusters[0];
+    const searchCluster = clusters[1];
+    out.readLabel = readCluster?.querySelector(".tl-cluster-name")?.textContent === "读取 3 个文件";
+    out.searchLabel = searchCluster?.querySelector(".tl-cluster-name")?.textContent === "搜索 2 次";
+    out.searchFailedBadge = searchCluster?.querySelector(".tl-cluster-state.is-danger")?.textContent === "1 失败";
+    out.searchAutoExpanded =
+      searchCluster != null &&
+      getComputedStyle(searchCluster.querySelector(".tl-cluster-body")).display !== "none" &&
+      searchCluster.querySelectorAll(".tl-cluster-body .tl-tool").length === 2;
+    out.readCollapsedByDefault =
+      readCluster != null && getComputedStyle(readCluster.querySelector(".tl-cluster-body")).display === "none";
+
+    // Lone command is NOT clustered
+    out.loneToolStays =
+      [...body.querySelectorAll(":scope > .tl-tool")].length === 1 &&
+      body.querySelectorAll(":scope > .tl-tool")[0].textContent.includes("运行命令");
+
+    // Expand read cluster → 3 tool rows, click again → collapsed
+    const head = readCluster.querySelector(".tl-cluster-head");
+    head.click();
+    view.update(store.items(), { immediate: true });
+    const readAgain = container.querySelector(".tl-work-body").querySelector(":scope > .tl-cluster");
+    out.expandShowsTools =
+      getComputedStyle(readAgain.querySelector(".tl-cluster-body")).display !== "none" &&
+      readAgain.querySelectorAll(".tl-cluster-body .tl-tool").length === 3;
+    out.ariaExpanded = readAgain.querySelector(".tl-cluster-head").getAttribute("aria-expanded") === "true";
+
+    // groupedSequence unit-level: approvals break runs
+    const seqOut = AT._internal.groupedSequence([
+      { type: "tool", key: "a", content: { name: "read_file" }, metadata: {} },
+      { type: "tool", key: "b", content: { name: "read_file" }, metadata: {} },
+      { type: "approval", key: "p", content: {}, metadata: {} },
+      { type: "tool", key: "c", content: { name: "read_file" }, metadata: {} },
+      { type: "tool", key: "d", content: { name: "run_command" }, metadata: {} },
+    ]);
+    out.approvalBreaksRun =
+      seqOut.length === 4 &&
+      seqOut[0].type === "tool_cluster" &&
+      seqOut[0].content.items.length === 2 &&
+      seqOut[1].key === "p" &&
+      seqOut[2].key === "c" &&
+      seqOut[3].key === "d";
+
+    return out;
+  });
+  for (const [name, val] of Object.entries(clusterChecks)) ok(val, `cluster: ${name}`);
 
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="screen_margin">16dp</dimen>
+    <dimen name="space_tiny">4dp</dimen>
+    <dimen name="space_small">8dp</dimen>
+    <dimen name="space_medium">12dp</dimen>
+    <dimen name="space_regular">16dp</dimen>
+    <dimen name="space_block">20dp</dimen>
+    <dimen name="space_section">24dp</dimen>
+    <dimen name="radius_small">8dp</dimen>
+    <dimen name="radius_message">16dp</dimen>
+    <dimen name="radius_card">14dp</dimen>
+    <dimen name="touch_target">48dp</dimen>
+    <dimen name="user_bubble_corner">16dp</dimen>
+    <dimen name="code_text_size">13sp</dimen>
+    <dimen name="body_text_size">16sp</dimen>
+    <dimen name="secondary_text_size">13sp</dimen>
+</resources>

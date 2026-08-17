@@ -148,6 +148,10 @@ def build_sandboxed_command(
     sandbox_exec = shutil.which("sandbox-exec")
     if platform.system() != "Darwin" or not sandbox_exec:
         return list(argv)
+    if os.environ.get("AGENT_CMD_SANDBOX", "1").strip().lower() in {"0", "false", "no", "off"}:
+        # Explicit opt-out for hosts where sandbox_apply is blocked (hardened
+        # runners report "sandbox-exec: sandbox_apply: Operation not permitted").
+        return list(argv)
 
     root = workspace.resolve()
     read_paths = {str(root)}

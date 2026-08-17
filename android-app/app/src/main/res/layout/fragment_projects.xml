@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/bannerConnection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/badge_pending_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="10dp"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="10dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_warning"
+                app:tint="@color/badge_pending_text" />
+
+            <TextView
+                android:id="@+id/textBanner"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="@string/connection_lost"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="@color/badge_pending_text" />
+
+            <TextView
+                android:id="@+id/btnBannerAction"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:minWidth="@dimen/touch_target"
+                android:padding="8dp"
+                android:text="@string/settings"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/badge_pending_text" />
+        </LinearLayout>
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerProjects"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingTop="4dp"
+            android:paddingBottom="96dp" />
+    </LinearLayout>
+
+    <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+        android:id="@+id/fabNewProject"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="@dimen/screen_margin"
+        android:text="@string/new_project"
+        app:icon="@drawable/ic_nav_projects" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

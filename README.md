@@ -147,6 +147,11 @@ PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for
 
 架构说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
+双端 UI/UX 基线见
+[`docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md`](docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md)，
+后续升级顺序与可直接执行的完整提示词见
+[`docs/NEXT_UPGRADE_MASTER_PROMPT.md`](docs/NEXT_UPGRADE_MASTER_PROMPT.md)。
+
 ## 权限模式与 Workspace trust
 
 - 运行模式：`ask` / `workspace` / `read_only`（见 `agent/permissions.py`）。

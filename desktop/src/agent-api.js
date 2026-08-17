@@ -300,19 +300,32 @@
       if (afterSeq) url.searchParams.set("after_seq", String(afterSeq));
       let ws = null;
       let closed = false;
+      let finished = false;
       let cursor = afterSeq;
       let reconnectTimer = null;
 
+      const finish = () => {
+        finished = true;
+        try {
+          ws && ws.close();
+        } catch (_) {}
+      };
+
       const connect = async () => {
-        if (closed) return;
+        if (closed || finished) return;
         try {
           const auth = await this.websocketTicket("terminal", terminalId);
-          if (closed) return;
+          if (closed || finished) return;
           const u = new URL(url.toString());
           u.searchParams.set("ticket", auth.ticket);
           u.searchParams.set("after_seq", String(cursor));
           ws = new WebSocket(u.toString());
-        } catch (_) {
+        } catch (err) {
+          // Server unreachable / auth expired: retry with backoff instead of
+          // silently dropping the terminal stream forever.
+          onEvent({ kind: "error", error: err.message });
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, 3000);
           return;
         }
         ws.onmessage = (ev) => {
@@ -320,6 +333,9 @@
             const data = JSON.parse(ev.data);
             if (data.type === "done") {
               onEvent({ kind: "done", status: data.status, exit_code: data.exit_code });
+              // Session over: without this, the closed socket would reconnect
+              // every 1.5s and re-request tickets for a dead terminal forever.
+              finish();
               return;
             }
             if (data.seq) cursor = data.seq;
@@ -330,7 +346,7 @@
         };
         ws.onerror = () => {};
         ws.onclose = () => {
-          if (closed) return;
+          if (closed || finished) return;
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connect, 1500);
         };
@@ -339,6 +355,7 @@
       return {
         close() {
           closed = true;
+          finished = true;
           clearTimeout(reconnectTimer);
           try {
             ws && ws.close();
@@ -386,18 +403,17 @@
 
       const startPoll = () => {
         if (finished || closed || pollTimer) return;
-        let lastCount = 0;
         pollTimer = setInterval(async () => {
           if (closed || finished) return;
           try {
             const data = await this.job(jobId);
             const job = data.job;
-            const events = job.events || [];
-            while (lastCount < events.length) {
-              const ev = events[lastCount];
+            // Cursor-based replay: server-side trimming of old task events
+            // shifts array indexes, so an index counter would skip events.
+            for (const ev of job.events || []) {
+              if (!ev.id || ev.id <= afterEventId) continue;
               onEvent({ kind: "event", event: ev, job });
-              if (ev.id) afterEventId = Math.max(afterEventId, ev.id);
-              lastCount += 1;
+              afterEventId = Math.max(afterEventId, ev.id);
             }
             onEvent({ kind: "job", job });
             if (
@@ -417,7 +433,7 @@
           } catch (err) {
             onEvent({ kind: "error", error: err.message });
           }
-        }, 200);
+        }, 1500);
       };
 
       const connect = async () => {
@@ -433,6 +449,12 @@
           startPoll();
           return;
         }
+
+        ws.onopen = () => {
+          // WS delivers events live; polling in parallel doubles every request
+          // and, while awaiting approval, self-triggers the server rate limit.
+          stopPoll();
+        };
 
         ws.onmessage = (ev) => {
           try {
@@ -460,6 +482,7 @@
 
         ws.onclose = () => {
           if (closed || finished) return;
+          startPoll();
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connect, 1500);
         };

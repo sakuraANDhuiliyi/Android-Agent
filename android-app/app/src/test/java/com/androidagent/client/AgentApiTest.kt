@@ -103,22 +103,23 @@ class AgentApiTest {
 
     @Test
     fun approvalResolveFourOutcomes() {
-        // pending list
+        // pending list：真实契约无顶层 status/risk（risk 在 payload 内）
         server.enqueue(
             MockResponse().setBody(
-                """{"job_id":"j1","approvals":[{"id":"a1","kind":"download","status":"pending","risk":"network","payload":{"url":"https://x"}}]}""",
+                """{"job_id":"j1","approvals":[{"id":"a1","kind":"download","payload":{"url":"https://x","risk":"network"}}]}""",
             ),
         )
         val pending = api.listApprovals("j1")
         assertEquals(1, pending.size)
+        assertEquals("pending", pending[0].status)
         assertEquals("network", pending[0].risk)
 
-        // approved
-        server.enqueue(MockResponse().setBody("""{"approval":{"id":"a1","kind":"download","status":"approved","payload":{}}}"""))
+        // approved：resolve 端点返回 decision 字段
+        server.enqueue(MockResponse().setBody("""{"approval":{"id":"a1","kind":"download","decision":"approved","payload":{}}}"""))
         assertEquals("approved", api.resolveApproval("j1", "a1", true).status)
 
         // rejected
-        server.enqueue(MockResponse().setBody("""{"approval":{"id":"a1","kind":"download","status":"rejected","payload":{}}}"""))
+        server.enqueue(MockResponse().setBody("""{"approval":{"id":"a1","kind":"download","decision":"rejected","payload":{}}}"""))
         assertEquals("rejected", api.resolveApproval("j1", "a1", false).status)
 
         // timeout-like conflict

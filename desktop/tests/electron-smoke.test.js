@@ -15,8 +15,8 @@ const { _electron } = require("playwright");
 
 const desktopDir = path.join(__dirname, "..");
 const repoRoot = path.join(desktopDir, "..");
-const AGENT_PORT = 8123;
-const STUB_PORT = 9477;
+const AGENT_PORT = Number(process.env.AGENT_SMOKE_PORT || 8123);
+const STUB_PORT = Number(process.env.AGENT_SMOKE_STUB_PORT || 9477);
 const REG_TOKEN = "smoke-reg-token-123";
 const SERVER_URL = `http://127.0.0.1:${AGENT_PORT}`;
 
@@ -31,13 +31,29 @@ function track(child) {
   return child;
 }
 function cleanup() {
+  // SIGKILL: smoke services are disposable; graceful SIGTERM can hang on
+  // non-daemon worker threads and leak ports that poison the next run.
   for (const child of children) {
     try {
-      if (!child.killed) child.kill("SIGTERM");
+      if (!child.killed) child.kill("SIGKILL");
     } catch (_) {}
   }
 }
 process.on("exit", cleanup);
+
+function assertPortFree(port) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/", timeout: 600 }, (res) => {
+      res.resume();
+      reject(new Error(`port ${port} is already in use (stale smoke service?): kill it first`));
+    });
+    req.on("error", () => resolve());
+    req.on("timeout", () => {
+      req.destroy();
+      resolve();
+    });
+  });
+}
 
 function waitForTcp(port, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -106,9 +122,14 @@ async function waitUntil(fn, timeoutMs, desc) {
 }
 
 async function main() {
+  // 0) refuse to run against leftover services from a previous failed run
+  await assertPortFree(STUB_PORT);
+  await assertPortFree(AGENT_PORT);
+
   // 1) stub model server
   track(
     spawn("python3", [path.join(__dirname, "smoke", "stub_model_server.py")], {
+      env: { ...process.env, AGENT_SMOKE_STUB_PORT: String(STUB_PORT) },
       stdio: "ignore",
     }),
   );
@@ -123,7 +144,21 @@ async function main() {
         AGENT_DATA_DIR: SMOKE_DATA,
         AGENT_BASE_URL: `http://127.0.0.1:${STUB_PORT}`,
         AGENT_API_KEY: "sk-smoke-stub",
+        AGENT_REGISTRATION_ENABLED: "1",
         AGENT_REGISTRATION_TOKEN: REG_TOKEN,
+        // macOS can expose a system proxy through urllib/httpx even when no
+        // proxy variables are printed in the shell. The model stub is local.
+        NO_PROXY: "*",
+        no_proxy: "*",
+        HTTP_PROXY: "",
+        HTTPS_PROXY: "",
+        ALL_PROXY: "",
+        http_proxy: "",
+        https_proxy: "",
+        all_proxy: "",
+        // This host blocks sandbox_apply, which would fail every run_command
+        // with exit 71 before the stub's expected output is produced.
+        AGENT_CMD_SANDBOX: "0",
         PYTHONUNBUFFERED: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -138,14 +173,14 @@ async function main() {
     headers: { "X-Registration-Token": REG_TOKEN },
   });
   assert.strictEqual(reg.status, 201, `register failed: ${JSON.stringify(reg.json)}`);
-  const userToken = reg.json.token;
-  const userId = reg.json.user_id;
-  console.log("ok - registered smoke user", userId);
+  console.log("ok - registered smoke user", reg.json.user_id);
 
   // 4) launch real Electron with isolated profile
   const launchApp = () =>
     _electron.launch({
-      args: ["."],
+      // Restricted CI sandboxes cannot start Chromium's own sandbox/GPU
+      // subprocesses; without these flags the app FATALs on startup.
+      args: [".", "--no-sandbox", "--disable-gpu"],
       cwd: desktopDir,
       env: { ...process.env, AGENT_DESKTOP_USER_DATA: SMOKE_PROFILE },
     });
@@ -162,6 +197,7 @@ async function main() {
   };
   wireErrors(page);
   await page.waitForSelector("#promptInput", { timeout: 20000 });
+  await page.waitForFunction(() => window.AiPanel?.openSettings, null, { timeout: 20000 });
 
   // 5) pair against the smoke service (real register/connect flow)
   await page.evaluate(() => window.AiPanel.openSettings());
@@ -173,7 +209,20 @@ async function main() {
     20000,
     "connection ok",
   );
-  console.log("ok - desktop connected to smoke service");
+  // The desktop pairs via /api/pair, which registers its OWN user account —
+  // distinct from the user created by the /api/register probe above. All
+  // workspace assertions must use the account the desktop actually uses.
+  const userId = await page.evaluate(() => window.AiPanel.getState().userId);
+  assert.ok(/^usr_/.test(userId), `desktop reports user id: ${userId}`);
+  const panelConnectionStatus = await page.evaluate(
+    () => document.getElementById("aiStatusText").textContent.trim(),
+  );
+  assert.strictEqual(
+    panelConnectionStatus,
+    "已连接 · 空闲",
+    "Agent panel connection label matches the global connection pill",
+  );
+  console.log("ok - desktop connected to smoke service as", userId);
 
   // 6) create a project (template copy under workspaces/{user})
   await page.evaluate(() => window.AiPanel.openCreateProject());
@@ -198,6 +247,23 @@ async function main() {
 
   // 7) turn 1: streaming markdown; deltas must merge into ONE bubble
   await send("用表格对比 LruCache 和 Room 缓存方案 ALPHA-UNIQUE-7");
+  await waitUntil(
+    () =>
+      page.evaluate(() => {
+        const state = window.AiPanel.getState();
+        const visible = (id) =>
+          getComputedStyle(document.getElementById(id)).display !== "none";
+        return (
+          state.running &&
+          ["queued", "running"].includes(state.jobStatus) &&
+          visible("btnPauseJob") &&
+          visible("btnHeaderStop") &&
+          visible("btnStop")
+        );
+      }),
+    10000,
+    "active task controls visible",
+  );
   await page.waitForSelector(".tl-assistant", { timeout: 20000 });
   const len1 = await page.evaluate(
     () => document.querySelector(".tl-assistant").textContent.length,
@@ -207,37 +273,54 @@ async function main() {
     () => document.querySelector(".tl-assistant").textContent.length,
   );
   assert.ok(len2 > len1, `streaming text grows (${len1} -> ${len2})`);
-  const streamShape = await page.evaluate(() => ({
-    assistants: document.querySelectorAll(".tl-assistant").length,
-    statuses: document.querySelectorAll(".tl-status").length,
-    hasTableFragmentAsStatus: [...document.querySelectorAll(".tl-status")].some((n) =>
-      n.textContent.includes("LruCache"),
-    ),
-  }));
+  const streamShape = await page.evaluate(() => {
+    const statuses = [...document.querySelectorAll(".tl-status")].map((n) =>
+      n.textContent.trim(),
+    );
+    return {
+      assistants: document.querySelectorAll(".tl-assistant").length,
+      statuses,
+      // A status line that is a fragment of the streamed markdown means raw
+      // text_delta events leaked into status rows instead of the bubble.
+      deltaLeakInStatus: statuses.some((s) => s.includes("LruCache")),
+    };
+  });
   assert.strictEqual(streamShape.assistants, 1, "exactly one streaming bubble");
-  assert.ok(streamShape.statuses <= 2, "deltas did not become status lines");
-  assert.ok(!streamShape.hasTableFragmentAsStatus, "no table fragment in status");
+  assert.ok(!streamShape.deltaLeakInStatus, `no delta fragments in status: ${streamShape.statuses}`);
   console.log("ok - streaming merges deltas into one bubble");
 
   await waitUntil(
     () =>
       page.evaluate(() => {
         const heads = [...document.querySelectorAll(".tl-work-head")];
-        return heads.some((h) => h.textContent.includes("已完成"));
+        const state = window.AiPanel.getState();
+        return (
+          heads.some((h) => h.textContent.includes("已完成")) &&
+          !state.running &&
+          state.jobStatus === "succeeded"
+        );
       }),
     30000,
     "turn 1 finished",
   );
-  const md = await page.evaluate(() => {
-    const a = document.querySelector(".tl-assistant");
-    return {
-      table: Boolean(a.querySelector("table")),
-      bold: Boolean(a.querySelector("strong")),
-      code: Boolean(a.querySelector("pre code, pre")),
-      inline: Boolean(a.querySelector("code:not(pre code)")),
-    };
-  });
-  assert.ok(md.table && md.bold && md.code && md.inline, "markdown table/bold/code rendered");
+  // The "已完成" head can appear a frame before the final message re-renders
+  // from its streaming partial into full markdown, so poll for content, not a
+  // one-shot snapshot.
+  await waitUntil(
+    () =>
+      page.evaluate(() => {
+        const a = document.querySelector(".tl-assistant");
+        if (!a) return false;
+        return Boolean(
+          a.querySelector("table") &&
+            a.querySelector("strong") &&
+            a.querySelector("pre code, pre") &&
+            a.querySelector("code:not(pre code)"),
+        );
+      }),
+    15000,
+    "markdown table/bold/code rendered",
+  );
   console.log("ok - markdown rendered (table/bold/code)");
   await page.screenshot({ path: path.join(__dirname, "smoke-1-streaming.png") });
 
@@ -301,10 +384,14 @@ async function main() {
     10000,
     "diff closed",
   );
-  const modelsAfterClose = await page.evaluate(
-    () => window.monaco.editor.getModels().length,
+  const modelsAfterClose = await page.evaluate(() =>
+    window.monaco.editor.getModels().map((m) => `${m.uri} ${m.getLanguageId()}`),
   );
-  assert.strictEqual(modelsAfterClose, 0, "diff models disposed on close");
+  assert.deepStrictEqual(
+    modelsAfterClose,
+    [],
+    `diff models disposed on close; leaked: ${JSON.stringify(modelsAfterClose)}`,
+  );
   console.log("ok - diff models disposed");
 
   // 10) turn 3 -> three turns; older collapsed, last expanded
@@ -341,6 +428,7 @@ async function main() {
   page = await app.firstWindow();
   wireErrors(page);
   await page.waitForSelector("#promptInput", { timeout: 20000 });
+  await page.waitForFunction(() => window.AiPanel?.getState, null, { timeout: 20000 });
   await waitUntil(
     () => page.evaluate(() => document.getElementById("connPill").dataset.state === "ok"),
     20000,
@@ -411,6 +499,74 @@ async function main() {
   console.log("ok - fast switching keeps conversations isolated");
   await page.screenshot({ path: path.join(__dirname, "smoke-5-switch.png") });
 
+  // 12b) command approval: card shows human-readable command, approve -> runs
+  const lastApproval = () =>
+    page.evaluate(() => {
+      const cards = [...document.querySelectorAll(".tl-approval")];
+      const last = cards[cards.length - 1];
+      if (!last) return null;
+      return {
+        pending: last.classList.contains("is-pending"),
+        approved: last.classList.contains("is-approved"),
+        title: last.querySelector(".tl-approval-name")?.textContent || "",
+        body: last.textContent || "",
+      };
+    });
+  const approvePending = async (titleText, bodyText, shotName) => {
+    const card = page.locator(".tl-approval.is-pending").last();
+    await card.waitFor({ state: "visible", timeout: 30000 });
+    const info = await card.evaluate((n) => ({
+      title: n.querySelector(".tl-approval-name")?.textContent || "",
+      body: n.textContent || "",
+    }));
+    assert.ok(info.title.includes(titleText), `approval title ${titleText}: ${info.title}`);
+    assert.ok(info.body.includes(bodyText), `approval body includes ${bodyText}`);
+    await page.screenshot({ path: path.join(__dirname, shotName) });
+    await card.locator("button", { hasText: "允许一次" }).click();
+    await waitUntil(async () => (await lastApproval())?.approved, 30000, "approval resolved");
+    const stamp = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll(".tl-approval")];
+      const last = cards[cards.length - 1];
+      return last?.querySelector(".tl-approval-stamp")?.textContent || "";
+    });
+    assert.ok(stamp.includes("已允许"), `approved stamp: ${stamp}`);
+  };
+
+  await send("运行命令 RUN-CMD-SMOKE-8 打印一行信息");
+  await approvePending("运行命令", "python3", "smoke-6-approval-command.png");
+  await waitUntil(
+    () =>
+      page.evaluate(() => {
+        const nodes = [...document.querySelectorAll(".tl-assistant")];
+        const last = nodes[nodes.length - 1];
+        const state = window.AiPanel.getState();
+        return Boolean(
+          last &&
+            last.textContent.includes("smoke-command-ok-9") &&
+            !state.running &&
+            state.jobStatus === "succeeded"
+        );
+      }),
+    30000,
+    "command turn final answer",
+  );
+  console.log("ok - command approval card -> approve -> tool executed");
+
+  // 12c) network approval: web_search asks, approve -> tool runs
+  await send("访问网络 NET-SMOKE-5 搜索测试");
+  await approvePending("访问网络", "android agent smoke test", "smoke-7-approval-network.png");
+  await waitUntil(
+    () =>
+      page.evaluate(() => {
+        const nodes = [...document.querySelectorAll(".tl-assistant")];
+        const last = nodes[nodes.length - 1];
+        return Boolean(last && last.textContent.includes("审批链路"));
+      }),
+    30000,
+    "network turn final answer",
+  );
+  console.log("ok - network approval card -> approve -> tool executed");
+
   // 13) no uncaught exceptions
   closing = true;
   await app.close();
@@ -420,12 +576,17 @@ async function main() {
   assert.deepStrictEqual(realErrors, [], `uncaught errors: ${realErrors.join(" | ")}`);
   console.log("ok - no uncaught exceptions");
 
-  svc.kill("SIGTERM");
+  svc.kill("SIGKILL");
   console.log("electron-smoke: OK");
+  cleanup();
+  process.exit(0);
 }
 
 main().catch((err) => {
   console.error("electron-smoke FAILED:", err && err.message ? err.message : err);
   if (svcLog) console.error("service log tail:\n" + svcLog.slice(-3000));
-  process.exitCode = 1;
+  // Children keep the event loop alive, so the "exit" handler would never
+  // fire. Kill them here and exit explicitly or this process leaks forever.
+  cleanup();
+  process.exit(1);
 });

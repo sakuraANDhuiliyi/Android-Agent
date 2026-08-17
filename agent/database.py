@@ -804,6 +804,52 @@ class TaskStore:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_conversation(row) for row in rows]
 
+    def conversation_list_previews(
+        self, user_id: str, conversation_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """会话列表轻量摘要：最近用户问题文本 + 最新 turn 状态（批量两条 SQL）。"""
+        previews: dict[str, dict[str, Any]] = {cid: {} for cid in conversation_ids}
+        if not conversation_ids:
+            return previews
+        placeholders = ",".join("?" for _ in conversation_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT e.conversation_id AS cid, e.payload_json
+                FROM conversation_events e
+                JOIN (
+                    SELECT conversation_id, MAX(seq) AS max_seq
+                    FROM conversation_events
+                    WHERE event_type='user_message'
+                      AND conversation_id IN ({placeholders})
+                    GROUP BY conversation_id
+                ) latest ON e.conversation_id=latest.conversation_id
+                        AND e.seq=latest.max_seq
+                """,
+                tuple(conversation_ids),
+            ).fetchall()
+            for row in rows:
+                previews[row["cid"]]["summary"] = _user_payload_preview(
+                    row["payload_json"]
+                )
+            rows = conn.execute(
+                f"""
+                SELECT t.conversation_id AS cid, t.status AS status
+                FROM conversation_turns t
+                JOIN (
+                    SELECT conversation_id, MAX(created_at) AS max_created
+                    FROM conversation_turns
+                    WHERE conversation_id IN ({placeholders})
+                    GROUP BY conversation_id
+                ) latest ON t.conversation_id=latest.conversation_id
+                        AND t.created_at=latest.max_created
+                """,
+                tuple(conversation_ids),
+            ).fetchall()
+            for row in rows:
+                previews[row["cid"]]["last_turn_status"] = row["status"]
+        return previews
+
     def update_conversation(self, conversation_id: str, user_id: str, **values: Any) -> dict[str, Any] | None:
         if not values:
             return self.get_conversation(conversation_id, user_id)
@@ -1510,3 +1556,26 @@ class TaskStore:
         )
         item["turn_count"] = len(item["turns"])
         return item
+
+
+def _user_payload_preview(payload_json: str, limit: int = 120) -> str:
+    """从 user_message payload 提取纯文本摘要（content 字符串或 blocks 数组）。"""
+    try:
+        payload = json.loads(payload_json or "{}")
+    except (ValueError, TypeError):
+        return ""
+    content = payload.get("content")
+    if isinstance(content, str):
+        text = content.strip()
+    elif isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+        ]
+        text = " ".join(part for part in parts if isinstance(part, str))
+        text = text.strip()
+    else:
+        text = ""
+    text = " ".join(text.split())
+    return text[:limit]

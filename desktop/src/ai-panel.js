@@ -15,6 +15,9 @@
     connPill: document.getElementById("connPill"),
     statusConn: document.getElementById("statusConn"),
     aiStatusDot: document.getElementById("aiStatusDot"),
+    aiStatusText: document.getElementById("aiStatusText"),
+    aiMetaExtra: document.getElementById("aiMetaExtra"),
+    aiTaskControls: document.getElementById("aiTaskControls"),
     projectSelect: document.getElementById("projectSelect"),
     modelSelect: document.getElementById("modelSelect"),
     runModeSelect: document.getElementById("runModeSelect"),
@@ -30,6 +33,7 @@
     btnStop: document.getElementById("btnStop"),
     btnSteer: document.getElementById("btnSteer"),
     btnFollowUp: document.getElementById("btnFollowUp"),
+    composerModes: document.getElementById("composerModes"),
     btnNewChat: document.getElementById("btnNewChat"),
     btnAiMore: document.getElementById("btnAiMore"),
     aiMoreMenu: document.getElementById("aiMoreMenu"),
@@ -51,6 +55,7 @@
     btnOpenSettings: document.getElementById("btnOpenSettings"),
     btnPauseJob: document.getElementById("btnPauseJob"),
     btnResumeJob: document.getElementById("btnResumeJob"),
+    btnHeaderStop: document.getElementById("btnHeaderStop"),
     btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     createProjectDialog: document.getElementById("createProjectDialog"),
     createProjectForm: document.getElementById("createProjectForm"),
@@ -72,12 +77,17 @@
     currentJobId: null,
     jobStatus: null,
     running: false,
+    pauseRequested: false,
+    cancelRequested: false,
+    controlBusy: null,
     watcher: null,
     serverManaged: false,
     serverRunning: false,
     serverBusy: false,
+    reconnectBusy: false,
     phoneUrl: "",
     runMode: "workspace",
+    runInputMode: "steer",
     contextChips: [],
     // Monotonic token guarding every async conversation load: responses that
     // arrive after the user switched away (A→B→A) are dropped, never merged.
@@ -88,9 +98,20 @@
     historyCursor: null, // { minSeq, hasMore }
   };
 
+  // Last selection persisted before shutdown; applied once on the first
+  // successful connect after launch so a restart restores the conversation.
+  const restoredSelection = { projectId: null, conversationId: null };
+
   const HISTORY_PAGE_LIMIT = 300;
   const REVIEW_PREPARE_RETRIES = 8;
   const REVIEW_PREPARE_INTERVAL_MS = 750;
+  const ACTIVE_JOB_STATUSES = new Set([
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused",
+    "cancel_requested",
+  ]);
 
   const timeline = window.Timeline.createStore();
   let view = null;
@@ -120,6 +141,8 @@
         state.runMode = data.runMode;
         if (els.runModeSelect) els.runModeSelect.value = data.runMode;
       }
+      if (data.projectId) restoredSelection.projectId = data.projectId;
+      if (data.conversationId) restoredSelection.conversationId = data.conversationId;
     } catch (_) {
       /* ignore */
     }
@@ -132,6 +155,8 @@
         serverUrl: els.serverUrl.value.trim(),
         autoFallback: els.autoFallback.checked,
         runMode: state.runMode,
+        projectId: state.selectedProjectId || "",
+        conversationId: state.conversationId || "",
       }),
     );
   }
@@ -156,11 +181,19 @@
         running: "运行中",
         paused: "已暂停",
         awaiting_approval: "等待审批",
+        cancel_requested: "正在停止",
         succeeded: "已完成",
         failed: "失败",
         canceled: "已停止",
         interrupted: "已中断",
       }[status] || status || "—"
+    );
+  }
+
+  function hasActiveJob() {
+    return Boolean(
+      state.currentJobId &&
+        (state.running || ACTIVE_JOB_STATUSES.has(state.jobStatus)),
     );
   }
 
@@ -190,16 +223,77 @@
   function updateStatusDot() {
     if (!els.aiStatusDot) return;
     const pending = timeline.pendingApprovals().length;
-    const name = state.running ? (pending ? "awaiting" : "running") : state.connected ? "idle" : "off";
+    const status = state.cancelRequested ? "cancel_requested" : state.jobStatus;
+    let name = "off";
+    let label = "未连接";
+    let title = "未连接";
+    if (state.connected) {
+      name = "idle";
+      label = "已连接 · 空闲";
+      title = "Agent 已连接，当前空闲";
+      if (pending || status === "awaiting_approval") {
+        name = "awaiting";
+        label = "等待审批";
+        title = "任务正在等待你的审批";
+      } else if (state.cancelRequested) {
+        name = "running";
+        label = "正在停止";
+        title = "已发送停止请求";
+      } else if (state.pauseRequested && status === "running") {
+        name = "running";
+        label = "正在暂停";
+        title = "任务将在安全检查点暂停";
+      } else if (status === "paused") {
+        name = "awaiting";
+        label = "已暂停";
+        title = "任务已暂停，可继续或停止";
+      } else if (state.running || ACTIVE_JOB_STATUSES.has(status)) {
+        name = "running";
+        label = status === "queued" ? "排队中" : "正在运行";
+        title = status === "queued" ? "任务正在排队" : "任务运行中";
+      } else if (state.currentJobId && status) {
+        label = statusLabel(status);
+        title = `当前任务${statusLabel(status)}`;
+      }
+    }
     els.aiStatusDot.dataset.state = name;
-    els.aiStatusDot.title =
-      name === "running"
-        ? "任务运行中"
-        : name === "awaiting"
-          ? "等待审批"
-          : name === "idle"
-            ? "空闲"
-            : "未连接";
+    els.aiStatusDot.title = title;
+    if (els.aiStatusText) {
+      els.aiStatusText.textContent = label;
+      els.aiStatusText.title = title;
+    }
+    if (els.aiMetaExtra) {
+      els.aiMetaExtra.textContent = "";
+    }
+    updateJobControls();
+  }
+
+  function updateJobControls() {
+    const active = state.connected && hasActiveJob();
+    const status = state.jobStatus;
+    const busy = Boolean(state.controlBusy);
+    const canPause = active && !state.cancelRequested && (status === "queued" || status === "running");
+    const canResume = active && !state.cancelRequested && status === "paused";
+    const canStop = active;
+
+    if (els.btnPauseJob) {
+      els.btnPauseJob.hidden = !canPause;
+      els.btnPauseJob.disabled = busy || state.pauseRequested;
+      els.btnPauseJob.textContent = state.pauseRequested ? "暂停中…" : "暂停";
+    }
+    if (els.btnResumeJob) {
+      els.btnResumeJob.hidden = !canResume;
+      els.btnResumeJob.disabled = busy;
+      els.btnResumeJob.textContent = state.controlBusy === "resume" ? "继续中…" : "继续";
+    }
+    if (els.btnHeaderStop) {
+      els.btnHeaderStop.hidden = !canStop;
+      els.btnHeaderStop.disabled = busy || state.cancelRequested;
+      els.btnHeaderStop.textContent = state.cancelRequested ? "停止中…" : "停止";
+    }
+    if (els.aiTaskControls) {
+      els.aiTaskControls.hidden = !(canPause || canResume || canStop);
+    }
   }
 
   function renderApprovalDock() {
@@ -536,6 +630,20 @@
     }
   }
 
+  function isConfiguredLocalServer(baseUrl, status) {
+    try {
+      const url = new URL(baseUrl);
+      const host = url.hostname.toLowerCase();
+      const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+      return (
+        ["127.0.0.1", "localhost", "::1"].includes(host) &&
+        port === Number(status?.port || 8000)
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function startServer() {
     if (state.serverBusy) return;
     state.serverBusy = true;
@@ -573,8 +681,12 @@
       applyServerStatus(result);
       if (result.stopped) {
         state.connected = false;
+        state.pauseRequested = false;
+        state.cancelRequested = false;
+        state.controlBusy = null;
         setConn("idle", "未连接");
         updateComposer();
+        updateStatusDot();
         toast("已停止桌面端拉起的服务");
       } else {
         toast("当前服务不是由桌面端启动的，未强制停止");
@@ -636,7 +748,17 @@
       }
       await loadModels();
       await refreshProjects({ silent: true });
-      await maybeAutoSelectProject();
+      const restorePid = restoredSelection.projectId;
+      if (!state.selectedProjectId && restorePid && state.projects.some((p) => p.id === restorePid)) {
+        // Restart restore: prefer the persisted conversation over the
+        // "conversation with most turns" default.
+        restoredSelection.projectId = null;
+        state.conversationId = restoredSelection.conversationId || null;
+        restoredSelection.conversationId = null;
+        await selectProject(restorePid, { openWorkspace: false });
+      } else {
+        await maybeAutoSelectProject();
+      }
       updateComposer();
       updateStatusDot();
       if (desktop?.setCredential) {
@@ -746,6 +868,7 @@
 
   async function selectProject(projectId, { openWorkspace = false } = {}) {
     state.selectedProjectId = projectId || null;
+    savePrefs();
     if (projectId) els.projectSelect.value = projectId;
     updateComposer();
 
@@ -908,6 +1031,9 @@
       setRunning(false);
       state.currentJobId = null;
       state.jobStatus = null;
+      state.pauseRequested = false;
+      state.cancelRequested = false;
+      state.controlBusy = null;
       // Save where the user was reading before leaving this conversation.
       if (state.conversationId) {
         state.scrollTops.set(state.conversationId, els.aiMessages.scrollTop);
@@ -915,6 +1041,7 @@
     }
     const token = ++state.loadToken; // invalidates every in-flight load
     state.conversationId = conversationId;
+    savePrefs();
     state.historyCursor = null;
     loadingEarlier = false;
     view?.setConversationId(conversationId);
@@ -955,11 +1082,13 @@
     try {
       const data = await client.jobs(state.selectedProjectId, conversationId);
       const active = (data.jobs || []).find(
-        (j) => j.status === "queued" || j.status === "running" || j.status === "awaiting_approval",
+        (j) => j.status === "queued" || j.status === "running" || j.status === "awaiting_approval" || j.status === "paused",
       );
       if (!active) return;
       state.currentJobId = active.id;
       state.jobStatus = active.status;
+      state.pauseRequested = Boolean(active.pause_requested);
+      state.cancelRequested = Boolean(active.cancel_requested);
       if (els.jobHistory) els.jobHistory.value = active.id;
       watchJob(active.id);
     } catch (_) {
@@ -1040,10 +1169,12 @@
       } else if (!state.conversationId && job.conversation_id) {
         await selectConversation(job.conversation_id, { loadHistory: true });
       }
-      if (["queued", "running", "awaiting_approval"].includes(job.status)) {
+      if (["queued", "running", "awaiting_approval", "paused"].includes(job.status)) {
         // Still active: re-attach the live watcher instead of just showing history.
         state.currentJobId = job.id;
         state.jobStatus = job.status;
+        state.pauseRequested = Boolean(job.pause_requested);
+        state.cancelRequested = Boolean(job.cancel_requested);
         watchJob(job.id);
       }
       if (els.jobHistory) els.jobHistory.value = "";
@@ -1082,8 +1213,23 @@
     }
   }
 
-  async function syncPendingApprovals(jobId) {
+  // Throttles: job status arrives on every poll tick, and awaiting_approval
+  // used to trigger a /approvals fetch per tick (5 req/s while waiting).
+  const approvalSyncThrottle = { jobId: null, at: 0 };
+  let lastErrorToastAt = 0;
+
+  async function syncPendingApprovals(jobId, { force = false } = {}) {
     if (!jobId || !state.connected) return;
+    const now = Date.now();
+    if (
+      !force &&
+      approvalSyncThrottle.jobId === jobId &&
+      now - approvalSyncThrottle.at < 2000
+    ) {
+      return;
+    }
+    approvalSyncThrottle.jobId = jobId;
+    approvalSyncThrottle.at = now;
     try {
       const data = await client.listApprovals(jobId);
       const pending = data.approvals || [];
@@ -1120,7 +1266,7 @@
     stopWatcher();
     state.currentJobId = jobId;
     setRunning(true);
-    syncPendingApprovals(jobId);
+    syncPendingApprovals(jobId, { force: true });
     state.watcher = client.watchJob(jobId, async (payload) => {
       if (state.currentJobId !== jobId) return;
       if (payload.kind === "event" && payload.event) {
@@ -1130,9 +1276,12 @@
       }
       if (payload.kind === "job" && payload.job) {
         state.jobStatus = payload.job.status;
+        state.pauseRequested = Boolean(payload.job.pause_requested);
+        state.cancelRequested = Boolean(payload.job.cancel_requested);
         if (payload.job.status === "awaiting_approval") {
           await syncPendingApprovals(jobId);
         }
+        updateComposer();
         updateStatusDot();
         return;
       }
@@ -1140,6 +1289,9 @@
         stopWatcher();
         setRunning(false);
         state.jobStatus = payload.status;
+        state.pauseRequested = false;
+        state.cancelRequested = false;
+        state.controlBusy = null;
         try {
           const data = await client.job(jobId);
           if (state.currentJobId !== jobId) return;
@@ -1175,27 +1327,59 @@
         return;
       }
       if (payload.kind === "error") {
-        toast(`连接异常: ${payload.error}`);
+        // Poll retries every ~1.5s; without a throttle a dead server spams
+        // one toast per tick.
+        const now = Date.now();
+        if (now - lastErrorToastAt > 5000) {
+          lastErrorToastAt = now;
+          toast(`连接异常: ${payload.error}`);
+        }
       }
     });
   }
 
   // —— Composer ——
 
+  function setRunInputMode(mode) {
+    state.runInputMode = mode === "follow_up" ? "follow_up" : "steer";
+    if (els.composerModes) {
+      els.composerModes.querySelectorAll(".composer-mode").forEach((btn) => {
+        const active = btn.dataset.mode === state.runInputMode;
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+    }
+  }
+
   function updateComposer() {
     const ready = state.connected && state.selectedProjectId && state.conversationId;
     els.promptInput.disabled = !ready;
     const running = state.running;
-    els.btnSend.hidden = running;
-    els.btnStop.hidden = !running;
-    els.btnSteer.hidden = !running;
-    els.btnFollowUp.hidden = !running;
-    els.btnSend.disabled = !ready || running;
-    els.btnStop.disabled = !running;
+    const controllable = state.connected && hasActiveJob();
+    els.btnSend.hidden = false;
+    els.btnStop.hidden = !controllable;
+    if (els.composerModes) els.composerModes.hidden = !running;
+    els.btnSend.disabled = !ready;
+    els.btnStop.disabled = !controllable || Boolean(state.controlBusy) || state.cancelRequested;
+    els.btnStop.textContent = state.cancelRequested ? "停止中…" : "停止";
     els.btnAddContext.disabled = !state.selectedProjectId;
+    els.btnSend.textContent = running
+      ? state.runInputMode === "follow_up"
+        ? "发送追问"
+        : "发送引导"
+      : "发送";
+    // Disabled states must explain WHY, not just fade out.
     els.promptInput.placeholder = running
-      ? "任务运行中：输入后可引导或追问…"
-      : "描述要完成的任务";
+      ? "任务运行中：输入内容将按所选模式插入"
+      : !state.connected
+        ? "连接中断，输入内容将保留"
+        : !state.selectedProjectId
+          ? "选择项目后可发送任务"
+          : !state.conversationId
+            ? "开始或选择一个任务后可发送"
+            : "描述要完成的任务";
+    setRunInputMode(state.runInputMode);
+    updateJobControls();
   }
 
   function autosizePrompt() {
@@ -1329,6 +1513,10 @@
     timeline.addLocalUserMessage(prompt, {});
     els.promptInput.value = "";
     autosizePrompt();
+    setRunInputMode("steer"); // every new task starts in steer mode
+    state.pauseRequested = false;
+    state.cancelRequested = false;
+    state.controlBusy = null;
     setRunning(true);
     renderTimeline();
 
@@ -1337,6 +1525,8 @@
       const job = data.job;
       state.currentJobId = job.id;
       state.jobStatus = job.status;
+      state.pauseRequested = Boolean(job.pause_requested);
+      state.cancelRequested = Boolean(job.cancel_requested);
       if (data.conversation_id) state.conversationId = data.conversation_id;
       watchJob(job.id);
       await loadJobHistory(projectId, state.conversationId);
@@ -1347,18 +1537,51 @@
     }
   }
 
-  async function stopJob() {
-    if (!state.currentJobId) return;
-    els.btnStop.disabled = true;
+  async function controlJob(action) {
+    if (!state.currentJobId || state.controlBusy) return;
+    state.controlBusy = action;
+    if (action === "cancel") state.cancelRequested = true;
+    updateComposer();
+    updateStatusDot();
     try {
-      await client.cancel(state.currentJobId);
-      timeline.cancelPending();
-      renderTimeline();
-      toast("已请求停止");
+      const data =
+        action === "pause"
+          ? await client.pauseJob(state.currentJobId)
+          : action === "resume"
+            ? await client.resumeJob(state.currentJobId)
+            : await client.cancel(state.currentJobId);
+      const job = data?.job;
+      if (job) {
+        state.jobStatus = job.status;
+        state.pauseRequested = Boolean(job.pause_requested) || (action === "pause" && job.status === "running");
+        state.cancelRequested = Boolean(job.cancel_requested) || action === "cancel";
+      } else if (action === "pause") {
+        state.pauseRequested = true;
+      }
+      if (action === "cancel") {
+        timeline.cancelPending();
+        renderTimeline();
+        toast("已请求停止，任务将在安全检查点结束");
+      } else if (action === "pause") {
+        toast(state.jobStatus === "paused" ? "任务已暂停" : "已请求暂停");
+      } else {
+        state.pauseRequested = false;
+        state.cancelRequested = false;
+        toast("已请求继续");
+      }
     } catch (err) {
-      els.btnStop.disabled = false;
-      toast(err.message);
+      if (action === "cancel") state.cancelRequested = false;
+      if (action === "pause") state.pauseRequested = false;
+      toast(`${action === "pause" ? "暂停" : action === "resume" ? "继续" : "停止"}失败: ${err.message}`);
+    } finally {
+      state.controlBusy = null;
+      updateComposer();
+      updateStatusDot();
     }
+  }
+
+  async function stopJob() {
+    await controlJob("cancel");
   }
 
   async function sendJobMessage(kind) {
@@ -1448,7 +1671,11 @@
     els.btnStartServer.addEventListener("click", () => startServer());
     els.btnStopServer.addEventListener("click", () => stopServer());
     els.btnCopyPhoneUrl.addEventListener("click", () => copyPhoneUrl());
-    els.btnPair?.addEventListener("click", () => pair().catch((err) => toast(`配对失败: ${err.message}`)));
+    els.btnPair?.addEventListener("click", () =>
+      pair()
+        .then(() => els.settingsDialog.close())
+        .catch((err) => toast(`配对失败: ${err.message}`)),
+    );
     els.phoneUrl.addEventListener("click", () => copyPhoneUrl());
     desktop.onAgentServerExit?.(async () => {
       state.serverManaged = false;
@@ -1462,33 +1689,21 @@
 
     els.btnNewChat.addEventListener("click", () => createNewConversation());
     els.btnSidebarNewConversation?.addEventListener("click", () => createNewConversation());
-    els.btnPauseJob?.addEventListener("click", async () => {
-      if (!state.currentJobId) return;
-      try {
-        await client.pauseJob(state.currentJobId);
-        toast("已请求暂停");
-      } catch (err) {
-        toast(`暂停失败: ${err.message}`);
-      }
-    });
-    els.btnResumeJob?.addEventListener("click", async () => {
-      if (!state.currentJobId) return;
-      try {
-        await client.resumeJob(state.currentJobId);
-        toast("已请求继续");
-      } catch (err) {
-        toast(`继续失败: ${err.message}`);
-      }
-    });
+    els.btnPauseJob?.addEventListener("click", () => controlJob("pause"));
+    els.btnResumeJob?.addEventListener("click", () => controlJob("resume"));
+    els.btnHeaderStop?.addEventListener("click", () => stopJob());
     els.conversationSelect?.addEventListener("change", async () => {
       const id = els.conversationSelect.value;
       if (id && id !== state.conversationId) await selectConversation(id);
     });
 
-    els.btnSend.addEventListener("click", () => sendAsk());
+    els.btnSend.addEventListener("click", () => {
+      if (state.running) sendJobMessage(state.runInputMode);
+      else sendAsk();
+    });
     els.btnStop.addEventListener("click", () => stopJob());
-    els.btnSteer?.addEventListener("click", () => sendJobMessage("steer"));
-    els.btnFollowUp?.addEventListener("click", () => sendJobMessage("follow_up"));
+    els.btnSteer?.addEventListener("click", () => setRunInputMode("steer"));
+    els.btnFollowUp?.addEventListener("click", () => setRunInputMode("follow_up"));
     els.autoFallback.addEventListener("change", savePrefs);
 
     els.btnAddContext?.addEventListener("click", () => toggleMenu(els.contextMenu));
@@ -1501,9 +1716,11 @@
 
     els.promptInput.addEventListener("input", autosizePrompt);
     els.promptInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !ev.shiftKey) {
+      const submit =
+        (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) || (ev.key === "Enter" && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey);
+      if (submit) {
         ev.preventDefault();
-        if (state.running) sendJobMessage("steer");
+        if (state.running) sendJobMessage(state.runInputMode);
         else if (!els.btnSend.disabled) sendAsk();
       }
     });
@@ -1596,18 +1813,45 @@
     renderChips();
     updateComposer();
     updateStatusDot();
-    await refreshServerStatus();
+    const initialServerStatus = await refreshServerStatus();
     if (desktop?.getCredential) {
       const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
       els.apiToken.value = await desktop.getCredential(baseUrl);
     }
-    try {
-      await connect({ silent: true });
-    } catch (_) {
-      setConn("err", "未连接");
+    // A remembered local credential means this desktop was already paired.
+    // Start its local service automatically so app restarts do not leave a
+    // misleading disconnected panel or require a trip through Settings.
+    const rememberedServerUrl = (els.serverUrl.value || "http://127.0.0.1:8000")
+      .trim()
+      .replace(/\/+$/, "");
+    if (
+      !initialServerStatus?.running &&
+      els.apiToken.value.trim() &&
+      desktop?.agentStart &&
+      isConfiguredLocalServer(rememberedServerUrl, initialServerStatus)
+    ) {
+      await startServer();
     }
-    setInterval(() => {
-      if (!state.serverBusy) refreshServerStatus();
+    if (!state.connected) {
+      try {
+        await connect({ silent: true });
+      } catch (_) {
+        setConn("err", "未连接");
+      }
+    }
+    setInterval(async () => {
+      if (state.serverBusy || state.reconnectBusy) return;
+      const status = await refreshServerStatus();
+      if (status?.running && !state.connected && els.apiToken.value.trim()) {
+        state.reconnectBusy = true;
+        try {
+          await connect({ silent: true });
+        } catch (_) {
+          /* retry on the next health interval */
+        } finally {
+          state.reconnectBusy = false;
+        }
+      }
     }, 5000);
   }
 
@@ -1649,7 +1893,11 @@
       openTurnDiffReview,
       closeReviewSession,
       selectConversation,
-      setState: (patch) => Object.assign(state, patch || {}),
+      setState: (patch) => {
+        Object.assign(state, patch || {});
+        updateComposer();
+        updateStatusDot();
+      },
     },
   };
 })();

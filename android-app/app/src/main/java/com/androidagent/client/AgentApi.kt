@@ -72,6 +72,8 @@ data class ConversationInfo(
     val status: String,
     val createdAt: Double?,
     val updatedAt: Double?,
+    val summary: String = "",
+    val lastTurnStatus: String = "",
 )
 
 data class ApprovalInfo(
@@ -155,6 +157,7 @@ data class ConversationEventsPage(
     val conversationId: String,
     val events: List<JSONObject>,
     val nextAfterSeq: Int?,
+    val nextBeforeSeq: Int?,
     val hasMore: Boolean,
 )
 
@@ -232,6 +235,18 @@ class AgentApi(
         return parseProject(json)
     }
 
+    fun deleteProject(projectId: String) {
+        val request = buildRequest("/api/projects/$projectId")
+            .newBuilder()
+            .delete()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw mapHttpError(response.code, response.body?.string().orEmpty())
+            }
+        }
+    }
+
     fun listConversations(projectId: String, archived: Boolean = false): List<ConversationInfo> {
         val q = if (archived) "?archived=1" else ""
         val json = getJson("/api/projects/$projectId/conversations$q")
@@ -270,11 +285,13 @@ class AgentApi(
     fun listConversationEvents(
         conversationId: String,
         afterSeq: Int? = null,
+        beforeSeq: Int? = null,
         limit: Int = 200,
         contextOnly: Boolean = false,
     ): ConversationEventsPage {
         val params = mutableListOf("limit=$limit", "context_only=$contextOnly")
         if (afterSeq != null) params.add("after_seq=$afterSeq")
+        if (beforeSeq != null) params.add("before_seq=$beforeSeq")
         val json = getJson("/api/conversations/$conversationId/events?${params.joinToString("&")}")
         val eventsArray = json.optJSONArray("events") ?: JSONArray()
         val events = (0 until eventsArray.length()).map { eventsArray.getJSONObject(it) }
@@ -282,6 +299,7 @@ class AgentApi(
             conversationId = json.optString("conversation_id", conversationId),
             events = events,
             nextAfterSeq = if (json.isNull("next_after_seq")) null else json.optInt("next_after_seq"),
+            nextBeforeSeq = if (json.isNull("next_before_seq")) null else json.optInt("next_before_seq"),
             hasMore = json.optBoolean("has_more"),
         )
     }
@@ -319,10 +337,12 @@ class AgentApi(
         return parseJob(json.getJSONObject("job"))
     }
 
-    fun listJobs(projectId: String, conversationId: String? = null): List<JobInfo> {
-        val params = mutableListOf("project_id=$projectId")
+    fun listJobs(projectId: String? = null, conversationId: String? = null): List<JobInfo> {
+        val params = mutableListOf<String>()
+        if (!projectId.isNullOrBlank()) params.add("project_id=$projectId")
         if (!conversationId.isNullOrBlank()) params.add("conversation_id=$conversationId")
-        val json = getJson("/api/jobs?${params.joinToString("&")}")
+        val query = if (params.isEmpty()) "" else "?${params.joinToString("&")}"
+        val json = getJson("/api/jobs$query")
         val jobs = json.optJSONArray("jobs") ?: JSONArray()
         return (0 until jobs.length()).map { parseJob(jobs.getJSONObject(it)) }
     }
@@ -532,6 +552,8 @@ class AgentApi(
             status = json.optString("status", "active"),
             createdAt = nullableDouble(json, "created_at"),
             updatedAt = nullableDouble(json, "updated_at"),
+            summary = json.optString("summary"),
+            lastTurnStatus = json.optString("last_turn_status"),
         )
     }
 
@@ -540,7 +562,10 @@ class AgentApi(
         return ApprovalInfo(
             id = json.optString("id"),
             kind = json.optString("kind").ifBlank { json.optString("approval_kind") },
-            status = json.optString("status", "pending"),
+            // 列表端点无状态字段（恒为待确认）；resolve 端点返回 decision 而非 status
+            status = json.optString("status")
+                .ifBlank { json.optString("decision") }
+                .ifBlank { "pending" },
             risk = json.optString("risk").takeIf { it.isNotBlank() }
                 ?: payload.optString("risk").takeIf { it.isNotBlank() },
             toolCallId = json.optString("tool_call_id").takeIf { it.isNotBlank() },

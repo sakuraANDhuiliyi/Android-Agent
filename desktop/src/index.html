@@ -18,7 +18,12 @@
       </div>
       <div class="titlebar-center no-drag" id="windowTitle">欢迎</div>
       <div class="titlebar-right no-drag">
-        <button type="button" class="icon-btn" id="btnCommandPalette" title="命令面板 (⌘⇧P)">⌘</button>
+        <div class="focus-switch" id="focusSwitch" role="tablist" aria-label="焦点模式">
+          <button type="button" class="focus-switch-btn active" data-mode="code" role="tab" aria-selected="true">代码</button>
+          <button type="button" class="focus-switch-btn" data-mode="agent" role="tab" aria-selected="false">Agent</button>
+          <button type="button" class="focus-switch-btn" data-mode="review" role="tab" aria-selected="false">审阅</button>
+        </div>
+        <button type="button" class="icon-btn" id="btnCommandPalette" title="命令面板 (⌘⇧P)" aria-label="命令面板">⌘</button>
         <span class="conn-pill" id="connPill" data-state="idle">未连接</span>
       </div>
     </header>
@@ -44,20 +49,14 @@
       </nav>
 
       <aside class="sidebar" id="sidebar">
-        <div class="sidebar-tabs" id="sidebarTabs">
-          <button class="sidebar-tab active" data-view="explorer" title="资源管理器">资源</button>
-          <button class="sidebar-tab" data-view="search" title="搜索">搜索</button>
-          <button class="sidebar-tab" data-view="conversations" title="对话">对话</button>
-          <button class="sidebar-tab" data-view="jobs" title="任务">任务</button>
-        </div>
         <div class="sidebar-content" id="sidebarContent">
           <div class="sidebar-view active" data-view="explorer">
             <div class="sidebar-header">
               <span>资源管理器</span>
               <div class="sidebar-actions">
-                <button type="button" class="icon-btn" id="btnNewFile" title="新建文件">+</button>
-                <button type="button" class="icon-btn" id="btnRefreshTree" title="刷新">↻</button>
-                <button type="button" class="icon-btn" id="btnCollapseTree" title="全部折叠">▤</button>
+                <button type="button" class="icon-btn" id="btnNewFile" title="新建文件" aria-label="新建文件">+</button>
+                <button type="button" class="icon-btn" id="btnRefreshTree" title="刷新" aria-label="刷新">↻</button>
+                <button type="button" class="icon-btn" id="btnCollapseTree" title="全部折叠" aria-label="全部折叠">▤</button>
               </div>
             </div>
             <div class="sidebar-subtitle" id="explorerRootName">未打开文件夹</div>
@@ -69,7 +68,7 @@
             </div>
             <div class="search-box">
               <input id="searchInput" type="text" placeholder="搜索代码…" autocomplete="off" />
-              <button type="button" class="icon-btn" id="btnSearch" title="搜索">↻</button>
+              <button type="button" class="icon-btn" id="btnSearch" title="搜索" aria-label="搜索">↻</button>
             </div>
             <div class="search-results" id="searchResults"></div>
           </div>
@@ -77,8 +76,8 @@
             <div class="sidebar-header">
               <span>Conversation</span>
               <div class="sidebar-actions">
-                <button type="button" class="icon-btn" id="btnSidebarNewConversation" title="新对话">＋</button>
-                <button type="button" class="icon-btn" id="btnArchiveConversation" title="归档">▤</button>
+                <button type="button" class="icon-btn" id="btnSidebarNewConversation" title="新对话" aria-label="新对话">＋</button>
+                <button type="button" class="icon-btn" id="btnArchiveConversation" title="归档" aria-label="归档">▤</button>
               </div>
             </div>
             <div class="conversation-list" id="conversationList"></div>
@@ -87,7 +86,7 @@
             <div class="sidebar-header">
               <span>运行任务</span>
               <div class="sidebar-actions">
-                <button type="button" class="icon-btn" id="btnRefreshJobs" title="刷新">↻</button>
+                <button type="button" class="icon-btn" id="btnRefreshJobs" title="刷新" aria-label="刷新">↻</button>
               </div>
             </div>
             <div class="job-list" id="jobList"></div>
@@ -107,10 +106,13 @@
           <div class="monaco-diff-host" id="monacoDiffHost" hidden>
             <div class="diff-toolbar" id="diffToolbar">
               <span id="diffTitle">Diff</span>
+              <span class="diff-stats" id="diffStats" hidden></span>
               <div class="diff-actions">
+                <button type="button" class="ghost-btn sm" id="btnDiffLayout" title="切换并排/内联视图" aria-label="切换并排/内联视图">并排</button>
+                <button type="button" class="ghost-btn sm" id="btnDiffWhitespace" title="忽略空白差异" aria-label="忽略空白差异">忽略空白</button>
                 <button type="button" class="ghost-btn sm" id="btnAcceptDiff" title="接受并应用">应用</button>
                 <button type="button" class="ghost-btn sm" id="btnRejectDiff" title="拒绝">拒绝</button>
-                <button type="button" class="icon-btn" id="btnCloseDiff" title="关闭 Diff">×</button>
+                <button type="button" class="icon-btn" id="btnCloseDiff" title="关闭 Diff" aria-label="关闭 Diff">×</button>
               </div>
             </div>
             <div class="diff-monaco" id="diffMonaco"></div>
@@ -136,15 +138,29 @@
         </div>
         <div class="empty" id="emptyState">
           <div class="welcome">
-            <h1>Android Agent</h1>
-            <p>本地编辑器 · Cursor 风格 AI 对话</p>
-            <ul class="welcome-actions">
-              <li><kbd>⌘O</kbd> 打开文件夹</li>
-              <li><kbd>⌘P</kbd> 快速打开文件</li>
-              <li><kbd>⌘⇧P</kbd> 命令面板</li>
-              <li><kbd>⌘L</kbd> 打开 AI 对话</li>
-              <li>打开 <code>res/layout/*.xml</code> 可预览界面</li>
-            </ul>
+            <div class="welcome-grid">
+              <section class="welcome-col">
+                <h2>继续工作</h2>
+                <div class="welcome-recent" id="welcomeRecent">
+                  <p class="muted">暂无最近项目</p>
+                </div>
+              </section>
+              <section class="welcome-col">
+                <h2>开始</h2>
+                <ul class="welcome-actions">
+                  <li><button type="button" class="welcome-link" id="btnWelcomeOpen">打开文件夹</button> <kbd>⌘O</kbd></li>
+                  <li><button type="button" class="welcome-link" id="btnWelcomeNewProject">新建项目</button></li>
+                  <li><button type="button" class="welcome-link" id="btnWelcomeConnect">连接 Agent</button> <kbd>⌘L</kbd></li>
+                </ul>
+                <ul class="welcome-shortcuts">
+                  <li><kbd>⌘P</kbd> 快速打开文件</li>
+                  <li><kbd>⌘⇧P</kbd> 命令面板</li>
+                  <li><kbd>⌘⇧E</kbd> 资源管理器</li>
+                  <li><kbd>⌘B</kbd> 底部面板</li>
+                </ul>
+                <p class="muted welcome-hint">打开 <code>res/layout/*.xml</code> 可预览界面</p>
+              </section>
+            </div>
           </div>
         </div>
 
@@ -159,7 +175,7 @@
             <div class="bottom-view active" data-view="terminal">
               <div class="terminal-toolbar" id="terminalToolbar">
                 <div class="terminal-tabs" id="terminalTabs"></div>
-                <button type="button" class="icon-btn" id="btnNewTerminal" title="新建终端">＋</button>
+                <button type="button" class="icon-btn" id="btnNewTerminal" title="新建终端" aria-label="新建终端">＋</button>
               </div>
               <div class="terminal-stack" id="terminalStack"></div>
             </div>
@@ -181,17 +197,31 @@
 
       <aside class="ai-pane" id="aiPane">
         <div class="ai-header">
-          <span class="ai-status-dot" id="aiStatusDot" data-state="off" title="未连接"></span>
-          <select id="conversationSelect" class="ai-select ai-conv-select" title="当前任务/会话">
-            <option value="">暂无对话</option>
-          </select>
-          <select id="projectSelect" class="ai-select ai-project-select" title="选择项目">
-            <option value="">项目…</option>
-          </select>
-          <div class="ai-header-right">
-            <button type="button" class="icon-btn" id="btnNewChat" title="新任务" aria-label="新任务">＋</button>
-            <button type="button" class="icon-btn" id="btnAiMore" title="更多设置" aria-label="更多设置" aria-haspopup="true">⋯</button>
-            <button type="button" class="icon-btn" id="btnCloseAi" title="关闭面板" aria-label="关闭面板">×</button>
+          <div class="ai-header-row ai-header-main">
+            <nav class="ai-breadcrumb" aria-label="项目与会话">
+              <select id="projectSelect" class="ai-select ai-project-select" title="选择项目" aria-label="选择项目">
+                <option value="">项目…</option>
+              </select>
+              <span class="ai-breadcrumb-sep" aria-hidden="true">›</span>
+              <select id="conversationSelect" class="ai-select ai-conv-select" title="当前任务/会话" aria-label="当前任务/会话">
+                <option value="">暂无对话</option>
+              </select>
+            </nav>
+            <div class="ai-header-right">
+              <button type="button" class="icon-btn" id="btnNewChat" title="新任务" aria-label="新任务">＋</button>
+              <button type="button" class="icon-btn" id="btnAiMore" title="更多设置" aria-label="更多设置" aria-haspopup="true">⋯</button>
+              <button type="button" class="icon-btn" id="btnCloseAi" title="关闭面板" aria-label="关闭面板">×</button>
+            </div>
+          </div>
+          <div class="ai-header-row ai-header-meta">
+            <span class="ai-status-dot" id="aiStatusDot" data-state="off" title="未连接"></span>
+            <span class="ai-status-text" id="aiStatusText" aria-live="polite">未连接</span>
+            <span class="ai-meta-extra" id="aiMetaExtra"></span>
+            <div class="ai-task-controls" id="aiTaskControls" hidden aria-label="当前任务控制">
+              <button type="button" class="ai-task-control" id="btnPauseJob" hidden title="暂停当前任务">暂停</button>
+              <button type="button" class="ai-task-control" id="btnResumeJob" hidden title="继续已暂停任务">继续</button>
+              <button type="button" class="ai-task-control is-danger" id="btnHeaderStop" hidden title="停止当前任务">停止</button>
+            </div>
           </div>
         </div>
 
@@ -199,10 +229,7 @@
           <div class="ai-menu-section">
             <div class="ai-menu-title">任务</div>
             <select id="jobHistory" class="ai-select sm" disabled aria-label="历史任务"></select>
-            <div class="ai-menu-row">
-              <button type="button" class="ghost-btn sm" id="btnPauseJob" title="暂停当前任务">暂停</button>
-              <button type="button" class="ghost-btn sm" id="btnResumeJob" title="继续已暂停任务">继续</button>
-            </div>
+            <p class="ai-menu-hint">任务运行时，暂停、继续和停止会显示在面板状态栏。</p>
           </div>
           <div class="ai-menu-section">
             <div class="ai-menu-title">模型</div>
@@ -271,9 +298,11 @@
             </select>
             <span class="composer-env" title="执行环境">本地</span>
             <div class="spacer"></div>
-            <button type="button" class="ghost-btn sm" id="btnSteer" hidden title="在任务运行中插入引导">引导</button>
-            <button type="button" class="ghost-btn sm" id="btnFollowUp" hidden title="本轮结束后继续追问">追问</button>
-            <button type="button" class="danger-btn sm" id="btnStop" hidden>停止</button>
+            <div class="composer-modes" id="composerModes" hidden role="group" aria-label="运行中输入模式">
+              <button type="button" class="composer-mode is-active" id="btnSteer" data-mode="steer" title="立即插入当前任务，影响本轮执行">引导当前任务</button>
+              <button type="button" class="composer-mode" id="btnFollowUp" data-mode="follow_up" title="本轮结束后再作为新输入继续">本轮结束后追问</button>
+            </div>
+            <button type="button" class="danger-btn sm" id="btnStop" hidden title="停止当前任务" aria-label="停止当前任务">停止</button>
             <button type="button" class="primary-btn sm" id="btnSend" disabled>发送</button>
           </div>
         </div>
@@ -365,10 +394,13 @@
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <!-- xterm UMD bundles MUST load before Monaco's loader.js: loader.js
+       defines window.define (AMD), which would swallow the UMD factories as
+       anonymous AMD modules and leave window.Terminal undefined. -->
   <script src="../node_modules/xterm/lib/xterm.js"></script>
   <script src="../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
   <script src="../node_modules/xterm-addon-web-links/lib/xterm-addon-web-links.js"></script>
+  <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
   <script src="agent-api.js"></script>
   <script src="state.js"></script>
   <script src="timeline.js"></script>

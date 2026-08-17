@@ -91,6 +91,8 @@ dependencies {
     implementation(libs.androidx.coordinatorlayout)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.ext.tables)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

@@ -267,6 +267,13 @@ def list_conversations(user_id: str, project_id: str, include_archived: bool = F
     return _store.list_conversations(user_id, project_id, include_archived=include_archived)
 
 
+def conversation_list_previews(
+    user_id: str, project_id: str, conversation_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    load_project_meta(user_id, project_id)
+    return _store.conversation_list_previews(user_id, conversation_ids)
+
+
 def create_conversation(user_id: str, project_id: str, title: str = "新对话") -> dict[str, Any]:
     load_project_meta(user_id, project_id)
     return _store.create_conversation(user_id, project_id, title=title or "新对话")

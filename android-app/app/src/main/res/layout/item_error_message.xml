@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="@dimen/screen_margin"
+    android:paddingTop="@dimen/space_small"
+    android:paddingEnd="@dimen/screen_margin"
+    android:paddingBottom="@dimen/space_small">
+
+    <TextView
+        android:id="@+id/textErrorTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/build_failed"
+        android:textAppearance="?attr/textAppearanceTitleSmall"
+        android:textColor="@color/status_failed" />
+
+    <TextView
+        android:id="@+id/textErrorMessage"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_tiny"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:textIsSelectable="true"
+        tools:text="具体错误信息..." />
+</LinearLayout>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_task_details"
+        android:title="@string/menu_task_details" />
+    <item
+        android:id="@+id/action_build_log"
+        android:title="@string/build_log" />
+    <item
+        android:id="@+id/action_diff"
+        android:title="@string/menu_view_diff" />
+    <item
+        android:id="@+id/action_apk"
+        android:title="@string/menu_apk" />
+    <item
+        android:id="@+id/action_pause"
+        android:title="@string/menu_pause" />
+    <item
+        android:id="@+id/action_resume"
+        android:title="@string/menu_resume" />
+    <item
+        android:id="@+id/action_stop"
+        android:title="@string/menu_stop" />
+</menu>
