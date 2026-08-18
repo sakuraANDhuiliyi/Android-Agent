@@ -1,0 +1,16 @@
+{
+  "detail": [
+    {
+      "type": "extra_forbidden",
+      "loc": ["body", "unknown_field"],
+      "msg": "Extra inputs are not permitted",
+      "input": true
+    }
+  ],
+  "error": {
+    "schema_version": 1,
+    "code": "validation_error",
+    "retryable": false,
+    "user_message": "请求参数无效"
+  }
+}

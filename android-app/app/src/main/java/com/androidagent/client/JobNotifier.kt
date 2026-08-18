@@ -36,30 +36,40 @@ object AppForeground {
 
 object JobNotifier {
 
-    private const val CHANNEL_ID = "job_status"
+    private const val CHANNEL_JOB = "job_status"
+    private const val CHANNEL_APPROVAL = "job_approval"
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                context.getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_DEFAULT,
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_JOB,
+                    context.getString(R.string.notification_channel_name),
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
             )
-            context.getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_APPROVAL,
+                    context.getString(R.string.notification_channel_approvals),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ),
+            )
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun notifyJobFinished(context: Context, jobId: String, status: String, message: String?) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+    fun notifyJobFinished(
+        context: Context,
+        jobId: String,
+        status: String,
+        message: String?,
+        projectId: String = "",
+        conversationId: String = "",
+        conversationTitle: String = "",
+    ) {
+        if (!canNotify(context)) return
         ensureChannel(context)
         val title = when (status) {
             "succeeded" -> context.getString(R.string.notification_job_succeeded)
@@ -68,16 +78,15 @@ object JobNotifier {
             else -> context.getString(R.string.notification_job_finished)
         }
         val text = message.orEmpty()
-        // 点击通知回到应用主界面（MainActivity 已按选中项目/会话恢复状态）
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            ?: Intent(context, MainActivity::class.java)
-        val contentIntent = PendingIntent.getActivity(
+        val contentIntent = pendingConversation(
             context,
             jobId.hashCode(),
-            launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            projectId,
+            conversationId,
+            conversationTitle,
+            jobId,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, CHANNEL_JOB)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(text.take(120))
@@ -86,5 +95,65 @@ object JobNotifier {
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(jobId, jobId.hashCode(), notification)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun notifyApproval(
+        context: Context,
+        jobId: String,
+        projectId: String,
+        conversationId: String,
+        conversationTitle: String,
+        summary: String,
+    ) {
+        if (!canNotify(context)) return
+        ensureChannel(context)
+        val contentIntent = pendingConversation(
+            context,
+            (jobId + ":approval").hashCode(),
+            projectId,
+            conversationId,
+            conversationTitle,
+            jobId,
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(context.getString(R.string.notification_approval_title))
+            .setContentText(summary.take(120))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context)
+            .notify("$jobId-approval", (jobId + ":approval").hashCode(), notification)
+    }
+
+    private fun canNotify(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun pendingConversation(
+        context: Context,
+        requestCode: Int,
+        projectId: String,
+        conversationId: String,
+        conversationTitle: String,
+        jobId: String,
+    ): PendingIntent {
+        val intent = if (projectId.isNotBlank() && conversationId.isNotBlank()) {
+            DeepLink.conversationIntent(context, projectId, conversationId, conversationTitle, jobId)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        } else {
+            DeepLink.mainNavIntent(context)
+        }
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 }

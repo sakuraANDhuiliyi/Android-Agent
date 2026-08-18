@@ -1,0 +1,34 @@
+{
+  "description": "Anonymized history that previously caused OpenAI-compatible 400: an intervening user message split tool_calls from their tool results.",
+  "schema_version": 1,
+  "expected_dangling_ids": ["call_read_layout_01"],
+  "messages": [
+    {
+      "role": "user",
+      "content": "给设置页加上深色模式开关"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_read_layout_01",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\":\"app/src/main/res/layout/activity_settings.xml\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "先不要改代码，只说明计划"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_read_layout_01",
+      "content": "{\"path\":\"app/src/main/res/layout/activity_settings.xml\",\"truncated\":false}"
+    }
+  ]
+}

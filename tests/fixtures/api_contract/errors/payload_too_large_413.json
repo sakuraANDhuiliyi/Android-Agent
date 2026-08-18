@@ -1,0 +1,9 @@
+{
+  "detail": "请求体超过服务端大小限制",
+  "error": {
+    "schema_version": 1,
+    "code": "payload_too_large",
+    "retryable": false,
+    "user_message": "请求体超过服务端大小限制"
+  }
+}

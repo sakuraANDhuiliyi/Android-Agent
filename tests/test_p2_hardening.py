@@ -294,6 +294,12 @@ class P2HardeningTests(unittest.TestCase):
         self.assertIn('required("CSC_NAME")', package_script)
         self.assertIn("notarize(", package_script)
         self.assertIn("latest-mac.yml", package_script)
+        release_check = (root / "scripts/release_check.py").read_text(encoding="utf-8")
+        self.assertIn("check_api_contract.py", release_check)
+        self.assertTrue((root / "scripts/check_api_contract.py").is_file())
+        self.assertTrue(
+            (root / "tests/fixtures/api_contract/openapi.json").is_file()
+        )
 
     def test_release_manifest_uses_names_and_digests_not_host_paths(self) -> None:
         root = Path(__file__).resolve().parents[1]

@@ -10,7 +10,9 @@ from typing import Any
 
 from agent.database import TaskStore
 from agent.redaction import redact_sensitive_value
+from agent.stores.outbox import enqueue_on_connection
 
+EVENT_SCHEMA_VERSION = 1
 
 TURN_STATUSES = frozenset(
     {
@@ -204,7 +206,7 @@ class ConversationEventStore:
         started_at: float | None = None,
         finished_at: float | None = None,
         error_message: str | None = None,
-        schema_version: int = 1,
+        schema_version: int = EVENT_SCHEMA_VERSION,
     ) -> dict[str, Any]:
         self._validate_status(status)
         turn_id = turn_id or uuid.uuid4().hex
@@ -567,7 +569,7 @@ class ConversationEventStore:
         event_key: str | None = None,
         event_id: str | None = None,
         created_at: float | None = None,
-        schema_version: int = 1,
+        schema_version: int = EVENT_SCHEMA_VERSION,
     ) -> dict[str, Any]:
         return self._append_event(
             conversation_id,
@@ -601,7 +603,7 @@ class ConversationEventStore:
         model: str | None = None,
         event_id: str | None = None,
         created_at: float | None = None,
-        schema_version: int = 1,
+        schema_version: int = EVENT_SCHEMA_VERSION,
     ) -> dict[str, Any]:
         if not event_key or not event_key.strip():
             raise ConversationEventError("event_key is required for idempotent append")
@@ -848,6 +850,20 @@ class ConversationEventStore:
                 "SELECT * FROM conversation_events WHERE id=?",
                 (event_id,),
             ).fetchone()
+            if row is not None:
+                enqueue_on_connection(
+                    conn,
+                    topic="conversation.event",
+                    payload={
+                        "conversation_id": conversation_id,
+                        "turn_id": turn_id,
+                        "task_id": effective_task_id,
+                        "event_id": event_id,
+                        "event_type": event_type,
+                        "seq": next_seq,
+                    },
+                    created_at=created_at,
+                )
         if row is None:
             raise ConversationEventError(f"created event could not be read: {event_id}")
         return self._row_to_event(row)
@@ -869,6 +885,13 @@ class ConversationEventStore:
         item = dict(row)
         raw_payload = item.pop("payload_json", None) or "{}"
         item["context_visible"] = bool(item["context_visible"])
+        try:
+            version = int(item.get("schema_version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version < 1:
+            version = EVENT_SCHEMA_VERSION
+        item["schema_version"] = version
         item["payload"] = deserialize_event_payload(
             raw_payload,
             event_id=item.get("id"),

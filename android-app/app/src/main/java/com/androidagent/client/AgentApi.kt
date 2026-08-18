@@ -21,12 +21,21 @@ class ApiException(
     val code: Int,
     message: String,
     val detail: String = message,
+    val errorCode: String = "http_error",
+    val retryable: Boolean = false,
 ) : IOException(message) {
     val isNotFound: Boolean get() = code == 404
     val isForbidden: Boolean get() = code == 403
     val isConflict: Boolean get() = code == 409
     val isUnauthorized: Boolean get() = code == 401
 }
+
+data class ApiErrorEnvelope(
+    val code: String,
+    val retryable: Boolean,
+    val userMessage: String,
+    val schemaVersion: Int,
+)
 
 data class HealthInfo(
     val status: String,
@@ -137,7 +146,18 @@ data class JobInfo(
     val hasApk: Boolean,
     val plan: List<JSONObject>,
     val durationMs: Long?,
-)
+    val displayStatus: String = "",
+    val statusLabel: String? = null,
+) {
+    fun resolvedStatus(): String {
+        if (displayStatus.isNotBlank()) return displayStatus
+        return if (cancelRequested && status !in UiFormat.TERMINAL_STATUSES) {
+            "cancel_requested"
+        } else {
+            status
+        }
+    }
+}
 
 data class FileEntry(
     val name: String,
@@ -632,6 +652,8 @@ class AgentApi(
             conversationId = json.optString("conversation_id").takeIf { it.isNotBlank() && it != "null" },
             prompt = json.optString("prompt"),
             status = json.optString("status"),
+            displayStatus = json.optString("display_status"),
+            statusLabel = json.optString("status_label").takeIf { it.isNotBlank() },
             result = json.optString("result").takeIf { it.isNotBlank() }
                 ?: json.optString("final_message").takeIf { it.isNotBlank() },
             error = json.optString("error").takeIf { it.isNotBlank() }
@@ -787,7 +809,8 @@ class AgentApi(
 
     companion object {
         fun mapHttpError(code: Int, body: String): ApiException {
-            val detail = parseErrorMessage(body, code)
+            val envelope = parseErrorEnvelope(body, code)
+            val detail = envelope.userMessage
             val message = when (code) {
                 401 -> "未授权，请重新初始化设备连接"
                 403 -> "无权访问该资源"
@@ -795,20 +818,67 @@ class AgentApi(
                 409 -> detail.ifBlank { "操作冲突" }
                 else -> detail.ifBlank { "HTTP $code" }
             }
-            return ApiException(code, message, detail)
+            return ApiException(
+                code = code,
+                message = message,
+                detail = detail,
+                errorCode = envelope.code,
+                retryable = envelope.retryable,
+            )
         }
 
         fun parseErrorMessage(body: String, code: Int): String {
             return try {
                 val json = JSONObject(body)
-                when (val detail = json.opt("detail")) {
-                    is String -> detail.ifBlank { "HTTP $code" }
-                    is JSONObject -> detail.optString("message", detail.toString())
-                    is JSONArray -> detail.toString()
-                    else -> json.optString("message", body).ifBlank { "HTTP $code" }
-                }
+                json.optJSONObject("error")
+                    ?.optString("user_message")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: when (val detail = json.opt("detail")) {
+                        is String -> detail.ifBlank { "HTTP $code" }
+                        is JSONObject -> detail.optString("message", detail.toString())
+                        is JSONArray -> detail.toString()
+                        else -> json.optString("message", body).ifBlank { "HTTP $code" }
+                    }
             } catch (_: Exception) {
                 body.ifBlank { "HTTP $code" }
+            }
+        }
+
+        fun parseErrorEnvelope(body: String, code: Int): ApiErrorEnvelope {
+            return try {
+                val json = JSONObject(body)
+                val error = json.optJSONObject("error")
+                if (error != null) {
+                    ApiErrorEnvelope(
+                        code = error.optString("code", "http_error"),
+                        retryable = error.optBoolean("retryable", code == 429),
+                        userMessage = error.optString("user_message")
+                            .ifBlank { parseErrorMessage(body, code) },
+                        schemaVersion = error.optInt("schema_version", 1),
+                    )
+                } else {
+                    ApiErrorEnvelope(
+                        code = when (code) {
+                            401 -> "unauthorized"
+                            403 -> "forbidden"
+                            404 -> "not_found"
+                            409 -> "conflict"
+                            422 -> "validation_error"
+                            429 -> "rate_limited"
+                            else -> "http_error"
+                        },
+                        retryable = code == 429,
+                        userMessage = parseErrorMessage(body, code),
+                        schemaVersion = 1,
+                    )
+                }
+            } catch (_: Exception) {
+                ApiErrorEnvelope(
+                    code = "http_error",
+                    retryable = code == 429,
+                    userMessage = body.ifBlank { "HTTP $code" },
+                    schemaVersion = 1,
+                )
             }
         }
     }

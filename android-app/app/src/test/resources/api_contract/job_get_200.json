@@ -1,0 +1,24 @@
+{
+  "job": {
+    "id": "job-001",
+    "project_id": "demo",
+    "conversation_id": "conv-001",
+    "status": "running",
+    "display_status": "running",
+    "status_label": "运行中",
+    "cancel_requested": false,
+    "prompt": "Add dark mode toggle",
+    "provider": "deepseek",
+    "model": "fake-model",
+    "created_at": 1000.0,
+    "started_at": 1001.0,
+    "result": null,
+    "error": null,
+    "run_mode": "workspace",
+    "turn_id": null,
+    "has_apk": true,
+    "has_build_log": true,
+    "apk_url": "/api/jobs/job-001/apk",
+    "build_log_url": "/api/jobs/job-001/log"
+  }
+}

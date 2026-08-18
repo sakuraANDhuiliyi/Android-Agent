@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 object UiFormat {
 
     val ACTIVE_STATUSES = setOf("queued", "running", "awaiting_approval", "paused", "cancel_requested")
+    val TERMINAL_STATUSES = setOf("succeeded", "failed", "canceled", "interrupted")
 
     fun isActive(status: String): Boolean = status in ACTIVE_STATUSES
 

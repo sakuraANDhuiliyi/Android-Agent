@@ -1,0 +1,9 @@
+{
+  "detail": "请求过于频繁，请稍后重试",
+  "error": {
+    "schema_version": 1,
+    "code": "rate_limited",
+    "retryable": true,
+    "user_message": "请求过于频繁，请稍后重试"
+  }
+}

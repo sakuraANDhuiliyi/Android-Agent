@@ -43,7 +43,7 @@ class ConversationTimelineAdapter(
 
     interface Callbacks {
         fun onToggleWork(turnKey: String, expanded: Boolean)
-        fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean)
+        fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean, always: Boolean = false)
         fun onViewChanges(turnKey: String)
         fun onLoadEarlier()
     }
@@ -500,6 +500,7 @@ class ConversationTimelineAdapter(
                 handlers = ApprovalCardBinder.Handlers(
                     onApprove = { callbacks.onApprovalAction(it, true) },
                     onReject = { callbacks.onApprovalAction(it, false) },
+                    onAlwaysAllow = { callbacks.onApprovalAction(it, true, always = true) },
                 ),
                 expandedDetail = model.approvalId in adapter.approvalDetailExpanded,
                 onToggleDetail = {

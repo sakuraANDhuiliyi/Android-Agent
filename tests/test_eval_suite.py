@@ -11,14 +11,16 @@ from evals.harness import EvalHarness, run_all_evals
 class EvalSuiteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        report = Path(__file__).resolve().parent.parent / "evals" / "fixtures" / "v1" / "last_report.json"
+        artifacts = Path(__file__).resolve().parent.parent / ".artifacts"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        report = artifacts / "eval-last-report.json"
         cls.results = run_all_evals(report_path=report)
 
     def test_all_scenarios_registered(self) -> None:
         harness = EvalHarness()
         ids = [s["id"] for s in harness.list_scenarios()]
-        self.assertEqual(len(ids), 16)
-        self.assertEqual(len(self.results), 16)
+        self.assertEqual(len(ids), 24)
+        self.assertEqual(len(self.results), 24)
 
     def test_every_scenario_passes(self) -> None:
         failed = [r for r in self.results if not r.passed]

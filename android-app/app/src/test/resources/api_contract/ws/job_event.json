@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": 12,
+  "type": "started",
+  "ts": 1001.0,
+  "message": "started"
+}

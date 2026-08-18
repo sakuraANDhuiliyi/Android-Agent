@@ -1,0 +1,9 @@
+{
+  "detail": "未提供 API Token",
+  "error": {
+    "schema_version": 1,
+    "code": "unauthorized",
+    "retryable": false,
+    "user_message": "未提供 API Token"
+  }
+}

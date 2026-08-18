@@ -386,6 +386,13 @@ class LegacyConversationMigrationTests(unittest.TestCase):
             [event["id"] for event in first_events],
         )
         self.assertEqual(len(second_events), 3)
+        self.assertTrue(
+            all(event["schema_version"] == 1 for event in first_events)
+        )
+        self.assertEqual(
+            [event["schema_version"] for event in first_events],
+            [event["schema_version"] for event in second_events],
+        )
         with second._connect() as conn:
             turn_count = conn.execute(
                 """SELECT COUNT(*) FROM conversation_turns

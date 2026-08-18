@@ -2450,6 +2450,7 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
     display: none;
   }
   #btnToggleAiActivity { display: flex; }
+  #btnActivitySettings { display: flex; }
   /* Overlay-style Agent panel instead of squeezing it unreadable. */
   .workbench { position: relative; }
   .ai-pane {
@@ -2474,3 +2475,14 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
 .flex-col { display: flex; flex-direction: column; }
 .flex-1 { flex: 1; }
 .overflow-auto { overflow: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

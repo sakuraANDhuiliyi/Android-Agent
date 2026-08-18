@@ -132,6 +132,7 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
         val handlers = ApprovalCardBinder.Handlers(
             onApprove = { sheet.dismiss(); decide(item, true) },
             onReject = { sheet.dismiss(); decide(item, false) },
+            onAlwaysAllow = { sheet.dismiss(); decide(item, true, always = true) },
         )
         val model = ApprovalCardBinder.fromApi(item.jobId, item.approval)
         fun bind() {
@@ -176,8 +177,17 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
         sheet.show()
     }
 
-    private fun decide(item: InboxApproval, approved: Boolean) {
+    private fun decide(item: InboxApproval, approved: Boolean, always: Boolean = false) {
         if (item.approval.id in submitting) return
+        if (always && approved) {
+            if (!ApprovalAllowlist.canRemember(item.approval.risk, item.approval.kind)) {
+                toast(getString(R.string.approval_always_blocked))
+                return
+            }
+            val allowlist = ApprovalAllowlist(prefs.approvalAllowlist())
+            allowlist.remember(item.approval.kind, item.approval.payload)
+            prefs.setApprovalAllowlist(allowlist.snapshot())
+        }
         submitting.add(item.approval.id)
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
         lifecycleScope.launch {

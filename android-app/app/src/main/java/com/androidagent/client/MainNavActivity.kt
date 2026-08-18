@@ -72,7 +72,12 @@ class MainNavActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) {
-            switchTo(R.id.nav_projects)
+            val tab = when (intent.getStringExtra(DeepLink.EXTRA_TAB)) {
+                DeepLink.TAB_APPROVALS -> R.id.nav_pending
+                else -> R.id.nav_projects
+            }
+            navView?.selectedItemId = tab
+            switchTo(tab)
         }
     }
 

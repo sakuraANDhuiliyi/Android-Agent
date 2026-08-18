@@ -1157,6 +1157,22 @@
       }
 
       function openDiff({ original, modified, path, language = "plaintext", title, review = false }) {
+        const perf = window.DesktopPerf || {};
+        const gate =
+          typeof perf.shouldUseDiffNotice === "function"
+            ? perf.shouldUseDiffNotice({ original, modified, path })
+            : { notice: false };
+        if (gate.notice) {
+          const message =
+            typeof perf.diffNoticeMessage === "function"
+              ? perf.diffNoticeMessage({ reason: gate.reason, path })
+              : "该文件无法以文本 Diff 显示。";
+          openDiffNotice({
+            title: title || (path ? `Diff: ${basenameSync(path)}` : "Diff"),
+            message,
+          });
+          return;
+        }
         els.monacoDiffHost.hidden = false;
         updateEmpty();
         hideDiffNotice();

@@ -34,6 +34,7 @@ class JobWatcher(
         lastEventId.set(afterEventId)
         watcherJob = scope.launch {
             var useWs = true
+            var attempt = 0
             while (isActive && !closed.get()) {
                 if (useWs) {
                     val connected = AtomicBoolean(false)
@@ -46,6 +47,7 @@ class JobWatcher(
                                 afterEventId = lastEventId.get(),
                                 onEvent = { raw ->
                                     connected.set(true)
+                                    attempt = 0
                                     val event = if (raw.has("event")) raw.optJSONObject("event") ?: raw else raw
                                     if (accept(event)) onEvent(event)
                                 },
@@ -57,7 +59,6 @@ class JobWatcher(
                                 },
                             )
                         }
-                        // Wait briefly to see if WS works; otherwise fall back.
                         delay(800)
                         if (failed.get() || !connected.get()) {
                             useWs = false
@@ -65,7 +66,6 @@ class JobWatcher(
                             wsHandle = null
                         } else {
                             while (isActive && !closed.get() && !failed.get() && !done.get()) {
-                                // Keep WS alive; also poll lightly for status.
                                 pollOnce(jobId)?.let { job ->
                                     onJob(job)
                                     if (isTerminal(job.status)) {
@@ -91,19 +91,23 @@ class JobWatcher(
                     }
                 }
 
-                // Polling fallback with cursor.
                 try {
                     val job = pollOnce(jobId) ?: break
+                    attempt = 0
                     onJob(job)
                     if (isTerminal(job.status)) {
                         onDone(job)
                         stop()
                         return@launch
                     }
+                    delay(ReconnectPolicy.delayMs(0))
+                    useWs = true
                 } catch (e: Exception) {
                     onError(e)
+                    delay(ReconnectPolicy.delayMs(attempt))
+                    attempt += 1
+                    useWs = true
                 }
-                delay(1000)
             }
         }
     }

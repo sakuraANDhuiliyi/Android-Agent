@@ -1,0 +1,9 @@
+{
+  "detail": "Conversation Event 数据读取失败",
+  "error": {
+    "schema_version": 1,
+    "code": "internal_error",
+    "retryable": false,
+    "user_message": "Conversation Event 数据读取失败"
+  }
+}

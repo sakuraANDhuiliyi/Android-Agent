@@ -32,6 +32,7 @@ const server = http.createServer(async (req, res) => {
         `<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/src/styles.css"></head>` +
           `<body><div id="root"></div>` +
           `<script src="/src/timeline.js"></script>` +
+          `<script src="/src/perf.js"></script>` +
           `<script src="/src/agent-timeline.js"></script></body></html>`,
       );
       return;

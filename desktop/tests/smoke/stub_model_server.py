@@ -105,6 +105,58 @@ def chunks_of(text, size=10):
     return [text[i : i + size] for i in range(0, len(text), size)]
 
 
+def last_user_index(messages):
+    index = -1
+    for i, message in enumerate(messages):
+        if message.get("role") == "user":
+            index = i
+    return index
+
+
+def current_round_tool_names(messages):
+    """Function names requested after the latest user message."""
+    start = last_user_index(messages)
+    names = []
+    for message in messages[start + 1 :]:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            name = (call.get("function") or {}).get("name") or ""
+            if name:
+                names.append(name)
+    return names
+
+
+def current_round_tool_output(messages):
+    start = last_user_index(messages)
+    return "".join(
+        str(message.get("content", ""))
+        for message in messages[start + 1 :]
+        if message.get("role") == "tool"
+    )
+
+
+def select_final_after_tools(tool_output, tool_names):
+    names = set(tool_names or [])
+    output = tool_output or ""
+    if (
+        "smoke-command-ok-9" in output
+        or "run_command" in output
+        or "run_command" in names
+    ):
+        return FINAL_AFTER_RUN_COMMAND
+    if (
+        "Tavily" in output
+        or "tavily" in output
+        or "web_search" in output
+        or "web_search" in names
+        or output.startswith("查询:")
+        or "查询: " in output
+    ):
+        return FINAL_AFTER_WEB_SEARCH
+    return FINAL_AFTER_TOOL
+
+
 def dangling_tool_call_ids(messages):
     """Return tool_call ids not answered by a tool message right after their assistant message."""
     dangling = []
@@ -179,19 +231,9 @@ class Handler(BaseHTTPRequestHandler):
         # earlier turns; treating those as "this round ran a tool" makes the
         # stub replay a stale "已修复…" final, which trips the agent's honesty
         # check into a nudge loop on text-only turns.
-        last_user_idx = -1
-        for i, m in enumerate(messages):
-            if m.get("role") == "user":
-                last_user_idx = i
-        has_tool = any(
-            m.get("role") == "tool" and i > last_user_idx
-            for i, m in enumerate(messages)
-        )
-        tool_output = "".join(
-            str(m.get("content", ""))
-            for i, m in enumerate(messages)
-            if m.get("role") == "tool" and i > last_user_idx
-        )
+        tool_names = current_round_tool_names(messages)
+        tool_output = current_round_tool_output(messages)
+        has_tool = bool(tool_output or tool_names)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -201,12 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(chunk({"role": "assistant", "content": ""}))
 
         if has_tool:
-            if "smoke-command-ok-9" in tool_output or "run_command" in tool_output:
-                final = FINAL_AFTER_RUN_COMMAND
-            elif "Tavily" in tool_output or "tavily" in tool_output or "web_search" in tool_output:
-                final = FINAL_AFTER_WEB_SEARCH
-            else:
-                final = FINAL_AFTER_TOOL
+            final = select_final_after_tools(tool_output, tool_names)
             for frag in chunks_of(final, 8):
                 time.sleep(0.02)
                 self.wfile.write(chunk({"content": frag}))

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -21,6 +22,7 @@ class ConnectionSettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         binding = ActivityConnectionSettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = AgentPrefs(this)
@@ -30,14 +32,17 @@ class ConnectionSettingsActivity : AppCompatActivity() {
 
         binding.btnReconnect.setOnClickListener { reconnect() }
         binding.btnEditConnection.setOnClickListener {
-            startActivity(Intent(this, MainActivity::class.java))
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .putExtra(DeepLink.EXTRA_EDIT_CONNECTION, true),
+            )
         }
         binding.btnDisconnect.setOnClickListener { confirmDisconnect() }
     }
 
     private fun renderConnection() {
         binding.textConnHost.text = prefs.serverUrl
-        binding.textConnUser.text = "用户: ${prefs.userId.ifBlank { "未知" }}"
+        binding.textConnUser.text = getString(R.string.conn_user, prefs.userId.ifBlank { getString(R.string.conn_user_unknown) })
         binding.textConnTls.text = getString(
             if (prefs.serverUrl.startsWith("https", ignoreCase = true)) {
                 R.string.conn_tls_https
@@ -45,7 +50,12 @@ class ConnectionSettingsActivity : AppCompatActivity() {
                 R.string.conn_tls_http
             },
         )
-        binding.textConnSync.text = "最后同步: 刚刚"
+        val syncAt = prefs.lastSyncAt
+        binding.textConnSync.text = if (syncAt <= 0L) {
+            getString(R.string.conn_sync_never)
+        } else {
+            getString(R.string.conn_sync_last, UiFormat.relativeTime(this, syncAt / 1000.0))
+        }
     }
 
     private fun reconnect() {
@@ -55,6 +65,7 @@ class ConnectionSettingsActivity : AppCompatActivity() {
             try {
                 val health = withContext(Dispatchers.IO) { api.health() }
                 if (health.userId.isNotBlank()) prefs.userId = health.userId
+                prefs.lastSyncAt = System.currentTimeMillis()
                 renderConnection()
                 toast("连接正常")
             } catch (e: Exception) {

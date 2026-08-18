@@ -1,0 +1,13 @@
+{
+  "job_id": "job-001",
+  "message": {
+    "id": 42,
+    "task_id": "job-001",
+    "message_key": "client-msg-001",
+    "type": "steer",
+    "payload": {
+      "text": "Focus on settings screen only"
+    },
+    "created_at": 1002.0
+  }
+}

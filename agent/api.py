@@ -9,13 +9,21 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.api_contract import (
+    public_job_ws_done,
+    public_job_ws_event,
+    public_terminal_ws_chunk,
+    public_terminal_ws_done,
+)
+from agent.api_errors import build_error_body
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
-from agent.conversation_events import ConversationEventError
+from agent.conversation_events import ConversationEventError, EVENT_SCHEMA_VERSION
 from agent.database import TaskStore
 from agent.jobs import (
     add_job_message,
@@ -27,6 +35,7 @@ from agent.jobs import (
     get_job,
     get_project_session,
     job_to_dict,
+    detect_checkpoint_conflicts,
     list_checkpoints,
     list_conversation_events,
     list_conversations,
@@ -85,10 +94,8 @@ from agent.diagnostics import get_diagnostic_store
 from agent.governance import (
     QuotaExceededError,
     ensure_disk_capacity,
-    registration_limiter,
-    request_limiter,
 )
-from agent.ws_tickets import WebSocketTicketStore
+from agent.stores import build_runtime_stores
 
 
 class RequestBodyTooLargeError(RuntimeError):
@@ -116,7 +123,7 @@ class RequestBodyLimitMiddleware:
             except ValueError:
                 response = JSONResponse(
                     status_code=400,
-                    content={"detail": "无效的 Content-Length"},
+                    content=build_error_body(400, "无效的 Content-Length"),
                 )
                 await response(scope, receive, send)
                 return
@@ -141,7 +148,7 @@ class RequestBodyLimitMiddleware:
     async def _reject(scope, receive, send) -> None:
         response = JSONResponse(
             status_code=413,
-            content={"detail": "请求体超过服务端大小限制"},
+            content=build_error_body(413, "请求体超过服务端大小限制"),
         )
         await response(scope, receive, send)
 
@@ -208,6 +215,7 @@ class WriteFileRequest(StrictRequest):
 
 class RestoreCheckpointRequest(StrictRequest):
     path: Optional[str] = None
+    preview: bool = False
 
 
 class JobMessageRequest(StrictRequest):
@@ -377,7 +385,13 @@ def create_app(
     app.state.user_store = user_store or UserStore()
     effective_task_store = task_store or TaskStore()
     app.state.task_store = effective_task_store
-    app.state.ws_tickets = WebSocketTicketStore()
+    runtime = build_runtime_stores(settings, db_path=effective_task_store.db_path)
+    app.state.runtime = runtime
+    app.state.ws_tickets = runtime.tickets
+    app.state.artifacts = runtime.artifacts
+    app.state.outbox = runtime.outbox
+    http_limiter = runtime.rate_limiter
+    reg_limiter = runtime.registration_limiter
     app.state.diagnostics = get_diagnostic_store(effective_task_store.db_path)
     configure_task_store(effective_task_store, settings)
     # Mark pre-restart PTY sessions as interrupted; we cannot recover their
@@ -396,6 +410,24 @@ def create_app(
         max_bytes=settings.max_request_bytes,
     )
 
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=build_error_body(exc.status_code, exc.detail),
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_body(422, exc.errors(), code="validation_error"),
+        )
+
     @app.middleware("http")
     async def enforce_request_budgets(
         request: Request,
@@ -403,7 +435,7 @@ def create_app(
     ):
         client_host = request.client.host if request.client else "unknown"
         try:
-            request_limiter.check(
+            http_limiter.check(
                 f"http:{client_host}",
                 limit=settings.max_requests_per_minute,
                 window_seconds=60,
@@ -411,7 +443,7 @@ def create_app(
         except QuotaExceededError as exc:
             return JSONResponse(
                 status_code=429,
-                content={"detail": str(exc)},
+                content=build_error_body(429, str(exc), code="rate_limited"),
                 headers={"Retry-After": "60"},
             )
         return await call_next(request)
@@ -477,7 +509,7 @@ def create_app(
     ) -> dict[str, str]:
         client_host = request.client.host if request.client else "unknown"
         try:
-            registration_limiter.check(
+            reg_limiter.check(
                 f"register:{client_host}",
                 limit=settings.max_registration_per_hour,
                 window_seconds=3600,
@@ -723,6 +755,7 @@ def create_app(
             next_before_seq = page[0]["seq"] if page else before_seq
             return {
                 "conversation_id": conversation_id,
+                "schema_version": EVENT_SCHEMA_VERSION,
                 "events": [_public_event_value(event) for event in page],
                 "next_before_seq": next_before_seq,
                 "has_more": has_more,
@@ -733,6 +766,7 @@ def create_app(
         next_after_seq = page[-1]["seq"] if page else after_seq
         return {
             "conversation_id": conversation_id,
+            "schema_version": EVENT_SCHEMA_VERSION,
             "events": [_public_event_value(event) for event in page],
             "next_after_seq": next_after_seq,
             "has_more": has_more,
@@ -873,7 +907,7 @@ def create_app(
         job = get_job(job_id, user_id=user_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
-        if job["status"] in {"succeeded", "failed", "canceled"}:
+        if job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
             return {"job": job_to_dict(job)}
         request_cancel(job_id, user_id)
         return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
@@ -1223,7 +1257,11 @@ def create_app(
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
         try:
-            if body.path:
+            if body.preview:
+                result = detect_checkpoint_conflicts(
+                    user_id, project_id, checkpoint_id
+                )
+            elif body.path:
                 result = restore_file(
                     user_id, project_id, checkpoint_id, body.path
                 )
@@ -1231,6 +1269,14 @@ def create_app(
                 result = restore_checkpoint(user_id, project_id, checkpoint_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        if body.preview:
+            return {
+                "user_id": user_id,
+                "project_id": project_id,
+                "checkpoint_id": checkpoint_id,
+                "preview": True,
+                **result,
+            }
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result)
         return {
@@ -1935,23 +1981,10 @@ def create_app(
                 for chunk in terminal_outputs(terminal_id, after_seq=cursor, limit=100):
                     seq = chunk["seq"]
                     if seq > cursor:
-                        await websocket.send_json(
-                            {
-                                "seq": seq,
-                                "data": chunk["data"],
-                                "is_stderr": bool(chunk.get("is_stderr")),
-                                "ts": chunk.get("created_at"),
-                            }
-                        )
+                        await websocket.send_json(public_terminal_ws_chunk(chunk))
                         cursor = seq
                 if info["status"] in {"exited", "failed", "terminated", "interrupted"}:
-                    await websocket.send_json(
-                        {
-                            "type": "done",
-                            "status": info["status"],
-                            "exit_code": info.get("exit_code"),
-                        }
-                    )
+                    await websocket.send_json(public_terminal_ws_done(info))
                     break
                 await asyncio.sleep(0.05)
         except WebSocketDisconnect:
@@ -2000,20 +2033,12 @@ def create_app(
                     if cursor_id is None or (
                         isinstance(event_id, int) and event_id > cursor_id
                     ):
-                        await websocket.send_json(event)
+                        await websocket.send_json(public_job_ws_event(event))
                         if isinstance(event_id, int):
                             cursor_id = event_id
 
-                if not done_sent and job["status"] in {"succeeded", "failed", "canceled"}:
-                    await websocket.send_json(
-                        {
-                            "type": "done",
-                            "ts": job["finished_at"],
-                            "status": job["status"],
-                            "result": job.get("final_message"),
-                            "error": job.get("error_message"),
-                        }
-                    )
+                if not done_sent and job["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+                    await websocket.send_json(public_job_ws_done(job))
                     done_sent = True
                     break
 

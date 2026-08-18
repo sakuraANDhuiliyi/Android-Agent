@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"tasks_ok: {store.db_path.exists()}")
     print(f"events_ok: {events.db_path.exists()}")
     print(f"memory_ok: {memory.db_path.exists()}")
+    print("postgres dry-run: python3 scripts/migrate_sqlite_to_postgres.py")
     return 0
 
 

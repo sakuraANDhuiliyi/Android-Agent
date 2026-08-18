@@ -117,6 +117,12 @@ class Settings:
             "http://localhost:8000",
         ]
     )
+    deployment_mode: str = "sqlite"
+    database_url: str = ""
+    redis_url: str = ""
+    artifact_backend: str = "local"
+    object_store_url: str = ""
+    object_store_prefix: str = "android-agent"
 
 
 def _resolve_api_key(provider: str, file_data: dict[str, Any], *, is_primary: bool) -> str:
@@ -260,6 +266,14 @@ def _build_settings(
             shared.get("max_task_events_per_task", 20_000)
         ),
         cors_allowed_origins=list(shared.get("cors_allowed_origins") or []),
+        deployment_mode=str(shared.get("deployment_mode", "sqlite") or "sqlite"),
+        database_url=str(shared.get("database_url", "") or ""),
+        redis_url=str(shared.get("redis_url", "") or ""),
+        artifact_backend=str(shared.get("artifact_backend", "local") or "local"),
+        object_store_url=str(shared.get("object_store_url", "") or ""),
+        object_store_prefix=str(
+            shared.get("object_store_prefix", "android-agent") or "android-agent"
+        ),
     )
 
 
@@ -447,6 +461,33 @@ def load_settings() -> Settings:
             or ""
         ).strip(),
         "users": users,
+        "deployment_mode": (
+            os.environ.get("AGENT_DEPLOYMENT_MODE")
+            or file_data.get("deployment_mode")
+            or "sqlite"
+        ),
+        "database_url": (
+            os.environ.get("AGENT_DATABASE_URL")
+            or file_data.get("database_url")
+            or ""
+        ).strip(),
+        "redis_url": (
+            os.environ.get("AGENT_REDIS_URL") or file_data.get("redis_url") or ""
+        ).strip(),
+        "artifact_backend": (
+            os.environ.get("AGENT_ARTIFACT_BACKEND")
+            or file_data.get("artifact_backend")
+            or "local"
+        ),
+        "object_store_url": (
+            os.environ.get("AGENT_OBJECT_STORE_URL")
+            or file_data.get("object_store_url")
+            or ""
+        ).strip(),
+        "object_store_prefix": str(
+            file_data.get("object_store_prefix") or "android-agent"
+        ).strip()
+        or "android-agent",
     }
 
     primary = _build_settings(provider, file_data, is_primary=True, shared=shared)
@@ -465,7 +506,46 @@ def load_settings() -> Settings:
         )
 
     primary.provider_fallbacks = fallback_settings
+    validate_deployment_settings(primary)
     return primary
+
+
+DEPLOYMENT_MODES = frozenset({"sqlite", "postgres", "hybrid"})
+ARTIFACT_BACKENDS = frozenset({"local", "object"})
+
+
+def validate_deployment_settings(settings: Settings) -> None:
+    """Fail closed when a multi-instance mode is missing required URLs."""
+    mode = (settings.deployment_mode or "sqlite").strip().lower()
+    if mode not in DEPLOYMENT_MODES:
+        raise ValueError(
+            f"deployment_mode 必须是 sqlite、postgres 或 hybrid，收到: {mode}"
+        )
+    settings.deployment_mode = mode
+    backend = (settings.artifact_backend or "local").strip().lower()
+    if backend not in ARTIFACT_BACKENDS:
+        raise ValueError(
+            f"artifact_backend 必须是 local 或 object，收到: {backend}"
+        )
+    settings.artifact_backend = backend
+    if mode == "sqlite":
+        if backend == "object" and not settings.object_store_url:
+            raise ValueError("artifact_backend=object 时必须配置 object_store_url")
+        return
+    if mode == "postgres":
+        if not settings.database_url:
+            raise ValueError("deployment_mode=postgres 必须配置 database_url")
+        if not settings.database_url.startswith(("postgres://", "postgresql://")):
+            raise ValueError("database_url 必须以 postgres:// 或 postgresql:// 开头")
+    if mode == "hybrid":
+        if not settings.database_url:
+            raise ValueError("deployment_mode=hybrid 必须配置 database_url")
+        if not settings.redis_url:
+            raise ValueError("deployment_mode=hybrid 必须配置 redis_url")
+        if not settings.redis_url.startswith(("redis://", "rediss://", "memory://")):
+            raise ValueError("redis_url 必须以 redis://、rediss:// 或 memory:// 开头")
+    if backend == "object" and not settings.object_store_url:
+        raise ValueError("artifact_backend=object 时必须配置 object_store_url")
 
 
 def list_configured_providers(settings: Settings) -> list[Settings]:

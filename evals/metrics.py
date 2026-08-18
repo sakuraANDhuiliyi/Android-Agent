@@ -21,6 +21,12 @@ class EvalMetrics:
     approvals: int = 0
     recoveries: int = 0
     security_violations: int = 0
+    constraint_recall: float = 0.0
+    tool_chain_complete: float = 0.0
+    hallucination_rate: float = 0.0
+    unresolved_retention: float = 0.0
+    token_savings: float = 0.0
+    first_token_ms: float = 0.0
     notes: list[str] = field(default_factory=list)
 
     def estimate_tokens_from_chars(self) -> None:

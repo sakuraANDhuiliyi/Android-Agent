@@ -10,6 +10,7 @@
   const STORAGE_KEY = "android-agent-desktop";
   const desktop = window.agentDesktop || {};
   const client = new window.AgentApi();
+  const perf = window.DesktopPerf || {};
 
   const els = {
     connPill: document.getElementById("connPill"),
@@ -53,6 +54,7 @@
     settingsHint: document.getElementById("settingsHint"),
     btnPair: document.getElementById("btnPair"),
     btnOpenSettings: document.getElementById("btnOpenSettings"),
+    btnActivitySettings: document.getElementById("btnActivitySettings"),
     btnPauseJob: document.getElementById("btnPauseJob"),
     btnResumeJob: document.getElementById("btnResumeJob"),
     btnHeaderStop: document.getElementById("btnHeaderStop"),
@@ -112,6 +114,32 @@
     "paused",
     "cancel_requested",
   ]);
+  const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "canceled", "interrupted"]);
+  const STORED_ACTIVE_JOB_STATUSES = new Set([
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused",
+  ]);
+
+  function resolveJobStatus(job) {
+    if (!job) return null;
+    if (job.display_status) return job.display_status;
+    if (job.cancel_requested && !TERMINAL_JOB_STATUSES.has(job.status)) {
+      return "cancel_requested";
+    }
+    return job.status;
+  }
+
+  function isJobActive(job) {
+    const status = resolveJobStatus(job);
+    return Boolean(status && ACTIVE_JOB_STATUSES.has(status));
+  }
+
+  function jobStatusText(job) {
+    if (!job) return "—";
+    return job.status_label || statusLabel(resolveJobStatus(job));
+  }
 
   const timeline = window.Timeline.createStore();
   let view = null;
@@ -127,7 +155,42 @@
   // —— Small helpers ——
 
   function toast(msg) {
+    if (toastGate && !toastGate(msg)) return;
     window.EditorApp?.toast?.(msg);
+  }
+
+  const toastGate =
+    typeof perf.createToastThrottle === "function" ? perf.createToastThrottle() : null;
+
+  function persistDraft() {
+    if (typeof perf.writeDraft !== "function") return;
+    try {
+      perf.writeDraft(
+        window.localStorage,
+        state.selectedProjectId,
+        state.conversationId,
+        els.promptInput.value,
+      );
+    } catch (_) {
+      /* ignore quota */
+    }
+  }
+
+  function restoreDraft() {
+    if (typeof perf.readDraft !== "function") return;
+    try {
+      const text = perf.readDraft(
+        window.localStorage,
+        state.selectedProjectId,
+        state.conversationId,
+      );
+      if (text && !els.promptInput.value) {
+        els.promptInput.value = text;
+        autosizePrompt();
+      }
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   function loadPrefs() {
@@ -381,14 +444,44 @@
       const projectId = state.selectedProjectId;
       const checkpointId = item.content?.checkpointId;
       if (!projectId || !checkpointId) return;
-      const ok = window.confirm("恢复检查点会覆盖当前工作区对应文件，确定继续吗？");
+      let conflicts = [];
+      let fileCount = item.content?.fileCount;
+      try {
+        const preview = await client.restoreCheckpoint(projectId, checkpointId, null, {
+          preview: true,
+        });
+        conflicts = preview.conflicts || [];
+        if (preview.file_count != null) fileCount = preview.file_count;
+      } catch (_) {
+        /* preview is best-effort; confirm still lists impact */
+      }
+      const info =
+        typeof perf.restoreConfirmMessage === "function"
+          ? perf.restoreConfirmMessage({
+              fileCount,
+              conflicts,
+              kind: item.content?.kind,
+            })
+          : {
+              text: "恢复检查点会覆盖当前工作区对应文件，确定继续吗？",
+              blocked: Boolean(conflicts.length),
+            };
+      if (info.blocked) {
+        window.alert(info.text);
+        return;
+      }
+      const ok = window.confirm(info.text);
       if (!ok) return;
       try {
         await client.restoreCheckpoint(projectId, checkpointId);
         toast("已恢复到检查点");
         await window.EditorApp?.refreshTree?.({ silent: true });
       } catch (err) {
-        toast(`恢复失败: ${err.message}`);
+        const msg =
+          typeof perf.formatRestoreError === "function"
+            ? perf.formatRestoreError(err.detail)
+            : err.message;
+        toast(`恢复失败: ${msg}`);
       }
     },
   };
@@ -763,7 +856,11 @@
       updateStatusDot();
       if (desktop?.setCredential) {
         try {
-          await desktop.setCredential(baseUrl, token);
+          const saved = await desktop.setCredential(baseUrl, token);
+          if (saved && saved.sessionOnly) {
+            els.settingsHint.textContent += " · 凭证仅用于当前会话";
+            if (!silent) toast("系统安全凭证库不可用，Token 仅保存在当前会话");
+          }
         } catch (_) {
           els.settingsHint.textContent += " · 凭证仅用于当前会话";
         }
@@ -1026,6 +1123,10 @@
   async function selectConversation(conversationId, { loadHistory = true } = {}) {
     if (!conversationId) return;
     const switching = conversationId !== state.conversationId;
+    if (switching) {
+      persistDraft();
+      els.promptInput.value = "";
+    }
     if (switching || loadHistory) {
       stopWatcher();
       setRunning(false);
@@ -1075,20 +1176,19 @@
       if (token !== state.loadToken) return;
     }
     updateComposer();
+    if (switching) restoreDraft();
   }
 
   async function resumeActiveJobForConversation(conversationId) {
     if (!conversationId || !state.selectedProjectId || !state.connected) return;
     try {
       const data = await client.jobs(state.selectedProjectId, conversationId);
-      const active = (data.jobs || []).find(
-        (j) => j.status === "queued" || j.status === "running" || j.status === "awaiting_approval" || j.status === "paused",
-      );
+      const active = (data.jobs || []).find((j) => isJobActive(j));
       if (!active) return;
       state.currentJobId = active.id;
-      state.jobStatus = active.status;
+      state.jobStatus = resolveJobStatus(active);
       state.pauseRequested = Boolean(active.pause_requested);
-      state.cancelRequested = Boolean(active.cancel_requested);
+      state.cancelRequested = resolveJobStatus(active) === "cancel_requested";
       if (els.jobHistory) els.jobHistory.value = active.id;
       watchJob(active.id);
     } catch (_) {
@@ -1127,7 +1227,7 @@
         const opt = document.createElement("option");
         opt.value = job.id;
         const prompt = (job.prompt || "").slice(0, 24);
-        opt.textContent = `${statusLabel(job.status)} · ${prompt || job.id}`;
+        opt.textContent = `${jobStatusText(job)} · ${prompt || job.id}`;
         els.jobHistory.appendChild(opt);
       }
       els.jobHistory.disabled = false;
@@ -1169,12 +1269,12 @@
       } else if (!state.conversationId && job.conversation_id) {
         await selectConversation(job.conversation_id, { loadHistory: true });
       }
-      if (["queued", "running", "awaiting_approval", "paused"].includes(job.status)) {
+      if (isJobActive(job)) {
         // Still active: re-attach the live watcher instead of just showing history.
         state.currentJobId = job.id;
-        state.jobStatus = job.status;
+        state.jobStatus = resolveJobStatus(job);
         state.pauseRequested = Boolean(job.pause_requested);
-        state.cancelRequested = Boolean(job.cancel_requested);
+        state.cancelRequested = resolveJobStatus(job) === "cancel_requested";
         watchJob(job.id);
       }
       if (els.jobHistory) els.jobHistory.value = "";
@@ -1275,9 +1375,9 @@
         return;
       }
       if (payload.kind === "job" && payload.job) {
-        state.jobStatus = payload.job.status;
+        state.jobStatus = resolveJobStatus(payload.job);
         state.pauseRequested = Boolean(payload.job.pause_requested);
-        state.cancelRequested = Boolean(payload.job.cancel_requested);
+        state.cancelRequested = resolveJobStatus(payload.job) === "cancel_requested";
         if (payload.job.status === "awaiting_approval") {
           await syncPendingApprovals(jobId);
         }
@@ -1352,8 +1452,10 @@
   }
 
   function updateComposer() {
-    const ready = state.connected && state.selectedProjectId && state.conversationId;
-    els.promptInput.disabled = !ready;
+    const projectReady = Boolean(state.selectedProjectId);
+    const ready = state.connected && projectReady && state.conversationId;
+    // Keep typing while disconnected so a draft is never discarded.
+    els.promptInput.disabled = !projectReady;
     const running = state.running;
     const controllable = state.connected && hasActiveJob();
     els.btnSend.hidden = false;
@@ -1372,7 +1474,7 @@
     els.promptInput.placeholder = running
       ? "任务运行中：输入内容将按所选模式插入"
       : !state.connected
-        ? "连接中断，输入内容将保留"
+        ? "连接中断，草稿已保留，恢复后可发送"
         : !state.selectedProjectId
           ? "选择项目后可发送任务"
           : !state.conversationId
@@ -1484,9 +1586,15 @@
   async function sendAsk() {
     const projectId = state.selectedProjectId;
     let conversationId = state.conversationId;
+    const rawDraft = els.promptInput.value;
     const prompt = buildPrompt();
     if (!projectId || !prompt) {
       toast("请选择项目并输入问题");
+      return;
+    }
+    if (!state.connected) {
+      persistDraft();
+      toast("当前离线，草稿已保留。任务可能仍在电脑运行。");
       return;
     }
     if (!conversationId) {
@@ -1512,6 +1620,7 @@
 
     timeline.addLocalUserMessage(prompt, {});
     els.promptInput.value = "";
+    persistDraft();
     autosizePrompt();
     setRunInputMode("steer"); // every new task starts in steer mode
     state.pauseRequested = false;
@@ -1524,14 +1633,17 @@
       const data = await client.askConversation(conversationId, body);
       const job = data.job;
       state.currentJobId = job.id;
-      state.jobStatus = job.status;
+      state.jobStatus = resolveJobStatus(job);
       state.pauseRequested = Boolean(job.pause_requested);
-      state.cancelRequested = Boolean(job.cancel_requested);
+      state.cancelRequested = resolveJobStatus(job) === "cancel_requested";
       if (data.conversation_id) state.conversationId = data.conversation_id;
       watchJob(job.id);
       await loadJobHistory(projectId, state.conversationId);
     } catch (err) {
       setRunning(false);
+      els.promptInput.value = rawDraft;
+      persistDraft();
+      autosizePrompt();
       toast(err.message);
       renderTimeline();
     }
@@ -1552,9 +1664,9 @@
             : await client.cancel(state.currentJobId);
       const job = data?.job;
       if (job) {
-        state.jobStatus = job.status;
+        state.jobStatus = resolveJobStatus(job);
         state.pauseRequested = Boolean(job.pause_requested) || (action === "pause" && job.status === "running");
-        state.cancelRequested = Boolean(job.cancel_requested) || action === "cancel";
+        state.cancelRequested = resolveJobStatus(job) === "cancel_requested" || action === "cancel";
       } else if (action === "pause") {
         state.pauseRequested = true;
       }
@@ -1587,13 +1699,20 @@
   async function sendJobMessage(kind) {
     const text = els.promptInput.value.trim();
     if (!text || !state.currentJobId) return;
+    if (!state.connected) {
+      persistDraft();
+      toast("当前离线，草稿已保留");
+      return;
+    }
     try {
       if (kind === "steer") await client.steerJob(state.currentJobId, text);
       else await client.followUpJob(state.currentJobId, text);
       els.promptInput.value = "";
+      persistDraft();
       autosizePrompt();
       toast(kind === "steer" ? "已发送引导" : "已加入追问，本轮结束后继续");
     } catch (err) {
+      persistDraft();
       toast(`${kind === "steer" ? "引导" : "追问"}失败: ${err.message}`);
     }
   }
@@ -1646,6 +1765,7 @@
       toggleMenu(els.aiMoreMenu);
       openSettings();
     });
+    els.btnActivitySettings?.addEventListener("click", () => openSettings());
     els.statusConn.addEventListener("click", () => openSettings());
     els.btnCloseAi.addEventListener("click", () => window.EditorApp?.toggleAi?.());
     els.btnAiMore?.addEventListener("click", () => toggleMenu(els.aiMoreMenu));
@@ -1714,7 +1834,10 @@
       addContextChip(btn.dataset.context);
     });
 
-    els.promptInput.addEventListener("input", autosizePrompt);
+    els.promptInput.addEventListener("input", () => {
+      autosizePrompt();
+      persistDraft();
+    });
     els.promptInput.addEventListener("keydown", (ev) => {
       const submit =
         (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) || (ev.key === "Enter" && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey && !ev.altKey);

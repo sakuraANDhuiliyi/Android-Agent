@@ -59,6 +59,7 @@ def select_context_events(
             if (
                 not _checkpoint_text(payload)
                 or payload.get("valid", True) is False
+                or str(event.get("id") or "") in invalidated_ids
             ):
                 continue
         if event_type in CONTEXT_EVENT_TYPES:

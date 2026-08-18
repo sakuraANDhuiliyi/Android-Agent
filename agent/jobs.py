@@ -147,6 +147,8 @@ def _turn_id_for_task(task_id: str) -> str | None:
 
 
 def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
+    from agent.task_status import enrich_job_dict
+
     private_fields = {
         "apk_path",
         "build_log_path",
@@ -178,7 +180,7 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     result["build_log_url"] = (
         f"/api/jobs/{task_id}/log" if job.get("build_log_path") else None
     )
-    return dict(redact_sensitive_value(result))
+    return dict(redact_sensitive_value(enrich_job_dict(result)))
 
 
 def resolve_job_approval(
@@ -400,6 +402,20 @@ def restore_checkpoint(user_id: str, project_id: str, checkpoint_id: str) -> dic
     load_project_meta(user_id, project_id)
     repo = WorkspaceRepository(user_id, project_id, task_store=_store)
     return repo.restore_checkpoint(checkpoint_id)
+
+
+def detect_checkpoint_conflicts(
+    user_id: str, project_id: str, checkpoint_id: str
+) -> dict[str, Any]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    result = repo.detect_conflicts(checkpoint_id)
+    checkpoint = repo.get_checkpoint(checkpoint_id)
+    if checkpoint:
+        files = checkpoint.get("files") or []
+        result["file_count"] = len(files)
+        result["kind"] = checkpoint.get("kind")
+    return result
 
 
 def restore_file(

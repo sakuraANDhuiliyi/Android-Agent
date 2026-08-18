@@ -11,12 +11,13 @@ data class ApkIdentity(
     val versionName: String,
     val sha256: String,
     val signerSha256: String,
+    val sizeBytes: Long,
 )
 
 object ApkVerifier {
     fun inspect(context: Context, apk: File): ApkIdentity {
         require(apk.isFile) { "APK 文件不存在" }
-        val sha256 = digest(apk.readBytes())
+        val sha256 = digestFile(apk)
         val expected = File("${apk.absolutePath}.sha256")
             .takeIf { it.isFile }
             ?.readText()
@@ -46,10 +47,24 @@ object ApkVerifier {
             versionName = info.versionName.orEmpty(),
             sha256 = sha256,
             signerSha256 = digest(signer),
+            sizeBytes = apk.length(),
         )
     }
 
-    private fun digest(bytes: ByteArray): String =
+    fun digestFile(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    fun digest(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256")
             .digest(bytes)
             .joinToString("") { "%02x".format(it) }

@@ -6,8 +6,8 @@
   "scripts": {
     "start": "ELECTRON_RUN_AS_NODE= electron .",
     "dev": "ELECTRON_RUN_AS_NODE= electron .",
-    "check": "node --check src/agent-api.js && node --check src/state.js && node --check src/terminal.js && node --check src/timeline.js && node --check src/agent-timeline.js && node --check src/ai-panel.js && node --check src/renderer.js && node --check src/main.js && node --check src/preload.js",
-    "test:unit": "node tests/agent-api.test.js && node tests/state.test.js && node tests/events.test.js && node tests/timeline.test.js && node tests/agent-timeline.test.js",
+    "check": "node --check src/agent-api.js && node --check src/state.js && node --check src/perf.js && node --check src/credentials.js && node --check src/terminal.js && node --check src/timeline.js && node --check src/agent-timeline.js && node --check src/ai-panel.js && node --check src/renderer.js && node --check src/main.js && node --check src/preload.js",
+    "test:unit": "node tests/agent-api.test.js && node tests/state.test.js && node tests/events.test.js && node tests/timeline.test.js && node tests/agent-timeline.test.js && node tests/task-status.test.js && node tests/api-contract.test.js && node tests/perf.test.js && node tests/credentials.test.js",
     "test:screenshot": "node tests/screenshot.test.js",
     "dist:mac": "node scripts/package-macos.js",
     "verify:signature": "bash ../scripts/verify_desktop_signature.sh"

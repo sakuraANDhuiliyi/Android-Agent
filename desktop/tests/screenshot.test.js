@@ -525,6 +525,27 @@ async function run() {
     stop: true,
   });
 
+  const stoppingHeader = await page.evaluate(() => {
+    window.AiPanel.debug.setState({
+      running: true,
+      jobStatus: "paused",
+      cancelRequested: true,
+    });
+    const visible = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+    return {
+      status: document.getElementById("aiStatusText").textContent.trim(),
+      pause: visible("btnPauseJob"),
+      resume: visible("btnResumeJob"),
+      stop: visible("btnHeaderStop"),
+    };
+  });
+  assert.deepStrictEqual(stoppingHeader, {
+    status: "正在停止",
+    pause: false,
+    resume: false,
+    stop: true,
+  });
+
   await page.evaluate(() => {
     window.AiPanel.debug.setState({
       connected: false,

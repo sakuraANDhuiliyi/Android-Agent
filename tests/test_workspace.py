@@ -480,6 +480,16 @@ class WorkspaceApiTests(IsolatedWorkspaceMixin, unittest.TestCase):
         self.assertEqual(restore_resp.status_code, 200)
         self.assertTrue(restore_resp.json()["ok"])
 
+        preview_resp = self.client.post(
+            f"/api/projects/{project_id}/checkpoints/before:turn1/restore",
+            json={"preview": True},
+        )
+        self.assertEqual(preview_resp.status_code, 200)
+        preview = preview_resp.json()
+        self.assertTrue(preview.get("preview"))
+        self.assertIn("conflicts", preview)
+        self.assertIn("file_count", preview)
+
     def test_user_isolation_on_endpoints(self) -> None:
         project_id = init_project("api-iso", package="com.example.apiiso", user_id="local")
         resp = self.client.get(f"/api/projects/{project_id}/workspace/status")

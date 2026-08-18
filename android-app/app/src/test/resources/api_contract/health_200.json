@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "user_id": "user-alice",
+  "provider": "deepseek",
+  "model": "fake-model",
+  "api_key_configured": true,
+  "lan_ip": "192.168.1.10",
+  "port": 8000
+}

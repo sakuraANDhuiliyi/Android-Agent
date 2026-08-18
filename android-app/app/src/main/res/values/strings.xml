@@ -27,6 +27,8 @@
     <string name="delete_project_confirm_message">「%1$s」的工作区、任务历史与 APK 将被删除，且不可恢复。</string>
     <string name="delete">删除</string>
     <string name="notification_channel_name">任务状态</string>
+    <string name="notification_channel_approvals">待审批</string>
+    <string name="notification_approval_title">需要你的审批</string>
     <string name="notification_job_succeeded">任务完成</string>
     <string name="notification_job_failed">任务失败</string>
     <string name="notification_job_canceled">任务已停止</string>
@@ -68,14 +70,14 @@
     <string name="more_options">更多操作</string>
     <string name="conversation_summary_empty">暂无消息</string>
 
-    <string name="status_queued">正在排队</string>
-    <string name="status_running">正在运行</string>
+    <string name="status_queued">排队中</string>
+    <string name="status_running">运行中</string>
     <string name="status_awaiting">等待审批</string>
     <string name="status_paused">已暂停</string>
     <string name="status_canceling">正在停止</string>
     <string name="status_succeeded">已完成</string>
-    <string name="status_failed">执行失败</string>
-    <string name="status_canceled">已取消</string>
+    <string name="status_failed">失败</string>
+    <string name="status_canceled">已停止</string>
     <string name="status_interrupted">已中断</string>
     <string name="status_active">进行中</string>
     <string name="restore">恢复</string>
@@ -98,6 +100,8 @@
     <string name="resource_unavailable">资源不存在或无权访问</string>
     <string name="apk_not_ready">暂无可用 APK</string>
     <string name="apk_downloaded">APK 已下载</string>
+    <string name="apk_ready_summary">已下载 %1$d KB · SHA-256 %2$s…</string>
+    <string name="apk_install_confirm">包名: %1$s\n版本: %2$s\n大小: %3$d KB\n文件 SHA-256: %4$s\n签名 SHA-256: %5$s</string>
     <string name="install_permission_needed">需要允许安装未知应用</string>
     <string name="large_diff_truncated">内容过长，已截断显示</string>
 
@@ -107,6 +111,7 @@
     <string name="mode_steer">引导当前任务</string>
     <string name="mode_follow_up">后续追问</string>
     <string name="jump_to_latest">回到底部</string>
+    <string name="jump_to_latest_count">↓ %1$d 条新内容</string>
     <string name="new_activity">有新内容</string>
     <string name="load_earlier">加载更早记录</string>
     <string name="loading_earlier">正在加载更早记录…</string>
@@ -135,6 +140,8 @@
     <string name="approval_risk_medium">中风险</string>
     <string name="approval_risk_low">低风险</string>
     <string name="approval_allow_once">仅允许本次</string>
+    <string name="approval_allow_always">始终允许此类操作</string>
+    <string name="approval_always_blocked">高风险操作不能设为始终允许</string>
     <string name="approval_reject">拒绝</string>
     <string name="approval_approved">已批准</string>
     <string name="approval_rejected">已拒绝</string>
@@ -185,6 +192,15 @@
     <string name="connection_card_title">连接</string>
     <string name="conn_tls_https">TLS：已启用（HTTPS）</string>
     <string name="conn_tls_http">TLS：未启用（HTTP 明文）</string>
+    <string name="conn_user">用户：%1$s</string>
+    <string name="conn_user_unknown">未知</string>
+    <string name="conn_sync_never">最后同步：尚未同步</string>
+    <string name="conn_sync_last">最后同步：%1$s</string>
+    <string name="server_url_required">请填写服务器地址</string>
+    <string name="api_token_required">请输入访问 Token</string>
+    <string name="connecting">正在测试连接…</string>
+    <string name="connect_failed">连接失败</string>
+    <string name="connect_failed_status">连接失败：%1$s</string>
     <string name="filter_active">进行中</string>
     <string name="filter_recent">最近</string>
     <string name="filter_failed">失败</string>

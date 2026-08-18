@@ -17,6 +17,14 @@
     {"id": "13_subagent", "title": "Subagent 成功、失败和取消"},
     {"id": "14_long_history_checkpoint", "title": "八轮以上历史和 checkpoint"},
     {"id": "15_memory_approve_delete", "title": "项目记忆批准与删除"},
-    {"id": "16_reconnect", "title": "桌面和手机断线重连游标"}
+    {"id": "16_reconnect", "title": "桌面和手机断线重连游标"},
+    {"id": "17_hundred_turn_history", "title": "100+ 轮长历史与结构化 checkpoint"},
+    {"id": "18_parallel_failed_tools", "title": "并行工具与失败项保留"},
+    {"id": "19_mid_turn_user_message", "title": "中途用户消息仍保持工具配对"},
+    {"id": "20_provider_projection_parity", "title": "OpenAI 与 Anthropic 投影工具 ID 一致"},
+    {"id": "21_pause_resume_approval", "title": "暂停、恢复与审批"},
+    {"id": "22_cross_project_isolation", "title": "跨项目事件与记忆隔离"},
+    {"id": "23_corrupt_checkpoint_rollback", "title": "损坏 checkpoint 回退原始历史"},
+    {"id": "24_summary_quality_metrics", "title": "摘要质量指标可量化"}
   ]
 }

@@ -85,7 +85,12 @@ class ApkActivity : AppCompatActivity() {
                     }
                 }
                 downloadedApk = dest
-                binding.textApkStatus.text = getString(R.string.apk_downloaded) + "\n${dest.absolutePath}"
+                val sha = withContext(Dispatchers.IO) { ApkVerifier.digestFile(dest) }
+                binding.textApkStatus.text = getString(
+                    R.string.apk_ready_summary,
+                    dest.length() / 1024,
+                    sha.take(16),
+                )
                 toast(getString(R.string.apk_downloaded))
             } catch (e: Exception) {
                 val msg = when (e) {
@@ -129,10 +134,14 @@ class ApkActivity : AppCompatActivity() {
             AlertDialog.Builder(this@ApkActivity)
                 .setTitle("确认安装 APK")
                 .setMessage(
-                    "包名: ${identity.packageName}\n" +
-                        "版本: ${identity.versionName}\n" +
-                        "文件 SHA-256: ${identity.sha256}\n" +
-                        "签名 SHA-256: ${identity.signerSha256}",
+                    getString(
+                        R.string.apk_install_confirm,
+                        identity.packageName,
+                        identity.versionName.ifBlank { "—" },
+                        identity.sizeBytes / 1024,
+                        identity.sha256,
+                        identity.signerSha256,
+                    ),
                 )
                 .setPositiveButton("继续安装") { _, _ -> launchApkInstaller(apk) }
                 .setNegativeButton(R.string.cancel, null)

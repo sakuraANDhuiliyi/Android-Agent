@@ -1,0 +1,9 @@
+{
+  "detail": "任务不存在: job-missing",
+  "error": {
+    "schema_version": 1,
+    "code": "not_found",
+    "retryable": false,
+    "user_message": "任务不存在: job-missing"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "detail": "任务已结束",
+  "error": {
+    "schema_version": 1,
+    "code": "conflict",
+    "retryable": false,
+    "user_message": "任务已结束"
+  }
+}

@@ -220,7 +220,7 @@
       case "SET_CURRENT_JOB":
         next.currentJobId = action.jobId;
         next.jobStatus = action.status || "queued";
-        next.running = ["queued", "running", "awaiting_approval", "paused"].includes(next.jobStatus);
+        next.running = ["queued", "running", "awaiting_approval", "paused", "cancel_requested"].includes(next.jobStatus);
         next.awaitingApproval = next.jobStatus === "awaiting_approval";
         break;
       case "JOB_EVENTS": {
@@ -230,7 +230,7 @@
         next.lastEventId = merged.reduce((max, e) => Math.max(max, e.id || 0), 0);
         if (action.status) {
           next.jobStatus = action.status;
-          next.running = ["queued", "running", "awaiting_approval", "paused"].includes(action.status);
+          next.running = ["queued", "running", "awaiting_approval", "paused", "cancel_requested"].includes(action.status);
           next.awaitingApproval = action.status === "awaiting_approval";
         }
         if (action.plan !== undefined) next.plan = action.plan;

@@ -47,6 +47,27 @@
     working: "工作中",
   };
 
+  const perf = (typeof globalThis !== "undefined" && globalThis.DesktopPerf) || {};
+  const KEEP_TURNS_DEFAULT = perf.KEEP_TURNS_DEFAULT || 40;
+  const KEEP_TURNS_STEP = perf.KEEP_TURNS_STEP || 40;
+  const MAX_MARKDOWN_CHARS = perf.MAX_MARKDOWN_CHARS || 80_000;
+  const MAX_TOOL_OUTPUT_CHARS = perf.MAX_TOOL_OUTPUT_CHARS || 32_000;
+
+  function windowTurns(turns, keep) {
+    if (typeof perf.windowTurns === "function") return perf.windowTurns(turns, keep);
+    const list = Array.isArray(turns) ? turns : [];
+    const limit = Math.max(1, Number(keep) || KEEP_TURNS_DEFAULT);
+    if (list.length <= limit) return { hidden: 0, turns: list, keep: limit };
+    return { hidden: list.length - limit, turns: list.slice(-limit), keep: limit };
+  }
+
+  function truncateText(text, maxChars, notice) {
+    if (typeof perf.truncateText === "function") return perf.truncateText(text, maxChars, notice);
+    const value = text == null ? "" : String(text);
+    if (!maxChars || value.length <= maxChars) return { text: value, truncated: false };
+    return { text: value.slice(0, maxChars) + (notice || ""), truncated: true };
+  }
+
   const TOOL_LABEL = {
     run_command: "运行命令",
     run_gradle: "Gradle 构建",
@@ -477,7 +498,12 @@
 
   function renderMarkdown(container, text, callbacks, opts = {}) {
     container.textContent = "";
-    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    const capped = truncateText(
+      text,
+      MAX_MARKDOWN_CHARS,
+      `\n\n…Markdown 过长已截断（原 ${String(text || "").length} 字符）`,
+    );
+    const lines = String(capped.text || "").replace(/\r\n/g, "\n").split("\n");
     let i = 0;
     let paragraph = [];
 
@@ -809,7 +835,12 @@
                 return String(item.content.output);
               }
             })();
-      outPre.textContent = outputText;
+      const capped = truncateText(
+        outputText,
+        MAX_TOOL_OUTPUT_CHARS,
+        `\n\n…输出过长已截断（原 ${outputText.length} 字符）`,
+      );
+      outPre.textContent = capped.text;
       if (outputText.length > LONG_OUTPUT_CHARS) outPre.classList.add("is-long");
       copy.addEventListener("click", () => callbacks.copyText(outputText));
       outHead.appendChild(copy);
@@ -1607,6 +1638,8 @@
     // Optional non-turn node (e.g. the "load earlier" button) that always
     // stays above the first turn.
     let headerNode = null;
+    let keepTurns = KEEP_TURNS_DEFAULT;
+    let windowEarlierBtn = null;
 
     // —— low-level reconciliation helpers ——
 
@@ -1782,12 +1815,53 @@
 
     // —— main render ——
 
+    function ensureWindowEarlierBtn() {
+      if (windowEarlierBtn) return windowEarlierBtn;
+      windowEarlierBtn = el("button", "tl-load-earlier");
+      windowEarlierBtn.type = "button";
+      windowEarlierBtn.addEventListener("click", () => {
+        keepTurns += KEEP_TURNS_STEP;
+        renderNow();
+      });
+      return windowEarlierBtn;
+    }
+
+    function placeWindowEarlier(hidden) {
+      const btn = ensureWindowEarlierBtn();
+      if (hidden <= 0) {
+        btn.hidden = true;
+        if (btn.parentNode) btn.parentNode.removeChild(btn);
+        return null;
+      }
+      btn.hidden = false;
+      btn.textContent = `显示更早的 ${hidden} 轮`;
+      const after =
+        headerNode && headerNode.parentNode === container
+          ? headerNode.nextSibling
+          : container.firstChild;
+      if (btn.parentNode !== container || btn.nextSibling !== after) {
+        container.insertBefore(btn, after);
+      }
+      return btn;
+    }
+
+    function ensureTurnInWindow(turn, allTurns) {
+      if (!turn) return;
+      const idx = allTurns.findIndex((t) => t.key === turn.key);
+      if (idx < 0) return;
+      const minKeep = allTurns.length - idx;
+      if (minKeep > keepTurns) keepTurns = minKeep;
+    }
+
     function renderNow() {
       if (!container) return;
-      const turns = buildTurns(latestItems);
+      const allTurns = buildTurns(latestItems);
+      const windowed = windowTurns(allTurns, keepTurns);
+      const turns = windowed.turns;
+      const earlierBtn = placeWindowEarlier(windowed.hidden);
 
       const liveItemKeys = new Set();
-      let prevNode = null;
+      let prevNode = earlierBtn;
       turns.forEach((turn, idx) => {
         const seq = groupedSequence(turn.workItems);
         for (const entry of seq) liveItemKeys.add(entry.key);
@@ -1869,6 +1943,7 @@
 
       reset() {
         latestItems = [];
+        keepTurns = KEEP_TURNS_DEFAULT;
         turnNodeByKey.clear();
         itemNodeByKey.clear();
         if (container) container.textContent = "";
@@ -1899,6 +1974,7 @@
           (t) => t.workItems.includes(item) || t.finalMessages.includes(item) || t.userMessage === item,
         );
         if (turn) {
+          ensureTurnInWindow(turn, turns);
           vs.setTurnExpanded(turn.key, true);
           renderNow();
         }
@@ -1916,6 +1992,7 @@
         const turns = buildTurns(latestItems);
         const turn = turns.find((t) => t.turnId === turnId || t.key === turnId || t.taskId === turnId);
         if (!turn) return false;
+        ensureTurnInWindow(turn, turns);
         vs.setTurnExpanded(turn.key, true);
         renderNow();
         const node = turnNodeByKey.get(turn.key);
@@ -2118,6 +2195,7 @@
     renderApprovalDock,
     renderMarkdown,
     buildTurns,
+    windowTurns,
     splitUnifiedDiff,
     reverseApplyPatch,
     _internal: { parseInline, parseHunks, computeTurnSummary, defaultTurnExpanded, formatWorked, groupedSequence },

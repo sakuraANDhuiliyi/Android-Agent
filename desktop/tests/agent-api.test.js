@@ -112,6 +112,10 @@ async function run() {
   const restoreReq = requests.find((r) => r.url.includes("/checkpoints/cp1/restore"));
   assert.deepStrictEqual(restoreReq.body, { path: "app/src/Main.kt" });
 
+  await api.restoreCheckpoint("p1", "cp1", null, { preview: true });
+  const previewReq = requests.filter((r) => r.url.includes("/checkpoints/cp1/restore")).pop();
+  assert.deepStrictEqual(previewReq.body, { preview: true });
+
   await api.turnDiff("p1", "turn1");
   const diffReq = requests.find((r) => r.url === "/api/projects/p1/diff?turn_id=turn1");
   assert.ok(diffReq);

@@ -377,9 +377,10 @@
       running: "运行中",
       paused: "已暂停",
       awaiting_approval: "等待审批",
-      succeeded: "成功",
+      cancel_requested: "正在停止",
+      succeeded: "已完成",
       failed: "失败",
-      canceled: "已取消",
+      canceled: "已停止",
       interrupted: "已中断",
     };
     return map[status] || status;

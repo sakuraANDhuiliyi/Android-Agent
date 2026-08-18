@@ -196,9 +196,35 @@ class AgentApiTest {
     }
 
     @Test
+    fun parsesDisplayStatusFromJobDto() {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"job":{"id":"j1","project_id":"p1","status":"paused","cancel_requested":true,"display_status":"cancel_requested","status_label":"正在停止","events":[],"changed_files":[]}}""",
+            ),
+        )
+        val job = api.getJob("j1")
+        assertEquals("paused", job.status)
+        assertEquals("cancel_requested", job.displayStatus)
+        assertEquals("正在停止", job.statusLabel)
+        assertEquals("cancel_requested", job.resolvedStatus())
+        assertTrue(job.cancelRequested)
+    }
+
+    @Test
     fun parseErrorMessageHandlesObjectDetail() {
         val msg = AgentApi.parseErrorMessage("""{"detail":{"message":"conflict"}}""", 409)
         assertTrue(msg.contains("conflict") || msg.contains("message"))
+    }
+
+    @Test
+    fun parseErrorEnvelopePrefersStructuredUserMessage() {
+        val envelope = AgentApi.parseErrorEnvelope(
+            """{"detail":"任务已结束","error":{"schema_version":1,"code":"conflict","retryable":false,"user_message":"任务已结束"}}""",
+            409,
+        )
+        assertEquals("conflict", envelope.code)
+        assertFalse(envelope.retryable)
+        assertEquals("任务已结束", envelope.userMessage)
     }
 }
 

@@ -76,7 +76,7 @@ Long-term project/user/local memories are **not** conversation checkpoints. Auto
 
 - Free-text secret redaction is best-effort, not a vault.
 - Approval timeout floor is 30 seconds in production.
-- Index and memory are local SQLite; multi-host shared storage is not provided.
+- Index and memory are local SQLite by default. Optional multi-instance uses a shared SQLite volume, or `deployment_mode=postgres|hybrid` with fail-closed URLs. See `docs/CLOUD_DEPLOY.md`.
 - Desktop Playwright screenshots cover layout smoke, not full E2E against a live model.
 - Real `assembleDebug` still needs a local Android SDK; offline evals mock the build step.
 

@@ -165,6 +165,16 @@
                 android:layout_marginTop="@dimen/space_small"
                 android:minHeight="@dimen/touch_target"
                 android:text="@string/approval_allow_once" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAlwaysAllow"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_tiny"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/approval_allow_always"
+                android:visibility="gone" />
         </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

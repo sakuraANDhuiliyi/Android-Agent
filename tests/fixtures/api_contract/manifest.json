@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "description": "Shared cross-client API contract fixtures. Update client contract tests when this manifest changes.",
+  "error_statuses": [401, 404, 409, 413, 422, 429, 500],
+  "endpoints": [
+    {
+      "id": "health_ok",
+      "method": "GET",
+      "path": "/api/health",
+      "fixture": "health_200.json",
+      "status": 200
+    },
+    {
+      "id": "health_unauthorized",
+      "method": "GET",
+      "path": "/api/health",
+      "fixture": "errors/unauthorized_401.json",
+      "status": 401,
+      "requires_auth": true
+    },
+    {
+      "id": "job_get_ok",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}",
+      "fixture": "job_get_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_get_not_found",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}",
+      "fixture": "errors/not_found_404.json",
+      "status": 404
+    },
+    {
+      "id": "job_message_created",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages",
+      "fixture": "job_message_201.json",
+      "status": 201
+    },
+    {
+      "id": "job_message_conflict",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages",
+      "fixture": "errors/conflict_409.json",
+      "status": 409
+    },
+    {
+      "id": "job_message_validation",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages",
+      "fixture": "errors/validation_422.json",
+      "status": 422
+    },
+    {
+      "id": "conversation_events_ok",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/events",
+      "fixture": "conversation_events_200.json",
+      "status": 200
+    },
+    {
+      "id": "conversation_events_not_found",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/events",
+      "fixture": "errors/not_found_404.json",
+      "status": 404
+    },
+    {
+      "id": "payload_too_large",
+      "method": "POST",
+      "path": "/api/projects/{project_id}/ask",
+      "fixture": "errors/payload_too_large_413.json",
+      "status": 413
+    },
+    {
+      "id": "rate_limited",
+      "method": "GET",
+      "path": "/api/projects",
+      "fixture": "errors/rate_limited_429.json",
+      "status": 429
+    },
+    {
+      "id": "conversation_events_internal_error",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/events",
+      "fixture": "errors/internal_error_500.json",
+      "status": 500
+    },
+    {
+      "id": "ws_job_event",
+      "method": "WS",
+      "path": "/api/ws/jobs/{job_id}",
+      "fixture": "ws/job_event.json",
+      "status": 101
+    },
+    {
+      "id": "ws_job_done",
+      "method": "WS",
+      "path": "/api/ws/jobs/{job_id}",
+      "fixture": "ws/job_done.json",
+      "status": 101
+    },
+    {
+      "id": "ws_terminal_chunk",
+      "method": "WS",
+      "path": "/api/ws/terminals/{terminal_id}",
+      "fixture": "ws/terminal_chunk.json",
+      "status": 101
+    },
+    {
+      "id": "ws_terminal_done",
+      "method": "WS",
+      "path": "/api/ws/terminals/{terminal_id}",
+      "fixture": "ws/terminal_done.json",
+      "status": 101
+    }
+  ],
+  "client_tests": [
+    "desktop/tests/api-contract.test.js",
+    "android-app/app/src/test/java/com/androidagent/client/ApiContractTest.kt"
+  ]
+}

@@ -1,4 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } = require("electron");
+const {
+  createCredentialStore,
+} = require("./credentials");
 const { autoUpdater } = require("electron-updater");
 const { spawn } = require("child_process");
 const fs = require("fs/promises");
@@ -65,36 +68,29 @@ async function loadCredentials() {
   }
 }
 
+const credentialStore = createCredentialStore({
+  isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+  encryptBase64: (plain) =>
+    safeStorage.encryptString(String(plain)).toString("base64"),
+  decryptBase64: (encoded) =>
+    safeStorage.decryptString(Buffer.from(encoded, "base64")),
+  load: loadCredentials,
+  save: async (items) => {
+    await fs.mkdir(path.dirname(credentialFile()), { recursive: true });
+    await fs.writeFile(
+      credentialFile(),
+      JSON.stringify(items),
+      { encoding: "utf8", mode: 0o600 },
+    );
+  },
+});
+
 async function getCredential(baseUrl) {
-  if (!safeStorage.isEncryptionAvailable()) return "";
-  const items = await loadCredentials();
-  const encoded = items[String(baseUrl || "")];
-  if (!encoded) return "";
-  try {
-    return safeStorage.decryptString(Buffer.from(encoded, "base64"));
-  } catch (_) {
-    return "";
-  }
+  return credentialStore.get(baseUrl);
 }
 
 async function setCredential(baseUrl, token) {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error("系统安全凭证库不可用");
-  }
-  const key = String(baseUrl || "").slice(0, 2048);
-  const items = await loadCredentials();
-  if (token) {
-    items[key] = safeStorage.encryptString(String(token)).toString("base64");
-  } else {
-    delete items[key];
-  }
-  await fs.mkdir(path.dirname(credentialFile()), { recursive: true });
-  await fs.writeFile(
-    credentialFile(),
-    JSON.stringify(items),
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return true;
+  return credentialStore.set(baseUrl, token);
 }
 
 function rememberApprovedRoot(rootDir) {

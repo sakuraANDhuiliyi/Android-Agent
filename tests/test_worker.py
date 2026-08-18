@@ -645,6 +645,30 @@ class WorkerApiTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 202)
                 self.assertEqual(resp.json()["job"]["status"], "queued")
 
+    def test_cancel_paused_and_repeat_is_idempotent(self) -> None:
+        with patch("agent.jobs.start_worker"):
+            with self._client() as client:
+                project = client.post("/api/projects", json={"name": "demo"}).json()
+                job_id = client.post(
+                    f"/api/projects/{project['id']}/ask",
+                    json={"prompt": "hello"},
+                ).json()["job"]["id"]
+                pause = client.post(f"/api/jobs/{job_id}/pause")
+                self.assertEqual(pause.status_code, 202)
+                self.assertEqual(pause.json()["job"]["status"], "paused")
+                first = client.post(f"/api/jobs/{job_id}/cancel")
+                self.assertEqual(first.status_code, 202)
+                self.assertTrue(first.json()["job"]["cancel_requested"])
+                self.assertEqual(first.json()["job"]["display_status"], "cancel_requested")
+                second = client.post(f"/api/jobs/{job_id}/cancel")
+                self.assertEqual(second.status_code, 202)
+                self.assertEqual(
+                    second.json()["job"]["display_status"],
+                    "cancel_requested",
+                )
+                resume = client.post(f"/api/jobs/{job_id}/resume")
+                self.assertEqual(resume.status_code, 409)
+
     def test_websocket_cursor_reconnect_no_duplicates(self) -> None:
         def fake_agent(*_args, **kwargs):
             on_event = kwargs["on_event"]

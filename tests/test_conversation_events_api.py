@@ -325,10 +325,10 @@ class ConversationEventsApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(
-            response.json(),
-            {"detail": "Conversation Event 数据读取失败"},
-        )
+        payload = response.json()
+        self.assertEqual(payload["detail"], "Conversation Event 数据读取失败")
+        self.assertEqual(payload["error"]["code"], "internal_error")
+        self.assertFalse(payload["error"]["retryable"])
 
     def test_conversation_detail_keeps_legacy_projection(self) -> None:
         response = self.client.get(
@@ -409,6 +409,8 @@ class ConversationEventsApiTests(unittest.TestCase):
         self.assertEqual(event["type"], "started")
         self.assertEqual(done["type"], "done")
         self.assertEqual(done["status"], "succeeded")
+        self.assertEqual(done.get("schema_version"), 1)
+        self.assertEqual(done.get("display_status"), "succeeded")
 
     def test_old_conversation_and_ask_routes_still_dispatch(self) -> None:
         fake_job = {

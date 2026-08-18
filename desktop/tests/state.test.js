@@ -51,8 +51,12 @@ function run() {
   assert.strictEqual(s4.jobEvents.length, 3);
   assert.strictEqual(s4.lastEventId, 3);
 
+  const sCancel = reducer(s4, { type: "JOB_EVENTS", events: [], status: "cancel_requested" });
+  assert.strictEqual(sCancel.running, true);
+  assert.strictEqual(sCancel.jobStatus, "cancel_requested");
+
   // Context chips
-  const s5 = reducer(s4, { type: "ADD_CONTEXT_CHIP", chip: { key: "file:x", kind: "file", label: "x" } });
+  const s5 = reducer(sCancel, { type: "ADD_CONTEXT_CHIP", chip: { key: "file:x", kind: "file", label: "x" } });
   assert.strictEqual(s5.contextChips.length, 1);
   const s6 = reducer(s5, { type: "REMOVE_CONTEXT_CHIP", key: "file:x" });
   assert.strictEqual(s6.contextChips.length, 0);

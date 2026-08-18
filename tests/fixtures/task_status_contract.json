@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "statuses": [
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused",
+    "cancel_requested",
+    "succeeded",
+    "failed",
+    "canceled",
+    "interrupted"
+  ],
+  "active_statuses": [
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused",
+    "cancel_requested"
+  ],
+  "terminal_statuses": [
+    "succeeded",
+    "failed",
+    "canceled",
+    "interrupted"
+  ],
+  "cancelable_stored_statuses": [
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused"
+  ],
+  "labels_zh": {
+    "queued": "排队中",
+    "running": "运行中",
+    "awaiting_approval": "等待审批",
+    "paused": "已暂停",
+    "cancel_requested": "正在停止",
+    "succeeded": "已完成",
+    "failed": "失败",
+    "canceled": "已停止",
+    "interrupted": "已中断"
+  }
+}

@@ -1,7 +1,6 @@
 package com.androidagent.client
 
 import android.content.Context
-import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -57,11 +56,13 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private val renderHandler = Handler(Looper.getMainLooper())
     private var renderScheduled = false
 
-    /** 滚动跟随：仅当用户位于底部附近才自动跟随。 */
+    /** 滚动跟随：仅当用户位于底部 96dp 内才自动跟随。 */
     private var autoFollow = true
+    private var pendingNewCount = 0
 
     /** 审批提交中状态。 */
     private val submittingApprovals = HashSet<String>()
+    private lateinit var allowlist: ApprovalAllowlist
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,9 +70,14 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         setContentView(binding.root)
 
         prefs = AgentPrefs(this)
-        projectId = intent.getStringExtra(EXTRA_PROJECT_ID).orEmpty()
-        conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID).orEmpty()
-        conversationTitle = intent.getStringExtra(EXTRA_CONVERSATION_TITLE).orEmpty()
+        allowlist = ApprovalAllowlist(prefs.approvalAllowlist())
+        projectId = intent.getStringExtra(DeepLink.EXTRA_PROJECT_ID).orEmpty()
+        conversationId = intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_ID).orEmpty()
+        conversationTitle = intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_TITLE).orEmpty()
+        intent.getStringExtra(DeepLink.EXTRA_JOB_ID)?.takeIf { it.isNotBlank() }?.let {
+            currentJobId = it
+            prefs.selectedJobId = it
+        }
         if (projectId.isBlank() || conversationId.isBlank() || prefs.apiToken.isBlank()) {
             toast(getString(R.string.resource_unavailable))
             finish()
@@ -106,6 +112,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
         binding.btnJumpLatest.setOnClickListener {
             autoFollow = true
+            pendingNewCount = 0
             binding.recyclerTimeline.smoothScrollToPosition(adapter.itemCount)
             binding.btnJumpLatest.visibility = View.GONE
         }
@@ -182,8 +189,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 val jobs = withContext(Dispatchers.IO) { api.listJobs(projectId, conversationId) }
                 if (token != loadToken) return@launch
                 val preferred = prefs.selectedJobId
-                val active = jobs.firstOrNull { it.id == preferred && it.status in ACTIVE_STATUSES }
-                    ?: jobs.firstOrNull { it.status in ACTIVE_STATUSES }
+                val active = jobs.firstOrNull { it.id == preferred && it.resolvedStatus() in ACTIVE_STATUSES }
+                    ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
                     ?: jobs.firstOrNull()
                 if (active != null) {
                     attachJob(active.id, resume = true)
@@ -253,10 +260,24 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             onEvent = { event ->
                 val normalized = ConversationEventNormalizer.fromTaskEvent(event, fallbackJobId = jobId)
                 if (normalized != null && store.ingest(listOf(normalized))) {
+                    if (!autoFollow) pendingNewCount += 1
                     scheduleRender()
                 }
                 if (normalized?.kind == ConversationEventNormalizer.Kind.APPROVAL_REQUIRED) {
                     refreshApprovals(jobId)
+                    if (!AppForeground.isForeground) {
+                        JobNotifier.notifyApproval(
+                            this,
+                            jobId,
+                            projectId,
+                            conversationId,
+                            conversationTitle,
+                            UiFormat.approvalIntent(
+                                normalized.payload,
+                                normalized.payload.optString("kind"),
+                            ).ifBlank { getString(R.string.notification_approval_title) },
+                        )
+                    }
                 }
             },
             onJob = { job ->
@@ -273,6 +294,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                             job.id,
                             job.status,
                             job.result ?: job.error,
+                            projectId,
+                            conversationId,
+                            conversationTitle,
                         )
                     }
                     currentJobId?.let { id -> prefs.setEventCursor(id, watcher?.currentCursor() ?: prefs.eventCursor(id)) }
@@ -391,22 +415,23 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         updateToolbarStatus(job)
         updateComposer(job)
         updateMenuVisibility(job)
-        if (job.status == "awaiting_approval") {
+        if (job.resolvedStatus() == "awaiting_approval") {
             refreshApprovals(job.id)
-        } else if (job.status !in ACTIVE_STATUSES && store.expirePendingApprovals()) {
+        } else if (job.resolvedStatus() !in ACTIVE_STATUSES && store.expirePendingApprovals()) {
             // 任务终态：服务端可能未回放 resolved 事件，清理残留的等待卡避免审批栏卡死
             renderApprovalBar()
         }
     }
 
     private fun updateToolbarStatus(job: JobInfo?) {
-        val jobStatus = job?.status
+        val jobStatus = job?.resolvedStatus()
         val elapsed = job?.let {
             val started = it.startedAt ?: it.createdAt
             val now = System.currentTimeMillis() / 1000.0
             started?.let { s -> ((it.finishedAt ?: now) - s).toInt() }
         }
-        val statusText = jobStatus?.let { ConversationTimelineBuilder.statusLabel(it) }
+        val statusText = job?.statusLabel
+            ?: jobStatus?.let { ConversationTimelineBuilder.statusLabel(it) }
             ?: getString(R.string.no_task_selected)
         binding.toolbar.subtitle = if (elapsed != null && jobStatus in ACTIVE_STATUSES) {
             val worked = ConversationTimelineBuilder.formatWorked(elapsed * 1000L)
@@ -417,7 +442,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     private fun updateComposer(job: JobInfo?) {
-        val running = job != null && job.status in ACTIVE_STATUSES
+        val running = job != null && job.resolvedStatus() in ACTIVE_STATUSES
         binding.btnSend.visibility = if (running) View.GONE else View.VISIBLE
         binding.btnStop.visibility = if (running) View.VISIBLE else View.GONE
         binding.scrollMode.visibility = if (running) View.VISIBLE else View.GONE
@@ -431,9 +456,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     private fun updateMenuVisibility(job: JobInfo?) {
         val menu = binding.toolbar.menu
-        val active = job != null && job.status in ACTIVE_STATUSES
-        menu.findItem(R.id.action_pause)?.isVisible = job?.status == "running"
-        menu.findItem(R.id.action_resume)?.isVisible = job?.status == "paused"
+        val active = job != null && job.resolvedStatus() in ACTIVE_STATUSES
+        menu.findItem(R.id.action_pause)?.isVisible = job?.resolvedStatus() == "running"
+        menu.findItem(R.id.action_resume)?.isVisible = job?.resolvedStatus() == "paused"
         menu.findItem(R.id.action_stop)?.isVisible = active
         menu.findItem(R.id.action_task_details)?.isVisible = job != null
         menu.findItem(R.id.action_build_log)?.isVisible = job != null
@@ -484,7 +509,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         details.textTokens.text = tokens
         details.textElapsed.text =
             ConversationTimelineBuilder.formatWorked(job.durationMs) ?: "—"
-        details.textStatus.text = ConversationTimelineBuilder.statusLabel(job.status)
+        details.textStatus.text = ConversationTimelineBuilder.statusLabel(job.resolvedStatus())
         details.textPrompt.text = job.prompt
         dialog.setContentView(view)
         dialog.show()
@@ -500,6 +525,19 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 if (token != loadToken) return@launch
                 for (approval in approvals) {
                     if (approval.status != "pending") continue
+                    if (allowlist.allows(approval.kind, approval.payload) &&
+                        ApprovalAllowlist.canRemember(approval.risk, approval.kind)
+                    ) {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                api.resolveApproval(jobId, approval.id, true)
+                            }
+                            store.setApprovalDecision(approval.id, "approved")
+                            continue
+                        } catch (_: Exception) {
+                            /* fall through to show the card */
+                        }
+                    }
                     val ev = JSONObject()
                         .put("event_type", "approval_required")
                         .put("task_id", jobId)
@@ -517,8 +555,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
     }
 
-    private fun decideApproval(model: ApprovalCardBinder.Model, approved: Boolean) {
+    private fun decideApproval(model: ApprovalCardBinder.Model, approved: Boolean, always: Boolean = false) {
         val jobId = model.jobId ?: currentJobId ?: return
+        if (always && approved) {
+            if (!ApprovalAllowlist.canRemember(model.risk, model.kind)) {
+                toast(getString(R.string.approval_always_blocked))
+                return
+            }
+            allowlist.remember(model.kind, model.payload)
+            prefs.setApprovalAllowlist(allowlist.snapshot())
+        }
         submittingApprovals.add(model.approvalId)
         renderApprovalBar()
         lifecycleScope.launch {
@@ -526,7 +572,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 withContext(Dispatchers.IO) { api.resolveApproval(jobId, model.approvalId, approved) }
                 store.setApprovalDecision(model.approvalId, if (approved) "approved" else "rejected")
             } catch (e: Exception) {
-                toast(userMessage(e))
+                if (e is ApiException && (e.isNotFound || e.isConflict)) {
+                    store.setApprovalDecision(model.approvalId, "resolved_elsewhere")
+                    toast(getString(R.string.approval_resolved_elsewhere))
+                } else {
+                    toast(userMessage(e))
+                }
             } finally {
                 submittingApprovals.remove(model.approvalId)
                 renderNow()
@@ -571,11 +622,28 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     private fun updateAutoFollow() {
-        val layoutManager = binding.recyclerTimeline.layoutManager as? LinearLayoutManager ?: return
-        val lastVisible = layoutManager.findLastVisibleItemPosition()
-        val nearBottom = lastVisible >= adapter.itemCount - 2
-        autoFollow = nearBottom
-        binding.btnJumpLatest.visibility = if (!nearBottom && adapter.itemCount > 0) View.VISIBLE else View.GONE
+        autoFollow = isNearBottom()
+        if (autoFollow) pendingNewCount = 0
+        if (!autoFollow && adapter.itemCount > 0) {
+            binding.btnJumpLatest.visibility = View.VISIBLE
+            binding.btnJumpLatest.text = if (pendingNewCount > 0) {
+                getString(R.string.jump_to_latest_count, pendingNewCount)
+            } else {
+                getString(R.string.jump_to_latest)
+            }
+        } else {
+            binding.btnJumpLatest.visibility = View.GONE
+        }
+    }
+
+    private fun isNearBottom(): Boolean {
+        val recycler = binding.recyclerTimeline
+        val range = recycler.computeVerticalScrollRange()
+        val offset = recycler.computeVerticalScrollOffset()
+        val extent = recycler.computeVerticalScrollExtent()
+        if (range <= extent) return true
+        val remainingPx = range - offset - extent
+        return remainingPx <= (96f * resources.displayMetrics.density)
     }
 
     private fun renderApprovalBar() {
@@ -619,6 +687,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                     handlers = ApprovalCardBinder.Handlers(
                         onApprove = { decideApproval(it, true) },
                         onReject = { decideApproval(it, false) },
+                        onAlwaysAllow = { decideApproval(it, approved = true, always = true) },
                     ),
                     expandedDetail = approvalId in adapter.approvalDetailExpanded,
                     onToggleDetail = {
@@ -652,8 +721,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         renderNow()
     }
 
-    override fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean) {
-        decideApproval(model, approve)
+    override fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean, always: Boolean) {
+        decideApproval(model, approve, always)
     }
 
     override fun onViewChanges(turnKey: String) {
@@ -674,22 +743,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {
-        private const val EXTRA_PROJECT_ID = "project_id"
-        private const val EXTRA_CONVERSATION_ID = "conversation_id"
-        private const val EXTRA_CONVERSATION_TITLE = "conversation_title"
         private const val STATE_EXPANSION = "expansion_state"
         private const val STATE_DRAFT = "draft"
         private const val STATE_JOB = "job_id"
         private const val HISTORY_PAGE_LIMIT = 120
         private const val RENDER_BATCH_MS = 80L
-        private val ACTIVE_STATUSES = setOf("queued", "running", "paused", "awaiting_approval")
+        private val ACTIVE_STATUSES = setOf("queued", "running", "paused", "awaiting_approval", "cancel_requested")
 
-        fun start(context: Context, projectId: String, conversationId: String, title: String) {
+        fun start(context: Context, projectId: String, conversationId: String, title: String, jobId: String? = null) {
             context.startActivity(
-                Intent(context, ConversationActivity::class.java)
-                    .putExtra(EXTRA_PROJECT_ID, projectId)
-                    .putExtra(EXTRA_CONVERSATION_ID, conversationId)
-                    .putExtra(EXTRA_CONVERSATION_TITLE, title),
+                DeepLink.conversationIntent(context, projectId, conversationId, title, jobId),
             )
         }
     }

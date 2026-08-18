@@ -114,7 +114,7 @@ object ConversationTimelineBuilder {
     // ---------- 聚合 ----------
 
     private val TERMINAL_STATUSES = setOf("succeeded", "failed", "canceled", "interrupted")
-    private val ACTIVE_STATUSES = setOf("running", "awaiting_approval", "queued", "paused")
+    private val ACTIVE_STATUSES = setOf("running", "awaiting_approval", "queued", "paused", "cancel_requested")
 
     private val READ_TOOLS = setOf("read_file", "list_files", "git_status", "git_diff")
     private val SEARCH_TOOLS = setOf("search_code", "search_files", "web_search")
@@ -323,19 +323,25 @@ object ConversationTimelineBuilder {
         }
     }
 
-    fun statusLabel(status: String): String = when (status) {
-        "queued" -> "正在排队"
-        "running" -> "正在运行"
-        "awaiting_approval" -> "等待审批"
-        "paused" -> "已暂停"
-        "canceling" -> "正在停止"
-        "succeeded" -> "已完成"
-        "failed" -> "执行失败"
-        "canceled" -> "已取消"
-        "interrupted" -> "已中断"
-        "turn_started" -> "正在运行"
-        else -> status
+    fun statusLabel(status: String): String {
+        val normalized = if (status == "canceling") "cancel_requested" else status
+        return when (normalized) {
+            "queued" -> "排队中"
+            "running" -> "运行中"
+            "awaiting_approval" -> "等待审批"
+            "paused" -> "已暂停"
+            "cancel_requested" -> "正在停止"
+            "succeeded" -> "已完成"
+            "failed" -> "失败"
+            "canceled" -> "已停止"
+            "interrupted" -> "已中断"
+            "turn_started" -> "运行中"
+            else -> status
+        }
     }
+
+    fun statusLabel(context: android.content.Context, status: String): String =
+        UiFormat.jobStatusLabel(context, if (status == "canceling") "cancel_requested" else status)
 
     // ---------- 行生成 ----------
 

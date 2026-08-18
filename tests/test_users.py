@@ -19,6 +19,19 @@ class UserTokenTests(unittest.TestCase):
             self.assertEqual(store.authenticate(original), user_id)
             self.assertEqual(store.authenticate(additional), user_id)
 
+    def test_tokens_are_isolated_across_users(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UserStore(Path(tmp) / "users.db")
+            user_a, token_a = store.register()
+            user_b, token_b = store.register()
+            extra_a = store.issue_token(user_a)
+
+            self.assertEqual(store.authenticate(token_a), user_a)
+            self.assertEqual(store.authenticate(extra_a), user_a)
+            self.assertEqual(store.authenticate(token_b), user_b)
+            self.assertNotEqual(user_a, user_b)
+            self.assertIsNone(store.authenticate("not-a-real-token"))
+
     def test_existing_database_is_migrated_to_token_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "users.db"

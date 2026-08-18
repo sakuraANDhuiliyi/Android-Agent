@@ -51,6 +51,17 @@ class AgentPrefs(context: Context) {
         get() = prefs.getString(KEY_SELECTED_PROVIDER, DEFAULT_PROVIDER).orEmpty()
         set(value) = prefs.edit().putString(KEY_SELECTED_PROVIDER, value).apply()
 
+    var lastSyncAt: Long
+        get() = prefs.getLong(KEY_LAST_SYNC, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_SYNC, value).apply()
+
+    fun approvalAllowlist(): MutableSet<String> =
+        prefs.getStringSet(KEY_APPROVAL_ALLOW, emptySet())?.toMutableSet() ?: mutableSetOf()
+
+    fun setApprovalAllowlist(values: Set<String>) {
+        prefs.edit().putStringSet(KEY_APPROVAL_ALLOW, values).apply()
+    }
+
     fun eventCursor(jobId: String): Long =
         prefs.getLong("$KEY_EVENT_CURSOR:$jobId", 0L)
 
@@ -130,6 +141,8 @@ class AgentPrefs(context: Context) {
         private const val KEY_SELECTED_CONVERSATION = "selected_conversation"
         private const val KEY_SELECTED_JOB = "selected_job"
         private const val KEY_SELECTED_PROVIDER = "selected_provider"
+        private const val KEY_LAST_SYNC = "last_sync_at"
+        private const val KEY_APPROVAL_ALLOW = "approval_allowlist"
         private const val KEY_EVENT_CURSOR = "event_cursor"
         private const val KEY_CONV_CURSOR = "conv_cursor"
         private const val KEY_SNIPPET = "snippet"

@@ -47,17 +47,16 @@
                 android:visibility="gone"
                 tools:visibility="visible" />
 
-            <com.google.android.material.floatingactionbutton.FloatingActionButton
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnJumpLatest"
+                style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom|center_horizontal"
                 android:layout_marginBottom="@dimen/space_medium"
-                android:contentDescription="@string/jump_to_latest"
-                android:src="@drawable/ic_arrow_downward"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/jump_to_latest"
                 android:visibility="gone"
-                app:fabCustomSize="40dp"
-                app:maxImageSize="20dp"
                 tools:visibility="visible" />
         </FrameLayout>
 

@@ -114,7 +114,13 @@ class DeterministicMemoryExtractor:
                 body = m.group(2).strip()
                 if len(body) >= 8:
                     candidates.append(
-                        _candidate(mtype, body, tags=[mtype, "explicit"], source_seq=source_seq)
+                        _candidate(
+                            mtype,
+                            body,
+                            tags=[mtype, "explicit"],
+                            source_seq=source_seq,
+                            confidence=0.9,
+                        )
                     )
 
         # Heuristic type hits from combined text.
@@ -129,7 +135,13 @@ class DeterministicMemoryExtractor:
             if len(snippet) > 800 or snippet.count("\n") > 12:
                 continue
             candidates.append(
-                _candidate(mtype, snippet, tags=tags, source_seq=source_seq)
+                _candidate(
+                    mtype,
+                    snippet,
+                    tags=tags,
+                    source_seq=source_seq,
+                    confidence=0.55,
+                )
             )
 
         # From changed files → weak workflow/architecture hint.
@@ -142,6 +154,7 @@ class DeterministicMemoryExtractor:
                         "本轮主要修改了 Android XML/资源文件：" + ", ".join(paths),
                         tags=["convention", "ui"],
                         source_seq=source_seq,
+                        confidence=0.4,
                     )
                 )
 
@@ -163,6 +176,7 @@ def _candidate(
     *,
     tags: list[str],
     source_seq: int | None,
+    confidence: float = 0.6,
 ) -> dict[str, Any]:
     content = redact_sensitive_text(content.strip())
     title = content.split("\n", 1)[0][:80]
@@ -173,6 +187,7 @@ def _candidate(
         "tags": tags,
         "source_event_seq": source_seq,
         "scope": "project",
+        "confidence": confidence,
     }
 
 
@@ -260,6 +275,7 @@ def generate_candidates_for_turn(
                 status="candidate",
                 source_conversation_id=conversation_id,
                 source_event_seq=item.get("source_event_seq") or max_seq,
+                confidence=item.get("confidence"),
             )
             created.append(mem)
         except ValueError:

@@ -11,6 +11,7 @@ from typing import Any
 
 from agent.paths import DATA_DIR
 from agent.redaction import redact_sensitive_value
+from agent.stores.outbox import ensure_outbox_schema
 
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,21 @@ class TaskStore:
                 """CREATE INDEX IF NOT EXISTS idx_tasks_write_lock
                    ON tasks(write_lock_key, status)"""
             )
+            ensure_outbox_schema(conn)
+
+    def server_now(self, conn: sqlite3.Connection | None = None) -> float:
+        """SQLite server clock so lease/fencing is not bound to worker wall time."""
+
+        def _read(active: sqlite3.Connection) -> float:
+            row = active.execute(
+                "SELECT CAST(strftime('%s','now') AS REAL)"
+            ).fetchone()
+            return float(row[0])
+
+        if conn is not None:
+            return _read(conn)
+        with self._connect() as owned:
+            return _read(owned)
 
     def _migrate_legacy_sessions(self) -> None:
         with self._connect() as conn:
@@ -1087,9 +1103,19 @@ class TaskStore:
 
     def request_cancel(self, task_id: str, user_id: str) -> bool:
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status, cancel_requested FROM tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+            if not row:
+                return False
+            if row["status"] not in ("queued", "running", "awaiting_approval", "paused"):
+                return False
+            if bool(row["cancel_requested"]):
+                return True
             cursor = conn.execute(
                 """UPDATE tasks SET cancel_requested=1
-                   WHERE id=? AND user_id=? AND status IN ('queued','running','awaiting_approval')""",
+                   WHERE id=? AND user_id=?""",
                 (task_id, user_id),
             )
         return cursor.rowcount > 0
@@ -1141,10 +1167,12 @@ class TaskStore:
         lease_seconds: float = 300.0,
         now: float | None = None,
     ) -> dict[str, Any] | None:
-        now = now or time.time()
-        lease_expires = now + lease_seconds
+        lease_expires = None
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if now is None:
+                now = self.server_now(conn)
+            lease_expires = now + lease_seconds
             rows = conn.execute(
                 """SELECT * FROM tasks
                    WHERE status='queued' OR (status='running' AND lease_expires_at<?)
@@ -1258,13 +1286,14 @@ class TaskStore:
         lease_seconds: float = 300.0,
         *,
         claim_token: str | None = None,
+        now: float | None = None,
     ) -> bool:
-        now = time.time()
         token_clause = " AND claim_token=?" if claim_token is not None else ""
-        params: list[Any] = [now, now + lease_seconds, task_id, worker_id]
-        if claim_token is not None:
-            params.append(claim_token)
         with self._connect() as conn:
+            stamp = now if now is not None else self.server_now(conn)
+            params: list[Any] = [stamp, stamp + lease_seconds, task_id, worker_id]
+            if claim_token is not None:
+                params.append(claim_token)
             cursor = conn.execute(
                 """UPDATE tasks SET heartbeat_at=?, lease_expires_at=?
                    WHERE id=? AND claim_owner=?
@@ -1281,12 +1310,13 @@ class TaskStore:
         claim_token: str,
     ) -> bool:
         with self._connect() as conn:
+            now = self.server_now(conn)
             row = conn.execute(
                 """SELECT 1 FROM tasks
                    WHERE id=? AND claim_owner=? AND claim_token=?
                      AND status IN ('running','awaiting_approval')
                      AND lease_expires_at>=?""",
-                (task_id, worker_id, claim_token, time.time()),
+                (task_id, worker_id, claim_token, now),
             ).fetchone()
         return row is not None
 
@@ -1392,7 +1422,14 @@ class TaskStore:
                    WHERE id=? AND user_id=? AND status='running'""",
                 (task_id, user_id),
             )
+            already = conn.execute(
+                """SELECT 1 FROM tasks
+                   WHERE id=? AND user_id=? AND status='paused'""",
+                (task_id, user_id),
+            ).fetchone()
             changed = queued.rowcount > 0 or running.rowcount > 0
+            if already and not changed:
+                return True
             if changed:
                 conn.execute(
                     """INSERT OR IGNORE INTO task_messages
@@ -1409,7 +1446,7 @@ class TaskStore:
                 """UPDATE tasks SET status='queued', claim_owner=NULL,
                    claim_token=NULL, lease_expires_at=NULL, heartbeat_at=NULL,
                    pause_requested=0
-                   WHERE id=? AND user_id=? AND status='paused'""",
+                   WHERE id=? AND user_id=? AND status='paused' AND cancel_requested=0""",
                 (task_id, user_id),
             )
             if cursor.rowcount > 0:

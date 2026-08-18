@@ -16,6 +16,17 @@ from typing import Any, Callable
 from unittest.mock import patch
 
 from evals.metrics import EvalMetrics, EvalResult, Timer
+from evals.quality import (
+    anthropic_tool_ids,
+    chars_of,
+    constraint_recall,
+    hallucination_rate,
+    openai_tool_ids,
+    openai_tool_pairing_valid,
+    token_savings,
+    tool_chain_complete,
+    unresolved_retention,
+)
 
 FIXTURE_VERSION = "v1"
 FAKE_MCP = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "fake_mcp_server.py"
@@ -781,6 +792,720 @@ def scenario_16_reconnect() -> EvalResult:
         return _ok("16_reconnect", title, metrics, seqs=sorted(seen))
 
 
+def _append_user_assistant(
+    events: Any,
+    conv_id: str,
+    user_id: str,
+    project_id: str,
+    *,
+    task_id: str,
+    user_text: str,
+    assistant_text: str,
+) -> Any:
+    turn = events.create_turn(conv_id, user_id, project_id, task_id=task_id)
+    events.append_event(
+        conv_id,
+        turn["id"],
+        "user_message",
+        {"content": user_text},
+        context_visible=True,
+    )
+    events.append_event(
+        conv_id,
+        turn["id"],
+        "assistant_message",
+        {
+            "text_blocks": [{"type": "text", "text": assistant_text}],
+            "is_final": True,
+        },
+        context_visible=True,
+    )
+    return turn
+
+
+def scenario_17_hundred_turn_history() -> EvalResult:
+    title = "100+ 轮长历史与结构化 checkpoint"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import select_context_events
+    from agent.conversation_events import ConversationEventStore
+    from agent.conversation_summary import create_semantic_checkpoint
+    from agent.database import TaskStore
+
+    constraint = "必须使用 ViewBinding"
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        for index in range(102):
+            user_text = f"q{index} {constraint}" if index == 0 else f"q{index}" * 8
+            _append_user_assistant(
+                events,
+                conv["id"],
+                "u",
+                "p",
+                task_id=f"t{index}",
+                user_text=user_text,
+                assistant_text=f"a{index}" * 8,
+            )
+        checkpoint = create_semantic_checkpoint(
+            events,
+            conv["id"],
+            "u",
+            keep_recent_turns=4,
+            force=True,
+        )
+        rows = events.list_events(conv["id"], user_id="u")
+        selected = select_context_events(rows)
+        state = (checkpoint or {}).get("payload", {}).get("state") or {}
+        metrics.constraint_recall = constraint_recall(
+            [constraint],
+            state.get("constraints") or [],
+        )
+        metrics.hallucination_rate = hallucination_rate(
+            state,
+            (event.get("seq") or 0 for event in rows),
+        )
+        metrics.token_savings = token_savings(chars_of(rows), chars_of(selected))
+        metrics.first_token_ms = timer.ms()
+        metrics.chars_estimate = chars_of(selected)
+        user_msgs = [e for e in rows if e.get("event_type") == "user_message"]
+        metrics.goal_completed = (
+            len(user_msgs) >= 100
+            and checkpoint is not None
+            and metrics.constraint_recall == 1.0
+            and metrics.hallucination_rate == 0.0
+            and metrics.token_savings > 0
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "17_hundred_turn_history",
+                title,
+                metrics,
+                f"users={len(user_msgs)} cp={bool(checkpoint)} "
+                f"recall={metrics.constraint_recall} save={metrics.token_savings}",
+            )
+        return _ok(
+            "17_hundred_turn_history",
+            title,
+            metrics,
+            user_messages=len(user_msgs),
+        )
+
+
+def scenario_18_parallel_failed_tools() -> EvalResult:
+    title = "并行工具与失败项保留"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import build_openai_messages
+    from agent.conversation_events import ConversationEventStore
+    from agent.conversation_summary import create_semantic_checkpoint
+    from agent.database import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        turn = events.create_turn(conv["id"], "u", "p", task_id="tools")
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "user_message",
+            {"content": "读取并写入"},
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "assistant_message",
+            {
+                "message_id": "m-par",
+                "text_blocks": [{"type": "text", "text": "并行调用"}],
+                "is_final": False,
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_call",
+            {
+                "message_id": "m-par",
+                "tool_call_id": "ok1",
+                "block_index": 0,
+                "name": "read_file",
+                "input": {"path": "a.kt"},
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_call",
+            {
+                "message_id": "m-par",
+                "tool_call_id": "fail1",
+                "block_index": 1,
+                "name": "write_file",
+                "input": {"path": "b.kt"},
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_result",
+            {
+                "tool_call_id": "ok1",
+                "name": "read_file",
+                "ok": True,
+                "model_output": "package ok",
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_result",
+            {
+                "tool_call_id": "fail1",
+                "name": "write_file",
+                "ok": False,
+                "model_output": "disk full",
+                "error_type": "ToolExecutionError",
+            },
+            context_visible=True,
+        )
+        for index in range(6):
+            _append_user_assistant(
+                events,
+                conv["id"],
+                "u",
+                "p",
+                task_id=f"f{index}",
+                user_text=f"follow {index}",
+                assistant_text=f"ack {index}",
+            )
+        checkpoint = create_semantic_checkpoint(
+            events,
+            conv["id"],
+            "u",
+            keep_recent_turns=2,
+            force=True,
+        )
+        rows = events.list_events(conv["id"], user_id="u")
+        state = (checkpoint or {}).get("payload", {}).get("state") or {}
+        unresolved = [item.get("text") or "" for item in state.get("unresolved") or []]
+        metrics.tool_calls = 2
+        metrics.tool_chain_complete = tool_chain_complete(rows)
+        metrics.unresolved_retention = unresolved_retention(
+            ["Resolve failed tool write_file"],
+            unresolved,
+        )
+        messages = build_openai_messages(rows)
+        metrics.goal_completed = (
+            checkpoint is not None
+            and metrics.tool_chain_complete == 1.0
+            and metrics.unresolved_retention == 1.0
+            and openai_tool_pairing_valid(messages)
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "18_parallel_failed_tools",
+                title,
+                metrics,
+                f"complete={metrics.tool_chain_complete} unresolved={unresolved}",
+            )
+        return _ok("18_parallel_failed_tools", title, metrics)
+
+
+def scenario_19_mid_turn_user_message() -> EvalResult:
+    title = "中途用户消息仍保持工具配对"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import build_openai_messages
+    from agent.conversation_events import ConversationEventStore
+    from agent.database import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        turn = events.create_turn(conv["id"], "u", "p", task_id="mid")
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "user_message",
+            {"content": "开始改布局"},
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "assistant_message",
+            {
+                "message_id": "m-mid",
+                "text_blocks": [{"type": "text", "text": "先读后写"}],
+                "is_final": False,
+            },
+            context_visible=True,
+        )
+        for index, tool_id in enumerate(("c-read", "c-write")):
+            events.append_event(
+                conv["id"],
+                turn["id"],
+                "tool_call",
+                {
+                    "message_id": "m-mid",
+                    "tool_call_id": tool_id,
+                    "block_index": index,
+                    "name": "read_file" if index == 0 else "write_file",
+                    "input": {"path": "ui.xml"},
+                },
+                context_visible=True,
+            )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "user_message",
+            {"content": "改用 ConstraintLayout"},
+            context_visible=True,
+        )
+        for tool_id, name, ok in (
+            ("c-read", "read_file", True),
+            ("c-write", "write_file", True),
+        ):
+            events.append_event(
+                conv["id"],
+                turn["id"],
+                "tool_result",
+                {
+                    "tool_call_id": tool_id,
+                    "name": name,
+                    "ok": ok,
+                    "model_output": "ok",
+                },
+                context_visible=True,
+            )
+        rows = events.list_events(conv["id"], user_id="u")
+        messages = build_openai_messages(rows)
+        metrics.tool_calls = 2
+        metrics.tool_chain_complete = tool_chain_complete(rows)
+        metrics.goal_completed = (
+            metrics.tool_chain_complete == 1.0
+            and openai_tool_pairing_valid(messages)
+            and any("ConstraintLayout" in (m.get("content") or "") for m in messages)
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "19_mid_turn_user_message",
+                title,
+                metrics,
+                f"msgs={messages}",
+            )
+        return _ok("19_mid_turn_user_message", title, metrics)
+
+
+def scenario_20_provider_projection_parity() -> EvalResult:
+    title = "OpenAI 与 Anthropic 投影工具 ID 一致"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import (
+        build_anthropic_messages,
+        build_openai_messages,
+    )
+    from agent.conversation_events import ConversationEventStore
+    from agent.database import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        turn = events.create_turn(conv["id"], "u", "p", task_id="parity")
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "user_message",
+            {"content": "读文件"},
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "assistant_message",
+            {
+                "message_id": "m-par",
+                "text_blocks": [{"type": "text", "text": "读取"}],
+                "is_final": False,
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_call",
+            {
+                "message_id": "m-par",
+                "tool_call_id": "call-shared",
+                "block_index": 0,
+                "name": "read_file",
+                "input": {"path": "MainActivity.kt"},
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_result",
+            {
+                "tool_call_id": "call-shared",
+                "name": "read_file",
+                "ok": True,
+                "model_output": "class MainActivity",
+            },
+            context_visible=True,
+        )
+        rows = events.list_events(conv["id"], user_id="u")
+        openai_ids = openai_tool_ids(build_openai_messages(rows))
+        anthropic_ids = anthropic_tool_ids(build_anthropic_messages(rows))
+        metrics.tool_calls = 1
+        metrics.tool_chain_complete = 1.0
+        metrics.goal_completed = openai_ids == anthropic_ids == [
+            "call-shared",
+            "call-shared",
+        ]
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "20_provider_projection_parity",
+                title,
+                metrics,
+                f"openai={openai_ids} anthropic={anthropic_ids}",
+            )
+        return _ok(
+            "20_provider_projection_parity",
+            title,
+            metrics,
+            openai_ids=openai_ids,
+            anthropic_ids=anthropic_ids,
+        )
+
+
+def scenario_21_pause_resume_approval() -> EvalResult:
+    title = "暂停、恢复与审批"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent import approvals
+    from agent.database import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        conv = store.create_conversation("u", "p")
+        queued_id = uuid.uuid4().hex[:12]
+        store.create_task(
+            {
+                "id": queued_id,
+                "user_id": "u",
+                "project_id": "p",
+                "conversation_id": conv["id"],
+                "prompt": "work",
+                "status": "queued",
+                "created_at": time.time(),
+            }
+        )
+        paused = store.pause_task(queued_id, "u")
+        paused_row = store.get_task(queued_id, "u")
+        resumed = store.resume_task(queued_id, "u")
+        resumed_row = store.get_task(queued_id, "u")
+
+        def later() -> None:
+            time.sleep(0.05)
+            pending = list(approvals._pending.values())
+            if pending:
+                approvals.resolve_approval(pending[-1].id, "u", approved=True)
+
+        threading.Thread(target=later, daemon=True).start()
+        decision = approvals.request_user_approval(
+            job_id="j-eval",
+            user_id="u",
+            kind="download",
+            payload={"message": "ok?", "url": "https://example.test/a"},
+            timeout_sec=30.0,
+        )
+        metrics.approvals = 1
+        metrics.goal_completed = (
+            paused
+            and paused_row
+            and paused_row["status"] == "paused"
+            and resumed
+            and resumed_row
+            and resumed_row["status"] == "queued"
+            and decision == "approved"
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "21_pause_resume_approval",
+                title,
+                metrics,
+                f"paused={paused_row} resumed={resumed_row} decision={decision}",
+            )
+        return _ok("21_pause_resume_approval", title, metrics)
+
+
+def scenario_22_cross_project_isolation() -> EvalResult:
+    title = "跨项目事件与记忆隔离"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_events import ConversationEventStore
+    from agent.database import TaskStore
+    from agent.memory_store import MemoryStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        mem = MemoryStore(Path(tmp) / "mem.db")
+        conv_a = store.create_conversation("u", "proj_a")
+        conv_b = store.create_conversation("u", "proj_b")
+        _append_user_assistant(
+            events,
+            conv_a["id"],
+            "u",
+            "proj_a",
+            task_id="ta",
+            user_text="secret-a",
+            assistant_text="only-a",
+        )
+        _append_user_assistant(
+            events,
+            conv_b["id"],
+            "u",
+            "proj_b",
+            task_id="tb",
+            user_text="secret-b",
+            assistant_text="only-b",
+        )
+        mem.create_memory(
+            user_id="u",
+            project_id="proj_a",
+            scope="project",
+            memory_type="decision",
+            title="Only project A decision",
+            content="项目 A 专用决定，不得泄漏到 B。",
+            status="active",
+        )
+        leaked_events = events.list_events(conv_a["id"], user_id="u")
+        other_events = events.list_events(conv_b["id"], user_id="u")
+        leaked_mem = mem.search("u", "专用决定", project_id="proj_b")
+        own_mem = mem.search("u", "专用决定", project_id="proj_a")
+        metrics.goal_completed = (
+            any("secret-a" in json.dumps(e, default=str) for e in leaked_events)
+            and not any("secret-a" in json.dumps(e, default=str) for e in other_events)
+            and bool(own_mem)
+            and leaked_mem == []
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "22_cross_project_isolation",
+                title,
+                metrics,
+                f"mem_b={leaked_mem} events_b={other_events}",
+            )
+        return _ok("22_cross_project_isolation", title, metrics)
+
+
+def scenario_23_corrupt_checkpoint_rollback() -> EvalResult:
+    title = "损坏 checkpoint 回退原始历史"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import select_context_events
+    from agent.conversation_events import ConversationEventStore
+    from agent.conversation_summary import repair_invalid_checkpoints
+    from agent.database import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        _append_user_assistant(
+            events,
+            conv["id"],
+            "u",
+            "p",
+            task_id="raw",
+            user_text="必须保留原始问题",
+            assistant_text="原始回答",
+        )
+        last = events.create_turn(conv["id"], "u", "p", task_id="badcp")
+        bad = events.append_event(
+            conv["id"],
+            last["id"],
+            "context_checkpoint",
+            {
+                "summary": "hallucinated summary",
+                "state": {
+                    "goal": [{"text": "invented fact", "source_seq": 99999}],
+                },
+                "covers_through_seq": 2,
+                "valid": True,
+                "checkpoint_version": 2,
+            },
+            context_visible=True,
+        )
+        original_payload = dict(bad["payload"])
+        repaired = repair_invalid_checkpoints(events, conv["id"], "u")
+        rows = events.list_events(conv["id"], user_id="u")
+        selected = select_context_events(rows)
+        still_raw = any(
+            "必须保留原始问题" in json.dumps(event.get("payload") or {}, ensure_ascii=False)
+            for event in selected
+        )
+        invalidated = [
+            event
+            for event in rows
+            if event.get("event_type") == "context_checkpoint_invalidated"
+        ]
+        current = events.list_events(conv["id"], user_id="u")
+        stored_checkpoint = next(
+            event for event in current if event.get("id") == bad["id"]
+        )
+        metrics.recoveries = len(repaired)
+        metrics.hallucination_rate = 0.0
+        metrics.goal_completed = (
+            bool(repaired)
+            and bool(invalidated)
+            and still_raw
+            and stored_checkpoint["payload"]["state"] == original_payload["state"]
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "23_corrupt_checkpoint_rollback",
+                title,
+                metrics,
+                f"repaired={repaired} selected={len(selected)}",
+            )
+        return _ok("23_corrupt_checkpoint_rollback", title, metrics)
+
+
+def scenario_24_summary_quality_metrics() -> EvalResult:
+    title = "摘要质量指标可量化"
+    timer = Timer()
+    metrics = EvalMetrics()
+    from agent.conversation_context import select_context_events
+    from agent.conversation_events import ConversationEventStore
+    from agent.conversation_summary import create_semantic_checkpoint
+    from agent.database import TaskStore
+
+    constraint = "禁止 findViewById"
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TaskStore(Path(tmp) / "agent.db")
+        events = ConversationEventStore(store)
+        conv = store.create_conversation("u", "p")
+        _append_user_assistant(
+            events,
+            conv["id"],
+            "u",
+            "p",
+            task_id="q0",
+            user_text=f"改 UI，{constraint}",
+            assistant_text="将改用 ViewBinding",
+        )
+        turn = events.create_turn(conv["id"], "u", "p", task_id="tool")
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "user_message",
+            {"content": "继续"},
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_call",
+            {
+                "message_id": "m-q",
+                "tool_call_id": "t-fail",
+                "block_index": 0,
+                "name": "write_file",
+                "input": {"path": "ui.xml"},
+            },
+            context_visible=True,
+        )
+        events.append_event(
+            conv["id"],
+            turn["id"],
+            "tool_result",
+            {
+                "tool_call_id": "t-fail",
+                "name": "write_file",
+                "ok": False,
+                "model_output": "permission denied",
+            },
+            context_visible=True,
+        )
+        for index in range(6):
+            _append_user_assistant(
+                events,
+                conv["id"],
+                "u",
+                "p",
+                task_id=f"n{index}",
+                user_text=f"next {index}",
+                assistant_text=f"ok {index}",
+            )
+        checkpoint = create_semantic_checkpoint(
+            events,
+            conv["id"],
+            "u",
+            keep_recent_turns=2,
+            force=True,
+        )
+        rows = events.list_events(conv["id"], user_id="u")
+        selected = select_context_events(rows)
+        state = (checkpoint or {}).get("payload", {}).get("state") or {}
+        metrics.constraint_recall = constraint_recall(
+            [constraint],
+            state.get("constraints") or [],
+        )
+        metrics.tool_chain_complete = tool_chain_complete(rows)
+        metrics.hallucination_rate = hallucination_rate(
+            state,
+            (event.get("seq") or 0 for event in rows),
+        )
+        metrics.unresolved_retention = unresolved_retention(
+            ["Resolve failed tool write_file"],
+            [item.get("text") or "" for item in state.get("unresolved") or []],
+        )
+        metrics.token_savings = token_savings(chars_of(rows), chars_of(selected))
+        metrics.first_token_ms = timer.ms()
+        metrics.goal_completed = (
+            checkpoint is not None
+            and metrics.constraint_recall == 1.0
+            and metrics.tool_chain_complete == 1.0
+            and metrics.hallucination_rate == 0.0
+            and metrics.unresolved_retention == 1.0
+            and metrics.token_savings > 0
+            and metrics.first_token_ms >= 0
+        )
+        metrics.wall_time_ms = timer.ms()
+        if not metrics.goal_completed:
+            return _fail(
+                "24_summary_quality_metrics",
+                title,
+                metrics,
+                (
+                    f"recall={metrics.constraint_recall} hallu={metrics.hallucination_rate} "
+                    f"unresolved={metrics.unresolved_retention} save={metrics.token_savings}"
+                ),
+            )
+        return _ok("24_summary_quality_metrics", title, metrics)
+
+
 SCENARIO_RUNNERS: dict[str, Callable[[], EvalResult]] = {
     "01_create_page_build": scenario_01_create_page_build,
     "02_fix_kotlin": scenario_02_fix_kotlin,
@@ -798,4 +1523,12 @@ SCENARIO_RUNNERS: dict[str, Callable[[], EvalResult]] = {
     "14_long_history_checkpoint": scenario_14_long_history_checkpoint,
     "15_memory_approve_delete": scenario_15_memory_approve_delete,
     "16_reconnect": scenario_16_reconnect,
+    "17_hundred_turn_history": scenario_17_hundred_turn_history,
+    "18_parallel_failed_tools": scenario_18_parallel_failed_tools,
+    "19_mid_turn_user_message": scenario_19_mid_turn_user_message,
+    "20_provider_projection_parity": scenario_20_provider_projection_parity,
+    "21_pause_resume_approval": scenario_21_pause_resume_approval,
+    "22_cross_project_isolation": scenario_22_cross_project_isolation,
+    "23_corrupt_checkpoint_rollback": scenario_23_corrupt_checkpoint_rollback,
+    "24_summary_quality_metrics": scenario_24_summary_quality_metrics,
 }

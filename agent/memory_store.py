@@ -89,7 +89,10 @@ class MemoryStore:
                     schema_version INTEGER NOT NULL DEFAULT 1,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    last_used_at REAL
+                    last_used_at REAL,
+                    confidence REAL NOT NULL DEFAULT 0.6,
+                    conflict_of TEXT,
+                    conflict_status TEXT NOT NULL DEFAULT 'none'
                 );
                 CREATE INDEX IF NOT EXISTS idx_memories_user_project_status
                     ON memories(user_id, project_id, status, updated_at DESC);
@@ -97,7 +100,23 @@ class MemoryStore:
                     ON memories(user_id, project_id, scope, content_hash);
                 CREATE INDEX IF NOT EXISTS idx_memories_scope
                     ON memories(user_id, scope, status);
-
+                """
+            )
+            cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()
+            }
+            if "confidence" not in cols:
+                conn.execute(
+                    "ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 0.6"
+                )
+            if "conflict_of" not in cols:
+                conn.execute("ALTER TABLE memories ADD COLUMN conflict_of TEXT")
+            if "conflict_status" not in cols:
+                conn.execute(
+                    "ALTER TABLE memories ADD COLUMN conflict_status TEXT NOT NULL DEFAULT 'none'"
+                )
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS memory_usage (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -142,6 +161,7 @@ class MemoryStore:
         source_conversation_id: str | None = None,
         source_event_seq: int | None = None,
         memory_id: str | None = None,
+        confidence: float | None = None,
     ) -> dict[str, Any]:
         user_id = validate_id(user_id, kind="user_id")
         if scope not in VALID_SCOPES:
@@ -171,11 +191,23 @@ class MemoryStore:
         tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
         tags = redact_sensitive_value(tags)
         digest = content_hash(title, content, memory_type)
+        score = 0.6 if confidence is None else max(0.0, min(1.0, float(confidence)))
 
         # Dedupe active/candidate with same hash.
         existing = self.find_by_hash(user_id, project_id, scope, digest)
         if existing and existing["status"] in {"candidate", "active"}:
             return {**existing, "deduped": True}
+
+        conflict = self.find_title_conflict(
+            user_id,
+            project_id,
+            scope=scope,
+            memory_type=memory_type,
+            title=title,
+            content_hash=digest,
+        )
+        conflict_of = conflict["id"] if conflict else None
+        conflict_status = "open" if conflict else "none"
 
         now = time.time()
         mid = memory_id or uuid.uuid4().hex[:12]
@@ -184,8 +216,9 @@ class MemoryStore:
                 """INSERT INTO memories
                    (id,scope,user_id,project_id,memory_type,title,content,tags,
                     source_conversation_id,source_event_seq,status,content_hash,
-                    schema_version,created_at,updated_at,last_used_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+                    schema_version,created_at,updated_at,last_used_at,
+                    confidence,conflict_of,conflict_status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)""",
                 (
                     mid,
                     scope,
@@ -202,6 +235,9 @@ class MemoryStore:
                     MEMORY_SCHEMA_VERSION,
                     now,
                     now,
+                    score,
+                    conflict_of,
+                    conflict_status,
                 ),
             )
             conn.execute(
@@ -209,6 +245,12 @@ class MemoryStore:
                    VALUES (?,?,?,?)""",
                 (mid, title, content, " ".join(tags)),
             )
+            if conflict_of:
+                conn.execute(
+                    """UPDATE memories SET conflict_status='open', updated_at=?
+                       WHERE id=? AND user_id=? AND status IN ('candidate','active')""",
+                    (now, conflict_of, user_id),
+                )
         item = self.get_memory(mid, user_id)
         assert item is not None
         return item
@@ -236,6 +278,36 @@ class MemoryStore:
                     (user_id, scope, digest),
                 ).fetchone()
         return self._row_to_memory(row) if row else None
+
+    def find_title_conflict(
+        self,
+        user_id: str,
+        project_id: str | None,
+        *,
+        scope: str,
+        memory_type: str,
+        title: str,
+        content_hash: str,
+    ) -> dict[str, Any] | None:
+        needle = re.sub(r"\s+", " ", title.strip().lower())
+        if len(needle) < 8:
+            return None
+        candidates = self.list_memories(
+            user_id,
+            project_id=project_id,
+            scope=scope,
+            memory_type=memory_type,
+            limit=80,
+        )
+        for item in candidates:
+            if item.get("status") not in {"candidate", "active"}:
+                continue
+            if item.get("content_hash") == content_hash:
+                continue
+            other = re.sub(r"\s+", " ", str(item.get("title") or "").strip().lower())
+            if other == needle or other[:40] == needle[:40]:
+                return item
+        return None
 
     def get_memory(self, memory_id: str, user_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
@@ -554,6 +626,12 @@ class MemoryStore:
             item["tags"] = json.loads(item.get("tags") or "[]")
         except json.JSONDecodeError:
             item["tags"] = []
+        item["confidence"] = float(item.get("confidence") if item.get("confidence") is not None else 0.6)
+        item["conflict_status"] = item.get("conflict_status") or "none"
+        item["source"] = {
+            "conversation_id": item.get("source_conversation_id"),
+            "event_seq": item.get("source_event_seq"),
+        }
         return item
 
 

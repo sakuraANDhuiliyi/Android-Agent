@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "policy": "Unknown request fields are rejected. Compatible aliases must declare added_in, deprecated_in, and remove_after. Clients must keep sending the replacement field before remove_after.",
+  "deprecated_fields": []
+}

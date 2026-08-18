@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -33,10 +34,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         prefs = AgentPrefs(this)
         JobNotifier.ensureChannel(this)
+
+        if (!intent.getBooleanExtra(DeepLink.EXTRA_EDIT_CONNECTION, false) &&
+            prefs.apiToken.isNotBlank() &&
+            prefs.serverUrl.isNotBlank()
+        ) {
+            routeConnected()
+            return
+        }
+
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         binding.editServerUrl.setText(prefs.serverUrl)
         binding.editApiToken.setText(prefs.apiToken)
@@ -60,38 +71,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectServer() {
+        binding.layoutServerUrl.error = null
+        binding.layoutApiToken.error = null
         val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
         if (serverUrl.isBlank()) {
-            toast("请填写服务器地址")
+            binding.layoutServerUrl.error = getString(R.string.server_url_required)
             return
         }
-        // 先校验再持久化：清空输入框误点连接不应抹掉已保存的 token
         val apiToken = binding.editApiToken.text?.toString()?.trim().orEmpty()
         if (apiToken.isBlank()) {
-            toast("请输入服务端生成的访问 Token")
+            binding.layoutApiToken.error = getString(R.string.api_token_required)
             return
         }
 
-        prefs.serverUrl = serverUrl
-        prefs.apiToken = apiToken
         val api = AgentApi(serverUrl, apiToken)
-
         binding.btnConnect.isEnabled = false
-        binding.textStatus.text = "正在测试连接..."
+        binding.textStatus.text = getString(R.string.connecting)
         lifecycleScope.launch {
             try {
                 val health = withContext(Dispatchers.IO) { api.health() }
+                prefs.serverUrl = serverUrl
+                prefs.apiToken = apiToken
                 if (health.userId.isNotBlank()) {
                     prefs.userId = health.userId
                 }
+                prefs.lastSyncAt = System.currentTimeMillis()
                 maybeRequestNotificationPermission()
                 binding.textStatus.text = getString(R.string.status_connected)
                 MainNavActivity.start(this@MainActivity)
                 finish()
             } catch (e: Exception) {
-                prefs.apiToken = ""
-                binding.textStatus.text = "连接失败: ${e.message ?: "无法访问服务器"}"
-                toast("连接失败")
+                binding.layoutApiToken.error = e.message ?: getString(R.string.connect_failed)
+                binding.textStatus.text = getString(R.string.connect_failed_status, e.message ?: "")
             } finally {
                 binding.btnConnect.isEnabled = true
             }
@@ -157,6 +168,23 @@ class MainActivity : AppCompatActivity() {
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    private fun routeConnected() {
+        if (DeepLink.hasConversationTarget(intent)) {
+            startActivity(
+                DeepLink.conversationIntent(
+                    this,
+                    intent.getStringExtra(DeepLink.EXTRA_PROJECT_ID).orEmpty(),
+                    intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_ID).orEmpty(),
+                    intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_TITLE).orEmpty(),
+                    intent.getStringExtra(DeepLink.EXTRA_JOB_ID),
+                ),
+            )
+        } else {
+            startActivity(DeepLink.mainNavIntent(this, intent.getStringExtra(DeepLink.EXTRA_TAB)))
+        }
+        finish()
     }
 
     private fun toast(message: String) {

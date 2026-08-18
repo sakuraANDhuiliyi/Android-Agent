@@ -58,6 +58,7 @@ def main() -> int:
     steps: list[dict] = []
 
     steps.append(run([sys.executable, str(ROOT / "scripts" / "scan_secrets.py")]))
+    steps.append(run([sys.executable, str(ROOT / "scripts" / "check_api_contract.py")]))
     steps.append(run(["git", "diff", "--check"], timeout=60))
     steps.append(
         run(

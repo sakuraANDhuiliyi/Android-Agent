@@ -24,6 +24,7 @@ object ApprovalCardBinder {
     class Handlers(
         val onApprove: (Model) -> Unit,
         val onReject: (Model) -> Unit,
+        val onAlwaysAllow: ((Model) -> Unit)? = null,
     )
 
     fun bind(
@@ -68,14 +69,22 @@ object ApprovalCardBinder {
                 binding.textApprovalState.setText(R.string.approval_handling)
                 binding.textApprovalState.setTextColor(colorOf(context, true))
                 binding.layoutApprovalButtons.visibility = View.VISIBLE
-                binding.btnApprove.isEnabled = false
-                binding.btnReject.isEnabled = false
+                binding.btnApprove.isEnabled = !model.submitting
+                binding.btnReject.isEnabled = !model.submitting
+                val canAlways = handlers.onAlwaysAllow != null &&
+                    ApprovalAllowlist.canRemember(model.risk, model.kind)
+                binding.btnAlwaysAllow.visibility = if (canAlways) View.VISIBLE else View.GONE
+                binding.btnAlwaysAllow.isEnabled = canAlways && !model.submitting
             }
             model.status == "pending" -> {
                 binding.textApprovalState.visibility = View.GONE
                 binding.layoutApprovalButtons.visibility = View.VISIBLE
                 binding.btnApprove.isEnabled = true
                 binding.btnReject.isEnabled = true
+                val canAlways = handlers.onAlwaysAllow != null &&
+                    ApprovalAllowlist.canRemember(model.risk, model.kind)
+                binding.btnAlwaysAllow.visibility = if (canAlways) View.VISIBLE else View.GONE
+                binding.btnAlwaysAllow.isEnabled = canAlways
             }
             else -> {
                 binding.textApprovalState.visibility = View.VISIBLE
@@ -86,10 +95,12 @@ object ApprovalCardBinder {
                 }
                 binding.textApprovalState.setTextColor(colorOf(context, model.status == "approved"))
                 binding.layoutApprovalButtons.visibility = View.GONE
+                binding.btnAlwaysAllow.visibility = View.GONE
             }
         }
         binding.btnApprove.setOnClickListener { handlers.onApprove(model) }
         binding.btnReject.setOnClickListener { handlers.onReject(model) }
+        binding.btnAlwaysAllow.setOnClickListener { handlers.onAlwaysAllow?.invoke(model) }
     }
 
     private fun colorOf(context: Context, positive: Boolean): Int {

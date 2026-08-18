@@ -45,7 +45,14 @@
       if (!res.ok) {
         const detail =
           (data && (data.detail || data.message)) || res.statusText || "请求失败";
-        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        const parsed = AgentApi.parseApiError(data, res.status, res.statusText);
+        const err = new Error(parsed.userMessage || (typeof detail === "string" ? detail : JSON.stringify(detail)));
+        err.status = res.status;
+        err.code = parsed.code;
+        err.retryable = parsed.retryable;
+        err.detail = data && data.detail;
+        err.body = data;
+        throw err;
       }
       return data;
     }
@@ -227,10 +234,13 @@
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints`);
     }
 
-    restoreCheckpoint(projectId, checkpointId, filePath = null) {
+    restoreCheckpoint(projectId, checkpointId, filePath = null, opts = {}) {
+      const body = {};
+      if (filePath) body.path = filePath;
+      if (opts && opts.preview) body.preview = true;
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/checkpoints/${encodeURIComponent(checkpointId)}/restore`, {
         method: "POST",
-        body: { path: filePath },
+        body,
       });
     }
 
@@ -506,6 +516,40 @@
       };
     }
   }
+
+  AgentApi.parseApiError = function parseApiError(data, statusCode, statusText) {
+    const error = data && data.error;
+    if (error && typeof error === "object") {
+      return {
+        code: error.code || "http_error",
+        retryable: Boolean(error.retryable),
+        userMessage: error.user_message || AgentApi.legacyErrorMessage(data, statusText),
+        schemaVersion: error.schema_version || 1,
+      };
+    }
+    return {
+      code: statusCode === 429 ? "rate_limited" : "http_error",
+      retryable: statusCode === 429 || statusCode === 503,
+      userMessage: AgentApi.legacyErrorMessage(data, statusText),
+      schemaVersion: 1,
+    };
+  };
+
+  AgentApi.legacyErrorMessage = function legacyErrorMessage(data, statusText) {
+    const detail = data && (data.detail || data.message);
+    if (typeof detail === "string" && detail) return detail;
+    if (Array.isArray(detail)) return "请求参数无效";
+    if (detail && typeof detail === "object") {
+      if (typeof detail.user_message === "string" && detail.user_message) {
+        return detail.user_message;
+      }
+      if (typeof detail.message === "string" && detail.message) {
+        return detail.message;
+      }
+      return JSON.stringify(detail);
+    }
+    return statusText || "请求失败";
+  };
 
   window.AgentApi = AgentApi;
 })();
