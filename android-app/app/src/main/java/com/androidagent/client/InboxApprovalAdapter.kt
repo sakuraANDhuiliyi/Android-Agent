@@ -30,9 +30,16 @@ class InboxApprovalAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(item: InboxApproval) = with(binding) {
             val context = root.context
+            val risk = item.approval.risk?.lowercase()
             textApprovalKind.text = UiFormat.approvalKindLabel(context, item.approval.kind)
-            textApprovalRisk.isVisible = UiFormat.isDestructive(item.approval.risk, item.approval.kind)
-            textApprovalRisk.text = context.getString(R.string.approval_risk_high)
+            textApprovalRisk.isVisible = !risk.isNullOrBlank() || UiFormat.isDestructive(item.approval.risk, item.approval.kind)
+            textApprovalRisk.text = when {
+                UiFormat.isDestructive(item.approval.risk, item.approval.kind) ->
+                    context.getString(R.string.approval_risk_high)
+                risk == "medium" || risk == "moderate" ->
+                    context.getString(R.string.approval_risk_medium_short)
+                else -> context.getString(R.string.approval_risk_low)
+            }
             textApprovalSource.text = buildString {
                 append(item.projectName.ifBlank { item.projectId })
                 if (item.conversationTitle.isNotBlank()) append(" · ${item.conversationTitle}")

@@ -47,10 +47,11 @@ class ApkActivity : AppCompatActivity() {
             return
         }
         api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        binding.toolbar.title = getString(R.string.apk_actions)
+        binding.toolbar.title = getString(R.string.apk_details)
         binding.toolbar.setNavigationIcon(android.R.drawable.ic_menu_close_clear_cancel)
         binding.toolbar.setNavigationOnClickListener { finish() }
         binding.textApkStatus.text = if (hasApk) getString(R.string.apk_downloaded) else getString(R.string.apk_not_ready)
+        binding.bannerVerified.visibility = if (hasApk) android.view.View.VISIBLE else android.view.View.GONE
         binding.btnDownloadApk.setOnClickListener { download() }
         binding.btnInstallApk.setOnClickListener { requestInstallPermissionIfNeeded() }
         binding.btnShareApk.setOnClickListener { share() }
@@ -63,7 +64,9 @@ class ApkActivity : AppCompatActivity() {
         val existing = File(cacheDir, "apk/${projectId}.apk")
         if (existing.exists()) {
             downloadedApk = existing
-            binding.textApkStatus.text = getString(R.string.apk_downloaded) + "\n${existing.absolutePath}"
+            binding.textApkStatus.text = getString(R.string.apk_verified)
+            binding.bannerVerified.visibility = android.view.View.VISIBLE
+            renderApkMeta(existing)
         }
     }
 
@@ -85,12 +88,10 @@ class ApkActivity : AppCompatActivity() {
                     }
                 }
                 downloadedApk = dest
-                val sha = withContext(Dispatchers.IO) { ApkVerifier.digestFile(dest) }
-                binding.textApkStatus.text = getString(
-                    R.string.apk_ready_summary,
-                    dest.length() / 1024,
-                    sha.take(16),
-                )
+                binding.textApkStatus.text = getString(R.string.apk_verified)
+                binding.bannerVerified.visibility = android.view.View.VISIBLE
+                binding.btnDownloadApk.setText(R.string.download_verify_done)
+                renderApkMeta(dest)
                 toast(getString(R.string.apk_downloaded))
             } catch (e: Exception) {
                 val msg = when (e) {
@@ -101,6 +102,32 @@ class ApkActivity : AppCompatActivity() {
                 toast(msg ?: "下载失败")
             } finally {
                 binding.btnDownloadApk.isEnabled = true
+            }
+        }
+    }
+
+    private fun renderApkMeta(apk: java.io.File) {
+        lifecycleScope.launch {
+            val sha = withContext(Dispatchers.IO) { ApkVerifier.digestFile(apk) }
+            binding.textSha.text = sha
+            val identity = runCatching {
+                withContext(Dispatchers.IO) { ApkVerifier.inspect(this@ApkActivity, apk) }
+            }.getOrNull()
+            if (identity != null) {
+                binding.textApkName.text = "${identity.packageName}.apk"
+                binding.textApkMeta.text = buildString {
+                    append(getString(R.string.package_name)).append("：").append(identity.packageName).append('\n')
+                    append(getString(R.string.apk_version)).append("：").append(identity.versionName.ifBlank { "—" }).append('\n')
+                    append(getString(R.string.apk_size)).append("：")
+                    append("%.1f MB".format(identity.sizeBytes / (1024.0 * 1024.0)))
+                }
+                binding.textSignature.text = "${getString(R.string.apk_signature)} · ${getString(R.string.apk_valid)}"
+            } else {
+                binding.textApkMeta.text = getString(
+                    R.string.apk_ready_summary,
+                    apk.length() / 1024,
+                    sha.take(16),
+                )
             }
         }
     }

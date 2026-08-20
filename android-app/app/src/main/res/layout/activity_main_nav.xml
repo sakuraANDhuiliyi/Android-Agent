@@ -10,12 +10,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:fitsSystemWindows="true"
+        android:background="?attr/colorSurface"
         app:elevation="0dp">
 
         <com.google.android.material.appbar.MaterialToolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
+            android:background="?attr/colorSurface"
             app:menu="@menu/menu_main_toolbar"
             app:title="@string/nav_projects"
             app:titleTextAppearance="?attr/textAppearanceTitleLarge" />
@@ -37,9 +39,9 @@
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?attr/colorSurface"
-        app:elevation="8dp"
+        android:layout_height="80dp"
+        android:background="@color/signal_navigation"
+        app:elevation="0dp"
         app:itemActiveIndicatorStyle="@style/Widget.Material3.BottomNavigationView.ActiveIndicator"
         app:labelVisibilityMode="labeled"
         app:menu="@menu/menu_main_nav" />

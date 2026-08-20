@@ -24,6 +24,27 @@
         android:layout_marginTop="@dimen/space_tiny"
         android:textAppearance="?attr/textAppearanceBodySmall"
         android:textColor="?attr/colorOnSurfaceVariant"
-        android:textIsSelectable="true"
-        tools:text="具体错误信息..." />
+            android:textIsSelectable="true"
+            tools:text="具体错误信息..." />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnViewError"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/view_error_details" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnAgentFix"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/let_agent_fix" />
+    </LinearLayout>
 </LinearLayout>

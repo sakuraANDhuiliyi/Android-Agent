@@ -5,6 +5,8 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AlertDialog
+import androidx.core.view.isVisible
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -21,6 +23,9 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
     private val binding get() = _binding!!
     private lateinit var prefs: AgentPrefs
     private lateinit var adapter: ProjectsRowAdapter
+    private var queryFilter = ""
+    private var cachedProjects: List<ProjectInfo> = emptyList()
+    private var cachedJobs: List<JobInfo> = emptyList()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -45,8 +50,17 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
         binding.recyclerProjects.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerProjects.adapter = adapter
         binding.fabNewProject.setOnClickListener { showCreateProjectDialog() }
+        binding.btnEmptyCreate.setOnClickListener { showCreateProjectDialog() }
+        binding.btnEmptyApi.setOnClickListener { ModelApiActivity.start(requireContext()) }
+        binding.btnConfigureApi.setOnClickListener { ModelApiActivity.start(requireContext()) }
+        binding.textMonthUsage.text = getString(R.string.month_usage_label)
+        binding.textMonthUsage.setOnClickListener { TokenUsageActivity.start(requireContext()) }
         binding.btnBannerAction.setOnClickListener {
             ConnectionSettingsActivity.start(requireContext())
+        }
+        binding.editSearch.doAfterTextChanged { query ->
+            queryFilter = query?.toString().orEmpty()
+            applyFilter()
         }
     }
 
@@ -59,15 +73,32 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
         lifecycleScope.launch {
             try {
-                val (projects, jobs) = withContext(Dispatchers.IO) {
-                    api.listProjects() to api.listJobs()
+                val (projects, jobs, health) = withContext(Dispatchers.IO) {
+                    Triple(api.listProjects(), api.listJobs(), runCatching { api.health() }.getOrNull())
                 }
                 binding.bannerConnection.visibility = View.GONE
-                render(projects, jobs)
+                binding.bannerApi.isVisible = health?.apiKeyConfigured == false
+                cachedProjects = projects
+                cachedJobs = jobs
+                val usage = UsageStats.forJobs(jobs, periodDays = 31)
+                binding.textMonthUsage.text = getString(
+                    R.string.usage_summary_format,
+                    UsageStats.compact(usage.total),
+                    usage.taskCount,
+                )
+                applyFilter()
             } catch (e: Exception) {
                 binding.bannerConnection.visibility = View.VISIBLE
             }
         }
+    }
+
+    private fun applyFilter() {
+        val q = queryFilter.trim()
+        val projects = if (q.isBlank()) cachedProjects else cachedProjects.filter {
+            it.name.contains(q, ignoreCase = true) || it.packageName.contains(q, ignoreCase = true)
+        }
+        render(projects, cachedJobs)
     }
 
     private fun render(projects: List<ProjectInfo>, jobs: List<JobInfo>) {
@@ -84,9 +115,9 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
             }
         }
 
-        rows += ProjectsRow.Header(getString(R.string.section_recent_projects))
+        rows += ProjectsRow.Header(getString(R.string.section_all_projects))
         if (projects.isEmpty()) {
-            rows += ProjectsRow.Empty(getString(R.string.projects_empty))
+            // 空列表走独立空状态，不塞一行 Empty
         } else {
             val lastByProject = jobs
                 .groupBy { it.projectId }
@@ -103,6 +134,12 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
             }
         }
         adapter.submitList(rows)
+        val showEmpty = cachedProjects.isEmpty() && queryFilter.isBlank()
+        binding.emptyProjects.isVisible = showEmpty
+        binding.recyclerProjects.isVisible = !showEmpty
+        binding.fabNewProject.isVisible = !showEmpty
+        binding.layoutSearch.isVisible = cachedProjects.isNotEmpty() || queryFilter.isNotBlank()
+        binding.textMonthUsage.isVisible = cachedProjects.isNotEmpty()
     }
 
     private fun openJob(job: JobInfo) {

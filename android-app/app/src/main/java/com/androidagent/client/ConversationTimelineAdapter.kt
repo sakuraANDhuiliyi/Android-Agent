@@ -46,6 +46,8 @@ class ConversationTimelineAdapter(
         fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean, always: Boolean = false)
         fun onViewChanges(turnKey: String)
         fun onLoadEarlier()
+        fun onAgentFix(message: String) {}
+        fun onViewErrorDetails() {}
     }
 
     object RowDiff : DiffUtil.ItemCallback<Row>() {
@@ -215,7 +217,7 @@ class ConversationTimelineAdapter(
             is Row.Assistant -> (holder as AssistantVH).bind(row, markwon(holder.itemView.context))
             is Row.Changes -> (holder as ChangesVH).bind(row, callbacks)
             is Row.Result -> (holder as ResultVH).bind(row)
-            is Row.Error -> (holder as ErrorVH).bind(row)
+            is Row.Error -> (holder as ErrorVH).bind(row, callbacks)
         }
     }
 
@@ -246,8 +248,12 @@ class ConversationTimelineAdapter(
     }
 
     class ErrorVH(private val binding: ItemErrorMessageBinding) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(row: Row.Error) {
+        fun bind(row: Row.Error, callbacks: Callbacks) {
             binding.textErrorMessage.text = row.message
+            binding.btnAgentFix.setOnClickListener {
+                callbacks.onAgentFix(binding.root.context.getString(R.string.agent_fix_prompt))
+            }
+            binding.btnViewError.setOnClickListener { callbacks.onViewErrorDetails() }
         }
     }
 

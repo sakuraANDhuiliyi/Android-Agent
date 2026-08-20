@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Signal Workbench palette (light) -->
-    <color name="signal_primary">#FF2F66D0</color>
+    <!-- Signal Workbench palette (light) — mock primary #2563EB -->
+    <color name="signal_primary">#FF2563EB</color>
     <color name="signal_on_primary">#FFFFFFFF</color>
     <color name="signal_primary_container">#FFEAF1FF</color>
     <color name="signal_on_primary_container">#FF0E2A5E</color>
@@ -12,6 +12,13 @@
     <color name="signal_tertiary">#FF087F78</color>
     <color name="signal_on_tertiary">#FFFFFFFF</color>
     <color name="signal_surface_dim">#FFF0F2F5</color>
+    <color name="signal_surface">#FFFBFCFF</color>
+    <color name="signal_surface_variant">#FFF0F3F8</color>
+    <color name="signal_on_surface">#FF172033</color>
+    <color name="signal_on_surface_variant">#FF667085</color>
+    <color name="signal_outline">#FFD0D7E2</color>
+    <color name="signal_outline_variant">#FFE2E7EF</color>
+    <color name="signal_navigation">#FFF1F4FA</color>
 
     <!-- Status / semantic -->
     <color name="status_running">#FF1A73E8</color>
@@ -21,4 +28,20 @@
     <color name="status_idle">#FF5F6368</color>
     <color name="badge_pending_text">#FFB06000</color>
     <color name="badge_pending_bg">#33F9AB00</color>
+    <color name="badge_apk_bg">#1A1E8E3E</color>
+    <color name="badge_apk_text">#FF1E8E3E</color>
+    <color name="badge_running_bg">#1A2563EB</color>
+    <color name="banner_warning_bg">#FFFFF4E5</color>
+    <color name="banner_warning_text">#FF9A6700</color>
+    <color name="banner_error_bg">#FFFCE8E6</color>
+    <color name="banner_error_text">#FFC5221F</color>
+    <color name="banner_info_bg">#FFEAF1FF</color>
+    <color name="banner_info_text">#FF1A56DB</color>
+    <color name="banner_success_bg">#FFE6F4EA</color>
+    <color name="banner_success_text">#FF137333</color>
+    <color name="diff_add_bg">#1A1E8E3E</color>
+    <color name="diff_del_bg">#1AD93025</color>
+    <color name="diff_add_text">#FF137333</color>
+    <color name="diff_del_text">#FFC5221F</color>
+    <color name="avatar_fill">#FF2563EB</color>
 </resources>

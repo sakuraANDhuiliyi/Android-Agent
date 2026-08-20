@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Signal Workbench palette (dark) -->
-    <color name="signal_primary">#FF8EB1FF</color>
+    <color name="signal_primary">#FF6B8CFF</color>
     <color name="signal_on_primary">#FF12244A</color>
     <color name="signal_primary_container">#FF1E3768</color>
     <color name="signal_on_primary_container">#FFD6E2FF</color>
@@ -12,6 +12,13 @@
     <color name="signal_tertiary">#FF56D6C9</color>
     <color name="signal_on_tertiary">#FF003733</color>
     <color name="signal_surface_dim">#FF15181D</color>
+    <color name="signal_surface">#FF0E141D</color>
+    <color name="signal_surface_variant">#FF1A222D</color>
+    <color name="signal_on_surface">#FFE9EDF5</color>
+    <color name="signal_on_surface_variant">#FFAAB5C5</color>
+    <color name="signal_outline">#FF414C5B</color>
+    <color name="signal_outline_variant">#FF2C3542</color>
+    <color name="signal_navigation">#FF111923</color>
 
     <!-- Status / semantic (dark) -->
     <color name="status_running">#FF8AB4F8</color>
@@ -21,4 +28,20 @@
     <color name="status_idle">#FF9AA0A6</color>
     <color name="badge_pending_text">#FFFDD663</color>
     <color name="badge_pending_bg">#33FDD663</color>
+    <color name="badge_apk_bg">#332EA043</color>
+    <color name="badge_apk_text">#FF81C995</color>
+    <color name="badge_running_bg">#33256BFF</color>
+    <color name="banner_warning_bg">#332E2000</color>
+    <color name="banner_warning_text">#FFFDD663</color>
+    <color name="banner_error_bg">#33F28B82</color>
+    <color name="banner_error_text">#FFF28B82</color>
+    <color name="banner_info_bg">#331E3768</color>
+    <color name="banner_info_text">#FF8EB1FF</color>
+    <color name="banner_success_bg">#332EA043</color>
+    <color name="banner_success_text">#FF81C995</color>
+    <color name="diff_add_bg">#332EA043</color>
+    <color name="diff_del_bg">#33F28B82</color>
+    <color name="diff_add_text">#FF81C995</color>
+    <color name="diff_del_text">#FFF28B82</color>
+    <color name="avatar_fill">#FF6B8CFF</color>
 </resources>

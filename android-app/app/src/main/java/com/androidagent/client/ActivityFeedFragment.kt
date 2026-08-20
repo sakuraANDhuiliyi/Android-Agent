@@ -14,18 +14,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 跨项目任务活动流：进行中 / 最近 / 失败。awaiting_approval 永远置顶。 */
+/** 跨项目任务活动流：进行中 / 最近 / 失败分区展示。 */
 class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
 
     private var _binding: FragmentFeedBinding? = null
     private val binding get() = _binding!!
     private lateinit var prefs: AgentPrefs
     private lateinit var adapter: FeedAdapter
-
-    private var filter: Int = FILTER_ACTIVE
-    private var cachedJobs: List<JobInfo> = emptyList()
-    private var cachedTitles: Map<String, String> = emptyMap()
-    private var cachedProjectNames: Map<String, String> = emptyMap()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -42,11 +37,6 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
         adapter = FeedAdapter(onJobClick = { job -> openJob(job) })
         binding.recyclerFeed.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerFeed.adapter = adapter
-
-        binding.chipFeedFilter.setOnCheckedStateChangeListener { _, checkedIds ->
-            filter = checkedIds.firstOrNull() ?: FILTER_ACTIVE
-            applyFilter()
-        }
     }
 
     override fun onResume() {
@@ -61,17 +51,15 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
                 val (jobs, projects) = withContext(Dispatchers.IO) {
                     api.listJobs() to api.listProjects()
                 }
-                cachedJobs = jobs
-                cachedProjectNames = projects.associate { it.id to it.name }
-                cachedTitles = withContext(Dispatchers.IO) { loadTitles(api, jobs) }
-                applyFilter()
+                val names = projects.associate { it.id to it.name }
+                val titles = withContext(Dispatchers.IO) { loadTitles(api, jobs) }
+                render(jobs, names, titles)
             } catch (e: Exception) {
                 toast(e.message ?: "加载失败")
             }
         }
     }
 
-    /** conversationId → 标题。仅查询涉及的项目的对话列表，避免 N+1 全量。 */
     private suspend fun loadTitles(api: AgentApi, jobs: List<JobInfo>): Map<String, String> {
         val projectIds = jobs.mapNotNull { it.conversationId?.let { _ -> it.projectId } }.toSet()
         val titles = mutableMapOf<String, String>()
@@ -80,34 +68,44 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
                 api.listConversations(projectId).forEach { conv ->
                     titles[conv.id] = conv.title
                 }
-            } catch (e: Exception) {
-                // 单项目失败不阻塞整个 feed
+            } catch (_: Exception) {
             }
         }
         return titles
     }
 
-    private fun applyFilter() {
-        val sorted = when (filter) {
-            FILTER_FAILED -> cachedJobs.filter { it.status == "failed" || it.status == "interrupted" }
-            FILTER_RECENT -> cachedJobs.sortedByDescending {
-                it.finishedAt ?: it.startedAt ?: it.createdAt ?: 0.0
-            }
-            else -> cachedJobs
-                .filter { UiFormat.isActive(it.status) }
-                .sortedByDescending { it.startedAt ?: it.createdAt ?: 0.0 }
+    private fun render(
+        jobs: List<JobInfo>,
+        names: Map<String, String>,
+        titles: Map<String, String>,
+    ) {
+        fun row(job: JobInfo) = FeedItem.Job(
+            job = job,
+            projectName = names[job.projectId] ?: "",
+            conversationTitle = job.conversationId?.let { titles[it] } ?: "",
+        )
+        val active = jobs.filter { UiFormat.isActive(it.status) }
+            .sortedByDescending { it.startedAt ?: it.createdAt ?: 0.0 }
+        val failed = jobs.filter { it.status == "failed" || it.status == "interrupted" }
+            .sortedByDescending { it.finishedAt ?: it.createdAt ?: 0.0 }
+        val recent = jobs.filter { it.status == "succeeded" || it.status == "canceled" }
+            .sortedByDescending { it.finishedAt ?: it.createdAt ?: 0.0 }
+            .take(8)
+        val items = mutableListOf<FeedItem>()
+        if (active.isNotEmpty()) {
+            items += FeedItem.Header(getString(R.string.section_active))
+            items += active.map(::row)
         }
-        val pinned = sorted.filter { it.status == "awaiting_approval" }
-        val rest = sorted.filter { it.status != "awaiting_approval" }
-        val rows = (pinned + rest).map { job ->
-            FeedRow(
-                job = job,
-                projectName = cachedProjectNames[job.projectId] ?: "",
-                conversationTitle = job.conversationId?.let { cachedTitles[it] } ?: "",
-            )
+        if (recent.isNotEmpty()) {
+            items += FeedItem.Header(getString(R.string.filter_recent))
+            items += recent.map(::row)
         }
-        adapter.submitList(rows)
-        binding.textFeedEmpty.isVisible = rows.isEmpty()
+        if (failed.isNotEmpty()) {
+            items += FeedItem.Header(getString(R.string.filter_failed))
+            items += failed.map(::row)
+        }
+        adapter.submitList(items)
+        binding.textFeedEmpty.isVisible = items.isEmpty()
     }
 
     private fun openJob(job: JobInfo) {
@@ -126,11 +124,5 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
-    }
-
-    companion object {
-        private const val FILTER_ACTIVE = R.id.chipFeedActive
-        private const val FILTER_RECENT = R.id.chipFeedRecent
-        private const val FILTER_FAILED = R.id.chipFeedFailed
     }
 }

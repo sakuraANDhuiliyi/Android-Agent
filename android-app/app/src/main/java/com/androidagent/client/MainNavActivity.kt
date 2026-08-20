@@ -85,12 +85,14 @@ class MainNavActivity : AppCompatActivity() {
         val fragment = when (itemId) {
             R.id.nav_activity -> ActivityFeedFragment()
             R.id.nav_pending -> ApprovalsFragment()
+            R.id.nav_me -> MeFragment()
             else -> ProjectsFragment()
         }
         binding.toolbar.setTitle(
             when (itemId) {
                 R.id.nav_activity -> R.string.nav_activity
                 R.id.nav_pending -> R.string.nav_pending
+                R.id.nav_me -> R.string.nav_me
                 else -> R.string.nav_projects
             },
         )

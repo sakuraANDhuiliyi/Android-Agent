@@ -106,6 +106,7 @@
                             android:textColor="@color/badge_pending_text" />
 
                         <TextView
+                            android:id="@+id/textPendingMeta"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:text="@string/hub_pending_cta"

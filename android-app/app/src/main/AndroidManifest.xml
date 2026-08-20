@@ -37,6 +37,19 @@
             android:parentActivityName=".MainNavActivity"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity android:name=".RegisterActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".VerifyEmailActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".AccountSecurityActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ChangePasswordActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".DevicesActivity" android:exported="false" />
+        <activity android:name=".ModelApiActivity" android:exported="false" />
+        <activity android:name=".ProviderKeyActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".TokenUsageActivity" android:exported="false" />
+        <activity android:name=".TokenUsageDetailActivity" android:exported="false" />
+        <activity android:name=".NotificationSettingsActivity" android:exported="false" />
+        <activity android:name=".AboutActivity" android:exported="false" />
+        <activity android:name=".PermissionsActivity" android:exported="false" />
+
         <activity
             android:name=".ProjectDetailActivity"
             android:exported="false"

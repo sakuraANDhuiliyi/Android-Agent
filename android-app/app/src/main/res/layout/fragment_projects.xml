@@ -7,13 +7,14 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:paddingTop="4dp">
 
         <LinearLayout
             android:id="@+id/bannerConnection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@color/badge_pending_bg"
+            android:background="@drawable/bg_banner_warning"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="@dimen/screen_margin"
@@ -27,7 +28,7 @@
                 android:layout_height="18dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_warning"
-                app:tint="@color/badge_pending_text" />
+                app:tint="@color/banner_warning_text" />
 
             <TextView
                 android:id="@+id/textBanner"
@@ -37,7 +38,7 @@
                 android:layout_weight="1"
                 android:text="@string/connection_lost"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
-                android:textColor="@color/badge_pending_text" />
+                android:textColor="@color/banner_warning_text" />
 
             <TextView
                 android:id="@+id/btnBannerAction"
@@ -48,16 +49,145 @@
                 android:padding="8dp"
                 android:text="@string/settings"
                 android:textAppearance="?attr/textAppearanceLabelLarge"
-                android:textColor="@color/badge_pending_text" />
+                android:textColor="@color/banner_warning_text" />
         </LinearLayout>
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerProjects"
+        <LinearLayout
+            android:id="@+id/bannerApi"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingTop="4dp"
-            android:paddingBottom="96dp" />
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_banner_warning"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="10dp"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="10dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/api_required_banner"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="@color/banner_warning_text" />
+
+            <TextView
+                android:id="@+id/btnConfigureApi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:padding="8dp"
+                android:text="@string/go_configure"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/banner_warning_text" />
+        </LinearLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/layoutSearch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/screen_margin"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="@dimen/screen_margin"
+            android:hint="@string/search_projects"
+            app:boxBackgroundMode="outline">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/editSearch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1"
+                android:minHeight="48dp" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:id="@+id/textMonthUsage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="8dp"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="4dp"
+            android:textAppearance="?attr/textAppearanceLabelMedium"
+            android:textColor="?attr/colorPrimary" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerProjects"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingTop="4dp"
+                android:paddingBottom="96dp" />
+
+            <LinearLayout
+                android:id="@+id/emptyProjects"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="@dimen/screen_margin"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="128dp"
+                    android:layout_height="112dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_empty_projects" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:gravity="center"
+                    android:text="@string/projects_empty_title"
+                    android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:text="@string/projects_empty_desc"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnEmptyCreate"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="24dp"
+                    android:minHeight="@dimen/touch_target"
+                    android:text="@string/new_project" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnEmptyApi"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:minHeight="@dimen/touch_target"
+                    android:text="@string/configure_model_api_first" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:text="@string/configure_then_send"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+            </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton

@@ -30,6 +30,8 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
     private lateinit var prefs: AgentPrefs
     private lateinit var adapter: InboxApprovalAdapter
     private val submitting = HashSet<String>()
+    private var allItems: List<InboxApproval> = emptyList()
+    private var kindFilter: String = "all"
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -49,6 +51,17 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
         )
         binding.recyclerApprovals.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerApprovals.adapter = adapter
+        binding.chipKindFilter.setOnCheckedStateChangeListener { _, ids ->
+            kindFilter = when (ids.firstOrNull()) {
+                R.id.chipCommand -> "command"
+                R.id.chipNetwork -> "network"
+                R.id.chipFile -> "file"
+                R.id.chipInstall -> "install"
+                R.id.chipDestructive -> "destructive"
+                else -> "all"
+            }
+            applyFilter()
+        }
     }
 
     override fun onResume() {
@@ -61,13 +74,8 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
         lifecycleScope.launch {
             try {
                 val items = withContext(Dispatchers.IO) { loadPending(api) }
-                adapter.submitList(items)
-                binding.textInboxHeader.text =
-                    getString(R.string.inbox_count, items.count { !it.handledElsewhere })
-                binding.textInboxEmpty.isVisible = items.isEmpty()
-                (activity as? MainNavActivity)?.updatePendingBadge(
-                    items.count { !it.handledElsewhere },
-                )
+                allItems = items
+                applyFilter()
             } catch (e: Exception) {
                 toast(e.message ?: "加载失败")
             }
@@ -115,6 +123,26 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
             }
         }
         return out.sortedBy { it.approval.createdAt ?: 0.0 }
+    }
+
+    private fun applyFilter() {
+        val items = allItems.filter { item ->
+            when (kindFilter) {
+                "command" -> item.approval.kind in setOf("command", "process", "run_command")
+                "network" -> item.approval.kind in setOf("network", "web", "web_search", "download", "http")
+                "file" -> item.approval.kind in setOf("filesystem", "file", "file_write", "file_edit")
+                "install" -> item.approval.kind in setOf("installation", "install", "package_install")
+                "destructive" -> UiFormat.isDestructive(item.approval.risk, item.approval.kind)
+                else -> true
+            }
+        }
+        adapter.submitList(items)
+        binding.textInboxHeader.text =
+            getString(R.string.inbox_count, allItems.count { !it.handledElsewhere })
+        binding.textInboxEmpty.isVisible = items.isEmpty()
+        (activity as? MainNavActivity)?.updatePendingBadge(
+            allItems.count { !it.handledElsewhere },
+        )
     }
 
     /** 详情 bottom sheet：完整 payload + 技术详情复制；destructive 在此确认。 */
@@ -212,6 +240,9 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
 
     private fun markHandledElsewhere(approvalId: String) {
         val updated = currentList().map {
+            if (it.approval.id == approvalId) it.copy(handledElsewhere = true) else it
+        }
+        allItems = allItems.map {
             if (it.approval.id == approvalId) it.copy(handledElsewhere = true) else it
         }
         adapter.submitList(updated)

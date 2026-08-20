@@ -82,6 +82,9 @@ class ProjectsRowAdapter(
                 append(UiFormat.jobStatusLabel(context, item.job.status))
             }
             textJobTime.text = UiFormat.relativeTime(context, item.job.startedAt ?: item.job.createdAt)
+            textJobBadge.isVisible = true
+            textJobBadge.text = UiFormat.jobStatusLabel(context, item.job.status)
+            textJobBadge.setTextColor(UiFormat.statusColor(context, item.job.status))
             viewJobDot.backgroundTintList =
                 ContextCompat.getColorStateList(context, R.color.status_running)
             progressJob.isVisible = item.job.status == "running" || item.job.status == "queued"
@@ -111,6 +114,10 @@ class ProjectsRowAdapter(
                 }
             }
             textProjectApk.isVisible = textProjectApk.text.isNotBlank()
+            textApkBadge.isVisible = item.project.hasApk
+            if (item.lastStatus != null) {
+                textProjectStatus.setTextColor(UiFormat.statusColor(context, item.lastStatus))
+            }
             root.setOnClickListener { onProjectClick(item.project) }
             root.setOnLongClickListener {
                 onProjectLongClick(item.project)

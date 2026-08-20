@@ -12,6 +12,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isVisible
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -119,6 +121,27 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
         binding.btnSend.setOnClickListener { onSend() }
         binding.btnStop.setOnClickListener { controlJob("cancel") }
+        binding.btnDisconnectDetails.setOnClickListener { ConnectionSettingsActivity.start(this) }
+        binding.btnClearDraft.setOnClickListener {
+            binding.editPrompt.setText("")
+            prefs.setComposerDraft(conversationId, "")
+            binding.rowDraft.isVisible = false
+        }
+        binding.chipSuggest1.setOnClickListener { fillSuggestion(getString(R.string.suggest_dark_login)) }
+        binding.chipSuggest2.setOnClickListener { fillSuggestion(getString(R.string.suggest_biometric)) }
+        binding.chipSuggest3.setOnClickListener { fillSuggestion(getString(R.string.suggest_perf)) }
+        binding.editPrompt.doAfterTextChanged { text ->
+            val value = text?.toString().orEmpty()
+            prefs.setComposerDraft(conversationId, value)
+            binding.rowDraft.isVisible = value.isNotBlank()
+        }
+        if (savedInstanceState == null) {
+            val draft = prefs.composerDraft(conversationId)
+            if (draft.isNotBlank()) {
+                binding.editPrompt.setText(draft)
+                binding.rowDraft.isVisible = true
+            }
+        }
         binding.editPrompt.setOnEditorActionListener { v, actionId, _ ->
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
                 onSend()
@@ -180,6 +203,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                     api.listConversationEvents(conversationId, beforeSeq = Int.MAX_VALUE, limit = HISTORY_PAGE_LIMIT)
                 }
                 if (token != loadToken) return@launch
+                binding.bannerDisconnect.isVisible = false
                 ingestConversationEvents(page.events)
                 historyMinSeq = page.events.firstOrNull()?.optInt("seq")
                     ?: page.nextBeforeSeq
@@ -202,6 +226,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                     renderNow()
                 }
             } catch (e: Exception) {
+                binding.bannerDisconnect.isVisible = true
                 toast(userMessage(e))
             }
         }
@@ -609,8 +634,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             // 流式生成时跟随底部；用户上滚离开底部后 autoFollow 关闭，不再强制滚动
             if (scrollToEnd || autoFollow) scrollToBottom()
         }
-        binding.textEmpty.visibility =
-            if (rows.none { it !is Row.LoadingHistory }) View.VISIBLE else View.GONE
+        val empty = rows.none { it !is Row.LoadingHistory }
+        binding.textEmpty.visibility = View.GONE
+        binding.emptyConversation.isVisible = empty
         renderApprovalBar()
     }
 
@@ -716,9 +742,19 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     // ---------- Adapter 回调 ----------
 
+    private fun fillSuggestion(text: String) {
+        binding.editPrompt.setText(text)
+        binding.editPrompt.setSelection(text.length)
+    }
+
     override fun onToggleWork(turnKey: String, expanded: Boolean) {
         policy.userToggle(turnKey, expanded)
         renderNow()
+    }
+
+    override fun onAgentFix(message: String) {
+        binding.editPrompt.setText(message)
+        onSend()
     }
 
     override fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean, always: Boolean) {
@@ -727,6 +763,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     override fun onViewChanges(turnKey: String) {
         openDiff(turnKey)
+    }
+
+    override fun onViewErrorDetails() {
+        val jobId = currentJobId
+        if (jobId.isNullOrBlank()) toast(getString(R.string.no_task_selected))
+        else BuildLogActivity.start(this, jobId)
     }
 
     override fun onLoadEarlier() {

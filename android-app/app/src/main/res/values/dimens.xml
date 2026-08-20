@@ -9,7 +9,8 @@
     <dimen name="space_section">24dp</dimen>
     <dimen name="radius_small">8dp</dimen>
     <dimen name="radius_message">16dp</dimen>
-    <dimen name="radius_card">14dp</dimen>
+    <dimen name="radius_card">16dp</dimen>
+    <dimen name="radius_pill">24dp</dimen>
     <dimen name="touch_target">48dp</dimen>
     <dimen name="user_bubble_corner">16dp</dimen>
     <dimen name="code_text_size">13sp</dimen>

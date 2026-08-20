@@ -10,6 +10,17 @@
         <item name="colorOnSecondaryContainer">@color/signal_on_secondary_container</item>
         <item name="colorTertiary">@color/signal_tertiary</item>
         <item name="colorOnTertiary">@color/signal_on_tertiary</item>
+        <item name="colorSurface">@color/signal_surface</item>
+        <item name="colorSurfaceVariant">@color/signal_surface_variant</item>
+        <item name="colorOnSurface">@color/signal_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/signal_on_surface_variant</item>
+        <item name="colorOutline">@color/signal_outline</item>
+        <item name="colorOutlineVariant">@color/signal_outline_variant</item>
+        <item name="android:statusBarColor">@color/signal_surface</item>
+        <item name="android:navigationBarColor">@color/signal_navigation</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:fontFamily">sans</item>
     </style>
 
     <style name="Theme.AndroidAgentClient" parent="Base.Theme.AndroidAgentClient" />

@@ -20,6 +20,37 @@
             android:layout_height="?attr/actionBarSize"
             android:background="?attr/colorSurface" />
 
+        <LinearLayout
+            android:id="@+id/bannerDisconnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_banner_warning"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/screen_margin"
+            android:paddingTop="8dp"
+            android:paddingEnd="@dimen/screen_margin"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/cloud_disconnect_banner"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="@color/banner_warning_text" />
+
+            <TextView
+                android:id="@+id/btnDisconnectDetails"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="8dp"
+                android:text="@string/details"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/banner_warning_text" />
+        </LinearLayout>
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -44,8 +75,64 @@
                 android:text="@string/empty_conversation_hint"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="?attr/colorOnSurfaceVariant"
-                android:visibility="gone"
-                tools:visibility="visible" />
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/emptyConversation"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:padding="@dimen/screen_margin"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
+                    android:alpha="0.8"
+                    android:contentDescription="@null"
+                    android:src="@mipmap/ic_launcher_round" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center"
+                    android:text="@string/empty_conversation_title"
+                    android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:text="@string/empty_conversation_desc"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chipSuggest1"
+                    style="@style/Widget.Material3.Chip.Assist"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="@string/suggest_dark_login" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chipSuggest2"
+                    style="@style/Widget.Material3.Chip.Assist"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/suggest_biometric" />
+
+                <com.google.android.material.chip.Chip
+                    android:id="@+id/chipSuggest3"
+                    style="@style/Widget.Material3.Chip.Assist"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/suggest_perf" />
+            </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnJumpLatest"
@@ -107,6 +194,32 @@
             android:paddingTop="@dimen/space_tiny"
             android:paddingEnd="@dimen/screen_margin"
             android:paddingBottom="@dimen/space_tiny">
+
+            <LinearLayout
+                android:id="@+id/rowDraft"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/draft_saved_hint"
+                    android:textAppearance="?attr/textAppearanceLabelSmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+
+                <TextView
+                    android:id="@+id/btnClearDraft"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:padding="8dp"
+                    android:text="@string/clear_draft"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textColor="?attr/colorPrimary" />
+            </LinearLayout>
 
             <HorizontalScrollView
                 android:id="@+id/scrollMode"

@@ -56,6 +56,30 @@ class MainActivity : AppCompatActivity() {
         binding.btnConnect.setOnClickListener { connectServer() }
         binding.btnRegister.setOnClickListener { confirmRegisterUser() }
         binding.btnToggleAdvanced.setOnClickListener { toggleAdvanced() }
+        binding.btnGoRegister.setOnClickListener { RegisterActivity.start(this) }
+        binding.btnForgot.setOnClickListener { CloudPreview.show(this) }
+        binding.btnLoginCloud.setOnClickListener {
+            val email = binding.editEmail.text?.toString()?.trim().orEmpty()
+            if (email.isBlank()) {
+                binding.layoutEmail.error = getString(R.string.cloud_login_unavailable)
+            } else {
+                prefs.displayEmail = email
+            }
+            if (binding.editApiToken.text.isNullOrBlank()) {
+                binding.layoutAdvanced.visibility = View.VISIBLE
+                advancedOpen = true
+                binding.btnToggleAdvanced.setText(R.string.collapse)
+                toast(getString(R.string.cloud_login_unavailable))
+            } else {
+                connectServer()
+            }
+        }
+
+        if (intent.getBooleanExtra(DeepLink.EXTRA_EDIT_CONNECTION, false)) {
+            advancedOpen = true
+            binding.layoutAdvanced.visibility = android.view.View.VISIBLE
+            binding.btnToggleAdvanced.setText(R.string.collapse)
+        }
 
         if (binding.editApiToken.text.isNullOrBlank() && prefs.apiToken.isNotBlank()) {
             binding.editApiToken.setText(prefs.apiToken)
@@ -66,7 +90,7 @@ class MainActivity : AppCompatActivity() {
         advancedOpen = !advancedOpen
         binding.layoutAdvanced.visibility = if (advancedOpen) View.VISIBLE else View.GONE
         binding.btnToggleAdvanced.text = getString(
-            if (advancedOpen) R.string.collapse else R.string.advanced,
+            if (advancedOpen) R.string.collapse else R.string.custom_server_advanced,
         )
     }
 

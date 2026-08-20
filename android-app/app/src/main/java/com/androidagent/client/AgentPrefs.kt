@@ -55,6 +55,39 @@ class AgentPrefs(context: Context) {
         get() = prefs.getLong(KEY_LAST_SYNC, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_SYNC, value).apply()
 
+    var displayName: String
+        get() = prefs.getString(KEY_DISPLAY_NAME, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_DISPLAY_NAME, value.trim()).apply()
+
+    var displayEmail: String
+        get() = prefs.getString(KEY_DISPLAY_EMAIL, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_DISPLAY_EMAIL, value.trim()).apply()
+
+    var notifyDone: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFY_DONE, true)
+        set(value) = prefs.edit().putBoolean(KEY_NOTIFY_DONE, value).apply()
+
+    var notifyFailure: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFY_FAILURE, true)
+        set(value) = prefs.edit().putBoolean(KEY_NOTIFY_FAILURE, value).apply()
+
+    var notifyApproval: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFY_APPROVAL, true)
+        set(value) = prefs.edit().putBoolean(KEY_NOTIFY_APPROVAL, value).apply()
+
+    var notifyQuota: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFY_QUOTA, false)
+        set(value) = prefs.edit().putBoolean(KEY_NOTIFY_QUOTA, value).apply()
+
+    fun composerDraft(conversationId: String): String =
+        prefs.getString("$KEY_DRAFT:$conversationId", "").orEmpty()
+
+    fun setComposerDraft(conversationId: String, text: String) {
+        val key = "$KEY_DRAFT:$conversationId"
+        if (text.isBlank()) prefs.edit().remove(key).apply()
+        else prefs.edit().putString(key, text.take(8000)).apply()
+    }
+
     fun approvalAllowlist(): MutableSet<String> =
         prefs.getStringSet(KEY_APPROVAL_ALLOW, emptySet())?.toMutableSet() ?: mutableSetOf()
 
@@ -142,6 +175,13 @@ class AgentPrefs(context: Context) {
         private const val KEY_SELECTED_JOB = "selected_job"
         private const val KEY_SELECTED_PROVIDER = "selected_provider"
         private const val KEY_LAST_SYNC = "last_sync_at"
+        private const val KEY_DISPLAY_NAME = "display_name"
+        private const val KEY_DISPLAY_EMAIL = "display_email"
+        private const val KEY_NOTIFY_DONE = "notify_done"
+        private const val KEY_NOTIFY_FAILURE = "notify_failure"
+        private const val KEY_NOTIFY_APPROVAL = "notify_approval"
+        private const val KEY_NOTIFY_QUOTA = "notify_quota"
+        private const val KEY_DRAFT = "composer_draft"
         private const val KEY_APPROVAL_ALLOW = "approval_allowlist"
         private const val KEY_EVENT_CURSOR = "event_cursor"
         private const val KEY_CONV_CURSOR = "conv_cursor"

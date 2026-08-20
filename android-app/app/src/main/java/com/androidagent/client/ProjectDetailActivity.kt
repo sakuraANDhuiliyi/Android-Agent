@@ -38,7 +38,7 @@ class ProjectDetailActivity : AppCompatActivity() {
         prefs = AgentPrefs(this)
         projectId = intent.getStringExtra(EXTRA_PROJECT_ID).orEmpty()
         projectName = intent.getStringExtra(EXTRA_PROJECT_NAME).orEmpty()
-        hasApk = intent.getBooleanExtra(EXTRA_HAS_APK, false)
+        binding.textHubPackage.text = intent.getStringExtra(EXTRA_PACKAGE).orEmpty().ifBlank { projectId }
         if (projectId.isBlank() || prefs.apiToken.isBlank()) {
             toast(getString(R.string.resource_unavailable))
             finish()
@@ -50,7 +50,7 @@ class ProjectDetailActivity : AppCompatActivity() {
         binding.toolbar.title = projectName.ifBlank { projectId }
         binding.toolbar.setNavigationOnClickListener { finish() }
         binding.textHubName.text = projectName.ifBlank { projectId }
-        binding.textHubPackage.text = projectId
+        binding.textHubPackage.text = intent.getStringExtra(EXTRA_PACKAGE).orEmpty().ifBlank { projectId }
         binding.textHubStatus.text = ""
 
         adapter = ConversationAdapter(
@@ -141,6 +141,9 @@ class ProjectDetailActivity : AppCompatActivity() {
         pendingApprovalJob = pendingJob
         binding.cardPendingApproval.visibility =
             if (pendingJob != null) View.VISIBLE else View.GONE
+        if (pendingJob != null) {
+            binding.textPendingMeta.text = getString(R.string.pending_count, 1)
+        }
 
         // 状态行
         val lastJob = jobs.maxByOrNull {
@@ -238,13 +241,15 @@ class ProjectDetailActivity : AppCompatActivity() {
         private const val EXTRA_PROJECT_ID = "project_id"
         private const val EXTRA_PROJECT_NAME = "project_name"
         private const val EXTRA_HAS_APK = "has_apk"
+        private const val EXTRA_PACKAGE = "package_name"
 
         fun start(context: Context, project: ProjectInfo) {
             context.startActivity(
                 Intent(context, ProjectDetailActivity::class.java)
                     .putExtra(EXTRA_PROJECT_ID, project.id)
                     .putExtra(EXTRA_PROJECT_NAME, project.name)
-                    .putExtra(EXTRA_HAS_APK, project.hasApk),
+                    .putExtra(EXTRA_HAS_APK, project.hasApk)
+                    .putExtra(EXTRA_PACKAGE, project.packageName),
             )
         }
     }

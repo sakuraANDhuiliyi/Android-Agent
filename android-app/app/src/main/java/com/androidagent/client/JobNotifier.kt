@@ -69,6 +69,9 @@ object JobNotifier {
         conversationId: String = "",
         conversationTitle: String = "",
     ) {
+        val prefs = AgentPrefs(context)
+        if ((status == "succeeded" || status == "completed") && !prefs.notifyDone) return
+        if ((status == "failed" || status == "interrupted") && !prefs.notifyFailure) return
         if (!canNotify(context)) return
         ensureChannel(context)
         val title = when (status) {
@@ -106,6 +109,7 @@ object JobNotifier {
         conversationTitle: String,
         summary: String,
     ) {
+        if (!AgentPrefs(context).notifyApproval) return
         if (!canNotify(context)) return
         ensureChannel(context)
         val contentIntent = pendingConversation(
