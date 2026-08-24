@@ -9,6 +9,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import java.util.UUID
 
 class AgentPrefs(context: Context) {
 
@@ -34,6 +35,33 @@ class AgentPrefs(context: Context) {
     var userId: String
         get() = prefs.getString(KEY_USER_ID, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_USER_ID, value.trim()).apply()
+
+    val deviceId: String
+        get() {
+            val existing = prefs.getString(KEY_DEVICE_ID, "").orEmpty()
+            if (existing.isNotBlank()) return existing
+            val generated = "android-${UUID.randomUUID()}"
+            prefs.edit().putString(KEY_DEVICE_ID, generated).apply()
+            return generated
+        }
+
+    fun saveAuth(account: AuthAccount) {
+        account.token?.let { apiToken = it }
+        userId = account.account.userId
+        displayName = account.account.displayName
+        displayEmail = account.account.email
+        lastSyncAt = System.currentTimeMillis()
+    }
+
+    fun clearAuth() {
+        apiToken = ""
+        userId = ""
+        displayName = ""
+        displayEmail = ""
+        selectedProjectId = null
+        selectedConversationId = null
+        selectedJobId = null
+    }
 
     var selectedProjectId: String?
         get() = prefs.getString(KEY_SELECTED_PROJECT, null)
@@ -170,6 +198,7 @@ class AgentPrefs(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_API_TOKEN = "api_token"
         private const val KEY_USER_ID = "user_id"
+        private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_SELECTED_PROJECT = "selected_project"
         private const val KEY_SELECTED_CONVERSATION = "selected_conversation"
         private const val KEY_SELECTED_JOB = "selected_job"

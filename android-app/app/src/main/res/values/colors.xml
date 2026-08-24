@@ -19,6 +19,10 @@
     <color name="signal_outline">#FFD0D7E2</color>
     <color name="signal_outline_variant">#FFE2E7EF</color>
     <color name="signal_navigation">#FFF1F4FA</color>
+    <color name="signal_error">#FFD93025</color>
+    <color name="signal_on_error">#FFFFFFFF</color>
+    <color name="signal_error_container">#FFFCE8E6</color>
+    <color name="signal_on_error_container">#FFC5221F</color>
 
     <!-- Status / semantic -->
     <color name="status_running">#FF1A73E8</color>
@@ -26,6 +30,7 @@
     <color name="status_failed">#FFD93025</color>
     <color name="status_warning">#FF9A6700</color>
     <color name="status_idle">#FF5F6368</color>
+    <color name="risk_process">#FF8430CE</color>
     <color name="badge_pending_text">#FFB06000</color>
     <color name="badge_pending_bg">#33F9AB00</color>
     <color name="badge_apk_bg">#1A1E8E3E</color>

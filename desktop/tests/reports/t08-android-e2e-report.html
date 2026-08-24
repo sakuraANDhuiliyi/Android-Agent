@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T08 Android 端到端验收报告</title>
+<style>
+  :root { --ok:#15803d; --fail:#b91c1c; --warn:#b45309; --muted:#64748b; --border:#e2e8f0; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:#f8fafc; color:#0f172a; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 24px 80px; }
+  h1 { font-size:26px; border-bottom:3px solid #0f172a; padding-bottom:12px; }
+  h2 { font-size:19px; margin-top:40px; border-left:4px solid #334155; padding-left:10px; }
+  h3 { font-size:15px; margin:20px 0 8px; color:#334155; }
+  .verdict { display:flex; align-items:center; gap:14px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:18px 22px; margin-top:18px; }
+  .verdict .badge { font-size:20px; font-weight:700; color:#fff; background:var(--warn); padding:6px 18px; border-radius:8px; }
+  .verdict.pass .badge { background:var(--ok); }
+  table { width:100%; border-collapse:collapse; background:#fff; font-size:13.5px; margin:12px 0; }
+  th,td { border:1px solid var(--border); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#f1f5f9; font-weight:600; }
+  .pass { color:var(--ok); font-weight:600; white-space:nowrap; }
+  .fail { color:var(--fail); font-weight:600; white-space:nowrap; }
+  .warn { color:var(--warn); font-weight:600; white-space:nowrap; }
+  code { background:#f1f5f9; padding:1px 5px; border-radius:4px; font-size:12.5px; font-family:"SF Mono",Menlo,monospace; }
+  .issue { background:#fff; border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin:10px 0; }
+  .issue h4 { margin:0 0 6px; font-size:14.5px; }
+  .issue .meta { font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .issue.p1 { border-left:4px solid var(--fail); }
+  .issue.p3 { border-left:4px solid var(--warn); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .kv { background:#fff; border:1px solid var(--border); border-radius:8px; padding:10px 14px; font-size:13px; }
+  .kv b { display:inline-block; min-width:110px; color:#475569; font-weight:600; }
+  .note { background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 14px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T08 · Android 真机/模拟器端到端验收报告</h1>
+<p style="color:var(--muted);font-size:13px;">执行时间：2026-08-23 01:02 – 02:55 · 测试人：自动化验收（TRAE Agent）</p>
+
+<div class="verdict">
+  <span class="badge">有条件通过</span>
+  <div>
+    <b>17/17 项流程全部执行完毕</b>；无崩溃、无 ANR、无布局溢出；消息与流式内容无丢失/重复；撤销 Token 后访问立即 401；断线重连事件不重不漏。
+    <div style="font-size:12.5px;color:var(--muted);margin-top:4px;">发现 2 个 P1 产品缺陷（暂停时序、暂停态取消死锁）与 3 项 P3 UX 观察，均不阻塞主流程，详见“缺陷与观察”。</div>
+  </div>
+</div>
+
+<h2>一、测试环境</h2>
+<div class="grid">
+  <div class="kv"><b>设备型号</b> sdk_gphone64_arm64（模拟器 emulator-5554）</div>
+  <div class="kv"><b>Android 版本</b> 12（API 31，arm64-v8a）</div>
+  <div class="kv"><b>被测 APK</b> Debug · versionName 1.0.0 · versionCode 1（minSdk 24 / targetSdk 34）</div>
+  <div class="kv"><b>包名</b> com.androidagent.client</div>
+  <div class="kv"><b>Agent 服务</b> 临时实例 · 0.0.0.0:8124 · 临时 AGENT_DATA_DIR</div>
+  <div class="kv"><b>模型</b> Stub 模型服务器 · 127.0.0.1:9478</div>
+  <div class="kv"><b>模拟器访问</b> http://10.0.2.2:8124</div>
+  <div class="kv"><b>测试账号</b> t08user1@example.com（临时，已注销）</div>
+</div>
+<div class="note" style="margin-top:10px;">全程仅连接临时 Agent 服务与临时数据库（<code>mktemp</code> 隔离目录）；未触碰 <code>data/</code>、<code>workspaces/</code> 真实用户数据；日志中未记录任何 Token 明文。</div>
+
+<h2>二、测试流程执行结果（17 步）</h2>
+<table>
+<tr><th style="width:36px;">#</th><th>步骤</th><th style="width:88px;">结果</th><th>关键验证点</th></tr>
+<tr><td>1</td><td>全新安装 · 首启 · 未登录态</td><td class="pass">通过</td><td>卸载重装后首启直接进入登录页，无残留登录态</td></tr>
+<tr><td>2</td><td>注册临时邮箱账号</td><td class="pass">通过</td><td>注册 → 邮箱验证码校验 → 账号建立</td></tr>
+<tr><td>3</td><td>登录并验证账号资料</td><td class="pass">通过</td><td>Me 页显示昵称/邮箱/“邮箱已验证”/供应商/用量</td></tr>
+<tr><td>4</td><td>创建项目和 Conversation</td><td class="pass">通过</td><td>项目 <code>t08demo</code>（包 com.androidagent.t08demo）+ 会话创建成功</td></tr>
+<tr><td>5</td><td>发送普通问题</td><td class="pass">通过</td><td>流式 delta 合并为单条消息，Markdown/表格渲染正常</td></tr>
+<tr><td>6</td><td>发送修改文件的任务</td><td class="pass">通过</td><td>write_file 工具执行，strings.xml smoke_label 修改生效</td></tr>
+<tr><td>7</td><td>Timeline · 工具步骤 · 流式输出</td><td class="pass">通过</td><td>用户消息→工作组（计划/工具调用折叠）→助手消息结构完整；旧轮折叠/当前轮展开</td></tr>
+<tr><td>8</td><td>进程审批：允许 / 拒绝</td><td class="pass">通过</td><td>两条路径均验证：批准后 run_command 继续执行；拒绝后任务终止且不再回翻 pending</td></tr>
+<tr><td>9</td><td>暂停 / 恢复 / 取消 / steer / follow-up</td><td class="warn">部分</td><td>steer（201 Created）、follow-up、取消、恢复均验证；<b>暂停存在时序缺陷（见缺陷#1）</b></td></tr>
+<tr><td>10</td><td>Diff 与 Checkpoint · 文件恢复</td><td class="pass">通过</td><td>checkpoint 恢复 21 文件成功；strings.xml 回退到任务前内容；409 冲突保护生效</td></tr>
+<tr><td>11</td><td>查看构建日志</td><td class="pass">通过</td><td>真实 Gradle 构建（BUILD SUCCESSFUL 1m23s）；关键错误提取 2 条、完整日志/复制路径正常</td></tr>
+<tr><td>12</td><td>下载 / 安装 / 分享 APK</td><td class="pass">通过</td><td>下载 5.5MB + SHA-256 校验一致 + 签名有效；系统安装器装成 com.androidagent.t08demo；分享面板弹出</td></tr>
+<tr><td>13</td><td>第二台模拟设备登录 · 设备列表</td><td class="pass">通过</td><td>API 登录 T08 Pixel Tablet；设备页显示三台设备（当前/其他/最近活跃时间）</td></tr>
+<tr><td>14</td><td>撤销第一台设备 · 立即失效</td><td class="pass">通过</td><td>撤销后服务端全部请求 401（/api/devices、/api/jobs、/api/health）；被撤销 Token 立即失效</td></tr>
+<tr><td>15</td><td>断网 / 杀进程 / 重启 · 重连续传</td><td class="pass">通过</td><td>飞行模式后重连以 <code>after_seq</code> 游标续传；事件 1-14 连续、唯一、无缺失无重复；杀进程重启后时间线恢复一致</td></tr>
+<tr><td>16</td><td>深色模式 · 返回键 · 横竖屏 · 小屏</td><td class="pass">通过</td><td>深色模式亮度 26-28（生效）；返回栈逐层退出完整；横屏 2340×1080 布局正常；480×854 小屏零溢出元素</td></tr>
+<tr><td>17</td><td>注销账号 · 清除凭据</td><td class="pass">通过</td><td>密码+勾选确认后：本地 api_token_cipher 清零；服务端 tasks/conversations 清空；工作区与 builds 目录级联删除；全部 Token 401</td></tr>
+</table>
+
+<h2>三、缺陷与观察</h2>
+
+<div class="issue p1">
+<h4>缺陷 #1（P1 · PRODUCT）：特定窗口暂停导致任务失败而非暂停</h4>
+<div class="meta">agent/loop.py · 复现于 pause-grid 时序压测（grid0.45/0.55/0.65）</div>
+在模型流式输出进行中请求暂停，<code>PauseRequested</code> 异常被包装为通用 <code>RuntimeError</code> 上抛，任务终态被映射为 <code>failed</code>（“任务失败: 任务已暂停”），而正确语义应为 <code>paused</code>。时序敏感：仅在暂停请求落入特定时间窗时触发（压测中 0.45s/0.55s/0.65s 三个点位复现，0.7s 及以上正常）。
+</div>
+
+<div class="issue p1">
+<h4>缺陷 #2（P1 · PRODUCT）：暂停态任务无法取消，形成死锁并占满任务配额</h4>
+<div class="meta">agent/database.py:1487 resume_task · agent/jobs.py request_cancel</div>
+暂停中的任务收到取消请求后：无 worker 处理取消（任务已暂停挂起），而 <code>resume_task</code> 的 SQL 带 <code>AND cancel_requested=0</code> 条件拒绝恢复。任务永久卡在 <code>paused</code>，持续占用“活动任务上限 6”配额，导致后续新任务全部被 429 拒绝（实测复现：6 个 paused 任务 → ask 全部 429，UI 仅显示“请求失败”）。临时库中已手工终态化该任务以继续测试。
+</div>
+
+<div class="issue p3">
+<h4>观察 #3（P3 · UX）：“查看改动”恒为空</h4>
+DiffActivity 两处入口（ProjectDetailActivity/ConversationActivity）均不传 <code>turn_id</code>，服务端退回 <code>git_diff()</code>；模板工作区非 git 仓库 → 恒返回“无文本 diff”。建议默认按最近 turn 的 checkpoint diff 展示。
+</div>
+
+<div class="issue p3">
+<h4>观察 #4（P3 · UX）：Checkpoint 恢复冲突提示笼统</h4>
+带第三方漂移执行整体恢复时服务端返回 409 + 冲突文件列表（preview API 数据正确），客户端仅显示“请求失败”，未展示冲突文件与 expected/current 哈希，用户无法自助决策。
+</div>
+
+<div class="issue p3">
+<h4>观察 #5（P3 · UX）：设备被撤销后 App 不跳登录页</h4>
+设备会话被撤销后，App 内所有 API 请求 401，但界面停留在空白列表/错误提示，无强制登出引导，需用户手动退出重登。建议监听 401 触发踢出流程。
+</div>
+
+<h2>四、关键 ID（不含 Token）</h2>
+<table>
+<tr><th>对象</th><th>ID</th><th>说明</th></tr>
+<tr><td>项目</td><td><code>t08demo</code></td><td>包名 com.androidagent.t08demo</td></tr>
+<tr><td>会话（主）</td><td><code>fa5529344a7d</code></td><td>207 条事件，seq 1-207 全唯一</td></tr>
+<tr><td>会话（构建）</td><td><code>ef85ad4ffff8</code></td><td>断线重连续传验证，事件 1-14 连续</td></tr>
+<tr><td>job（普通问答）</td><td><code>ef174aa94310</code></td><td>Markdown 流式渲染验证</td></tr>
+<tr><td>job（文件修改+APK）</td><td><code>91db01087db6</code></td><td>strings.xml 修改 · 挂载构建产物 · 恢复验证</td></tr>
+<tr><td>job（审批允许/拒绝）</td><td><code>65ef46cc61be</code> / <code>5814ef3e92e9</code></td><td>RUN-CMD-SMOKE 两轮审批路径</td></tr>
+<tr><td>job（steer/取消）</td><td><code>4a04825c6acf</code></td><td>canceled 终态</td></tr>
+<tr><td>job（follow-up）</td><td><code>a351ad546da3</code></td><td>followup 消息路径</td></tr>
+<tr><td>job（构建任务）</td><td><code>f17efc1d6a49</code></td><td>构建日志/APK 下载/安装/分享载体</td></tr>
+<tr><td>job（重连测试）</td><td><code>e1b0925cbd13</code></td><td>断网期间服务端完成，重连后补齐</td></tr>
+</table>
+<p style="font-size:12.5px;color:var(--muted);">注：账号注销后以上记录已从临时库级联删除，ID 保留作过程追溯。</p>
+
+<h2>五、证据清单</h2>
+<table>
+<tr><th>类别</th><th>位置</th><th>内容</th></tr>
+<tr><td>截图（64 张）</td><td><code>/tmp/android-agent-t00-evidence/t08-shots/</code></td><td>01 首启未登录 → 04 注册 → 07 资料页 → 12-17 Timeline/流式/工具 → 18-21 审批卡 → 23-27 steer/取消 → 34-35 Diff/恢复确认 → 37-45 构建日志/APK/安装 → 46-49 设备管理/撤销 → 50-52 重连 → 53-61 深色/横屏/小屏 → 62-64 注销流程</td></tr>
+<tr><td>logcat</td><td><code>t08-logcat-final.log</code>（19952 行）</td><td>AndroidAgent 相关错误过滤结果：<b>0 条</b>（无崩溃/ANR/异常堆栈）</td></tr>
+<tr><td>服务端日志</td><td><code>t08-agent.log</code></td><td>含 401 失效序列、游标续传请求、429 限流复现记录</td></tr>
+<tr><td>构建日志</td><td><code>t08-gradle-build.log</code></td><td>真实 Gradle 8.4 assembleDebug，BUILD SUCCESSFUL in 1m 23s</td></tr>
+</table>
+
+<h2>六、通过标准核对</h2>
+<table>
+<tr><th>标准</th><th style="width:90px;">结论</th><th>依据</th></tr>
+<tr><td>无崩溃、ANR、明显布局溢出</td><td class="pass">达标</td><td>logcat 0 异常；小屏（480×854）溢出元素 0；横竖屏切换正常</td></tr>
+<tr><td>不丢消息、不重复流式内容</td><td class="pass">达标</td><td>主会话 207 事件 seq 全唯一；断线重连后事件 1-14 连续补齐</td></tr>
+<tr><td>撤销 Token 后客户端不能继续访问</td><td class="pass">达标</td><td>撤销后 /api/devices、/api/jobs、/api/health 全部 401</td></tr>
+<tr><td>重连后事件不重复且不缺失</td><td class="pass">达标</td><td>after_seq=7 续传至 14，contiguous 校验通过</td></tr>
+<tr><td>（附加）暂停时序正确性</td><td class="fail">未达标</td><td>缺陷 #1：特定窗口暂停 → failed 而非 paused</td></tr>
+<tr><td>（附加）暂停态可取消</td><td class="fail">未达标</td><td>缺陷 #2：暂停+取消请求死锁，占满任务配额</td></tr>
+</table>
+
+<h2>七、环境清理确认</h2>
+<ul style="font-size:13.5px;">
+<li>临时 Agent 服务（8124）与 Stub 模型（9478）已停止，端口已释放</li>
+<li>临时数据目录（AGENT_DATA_DIR）已删除</li>
+<li>测试账号已注销：服务端数据、工作区、构建产物级联清空</li>
+<li>被测 App 与模板 App（com.androidagent.t08demo）均已卸载</li>
+<li>产品代码零改动；API 契约锁、截图基线、测试期望均未更新</li>
+</ul>
+
+</div>
+</body>
+</html>

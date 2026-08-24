@@ -551,29 +551,17 @@ class TimelineStore {
         // live（job key）与 canonical（turn key）合并为一张卡
         val existing = items[canonicalKey]
         if (existing != null) {
-            val merged = JSONObject()
-            val arr = JSONArray()
-            val set = LinkedHashSet<String>()
-            val oldFiles = existing.content.optJSONArray("files") ?: JSONArray()
-            for (i in 0 until oldFiles.length()) {
-                set.add(oldFiles.optString(i))
-            }
-            files.forEach { set.add(it) }
-            set.forEach { arr.put(it) }
-            merged.put("files", arr)
-            existing.content = merged
+            val oldFiles = filesOf(existing.content)
+            val (arr, counts) = mergeFilesWithKinds(oldFiles, files)
+            existing.content = JSONObject().put("files", arr).put("counts", counts)
             existing.seq = existing.seq ?: ev.seq
             existing.bump()
             return true
         }
         val liveKey = "changes:$owner"
         items.remove(liveKey)?.let { live ->
-            val set = LinkedHashSet<String>()
-            val liveFiles = live.content.optJSONArray("files") ?: JSONArray()
-            for (i in 0 until liveFiles.length()) {
-                set.add(liveFiles.optString(i))
-            }
-            files.forEach { set.add(it) }
+            val liveFiles = filesOf(live.content)
+            val (arr, counts) = mergeFilesWithKinds(liveFiles, files)
             val merged = TimelineItem(
                 key = canonicalKey,
                 type = ItemType.CHANGES,
@@ -582,21 +570,55 @@ class TimelineStore {
                 jobId = live.jobId ?: ev.jobId,
                 seq = ev.seq ?: live.seq,
                 timestampMs = live.timestampMs ?: ev.timestampMs,
-                content = JSONObject().put("files", JSONArray(set)),
+                content = JSONObject().put("files", arr).put("counts", counts),
                 version = live.version + 1,
             )
             items[canonicalKey] = merged
             return true
         }
+        val (arr, counts) = mergeFilesWithKinds(files)
         upsert(canonicalKey, ItemType.CHANGES, ev) {
-            it.content = JSONObject().put("files", JSONArray(files))
+            it.content = JSONObject().put("files", arr).put("counts", counts)
         }
         return true
     }
 
-    private fun filesOf(p: JSONObject): List<String> {
+    /** Server sends files as [{"path": ..., "change": "added|modified|deleted"}]; older
+     *  payloads may carry plain strings. Normalize both into path + change pairs. */
+    private fun filesOf(p: JSONObject): List<Pair<String, String>> {
         val arr = p.optJSONArray("files") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf { it.isNotBlank() } }
+        val out = ArrayList<Pair<String, String>>(arr.length())
+        for (i in 0 until arr.length()) {
+            when (val e = arr.opt(i)) {
+                is org.json.JSONObject -> {
+                    val path = e.optString("path").takeIf { it.isNotBlank() } ?: continue
+                    out.add(path to e.optString("change", "modified"))
+                }
+                is String -> if (e.isNotBlank()) out.add(e to "modified")
+                else -> Unit
+            }
+        }
+        return out
+    }
+
+    private fun mergeFilesWithKinds(vararg groups: List<Pair<String, String>>): Pair<JSONArray, JSONObject> {
+        val byPath = LinkedHashMap<String, String>()
+        for (group in groups) for ((path, change) in group) byPath[path] = change
+        val arr = JSONArray()
+        var added = 0
+        var deleted = 0
+        for ((path, change) in byPath) {
+            arr.put(path)
+            when (change) {
+                "added" -> added++
+                "deleted" -> deleted++
+            }
+        }
+        val counts = JSONObject()
+            .put("added", added)
+            .put("deleted", deleted)
+            .put("modified", byPath.size - added - deleted)
+        return arr to counts
     }
 
     private fun handleCheckpoint(ev: NormalizedEvent): Boolean {

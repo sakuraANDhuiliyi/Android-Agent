@@ -12,7 +12,7 @@ This document describes the shipping architecture as of Stage 19 (eval / securit
 
 | Path | Purpose |
 |------|---------|
-| `data/users.db` | User registration (token SHA-256 only) |
+| `data/users.db` | Accounts, password digests, verification codes and revocable device sessions |
 | `data/agent.db` | Tasks, conversations, events, checkpoints, memories |
 | `data/index/{user}/{project}/` | Rebuildable FTS code index |
 | `workspaces/{user}/{project}/` | Project workspace |
@@ -71,6 +71,8 @@ Long-term project/user/local memories are **not** conversation checkpoints. Auto
 - Download URL validation blocks `file://`, localhost, private IPs, embedded credentials; redirects re-validated per hop.
 - Event/API/log redaction for common secret patterns.
 - Strict user isolation on conversation/task/memory APIs (IDOR → 404).
+- Passwords use salted scrypt (PBKDF2-SHA256 fallback); tokens and one-time codes are stored as SHA-256 digests only.
+- Every account login creates a separately revocable device session; password change can revoke every other session.
 
 ## Known limits
 

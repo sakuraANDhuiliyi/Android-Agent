@@ -768,7 +768,7 @@
     root.dataset.key = item.key;
     const head = el("button", "tl-tool-head");
     head.type = "button";
-    const dot = el("span", "tl-tool-dot");
+    const dot = el("span", `tl-tool-dot is-${toolGroupOf(item) || "generic"}`);
     dot.setAttribute("aria-hidden", "true");
     head.appendChild(dot);
     head.appendChild(el("span", "tl-tool-name", toolLabel(item.content.name)));
@@ -1043,6 +1043,7 @@
     const root = el("div", `tl-item tl-approval is-${item.status}`);
     root.dataset.key = item.key;
     root.dataset.approvalId = item.approvalId || "";
+    root.dataset.risk = item.content.risk || "process";
 
     const title = el("div", "tl-approval-title");
     title.tabIndex = -1;
@@ -1117,12 +1118,11 @@
     const head = el("div", "tl-changes-head");
     head.appendChild(el("span", "tl-changes-title", files.length ? `改动 ${files.length} 个文件` : "文件改动"));
     const stats = el("span", "tl-changes-stats");
-    const parts = [];
-    if (counts.added) parts.push(`新增 ${counts.added}`);
-    if (counts.modified) parts.push(`修改 ${counts.modified}`);
-    if (counts.deleted) parts.push(`删除 ${counts.deleted}`);
-    if (counts.renamed) parts.push(`重命名 ${counts.renamed}`);
-    stats.textContent = parts.join(" · ");
+    stats.title = "新增 / 修改 / 删除 / 重命名的文件数";
+    if (counts.added) stats.appendChild(el("span", "tl-stat is-add", `+${counts.added}`));
+    if (counts.modified) stats.appendChild(el("span", "tl-stat is-mod", `~${counts.modified}`));
+    if (counts.deleted) stats.appendChild(el("span", "tl-stat is-del", `−${counts.deleted}`));
+    if (counts.renamed) stats.appendChild(el("span", "tl-stat is-ren", `→${counts.renamed}`));
     head.appendChild(stats);
 
     const diff = changesDiffState(item, turn);

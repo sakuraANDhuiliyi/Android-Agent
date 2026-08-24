@@ -19,13 +19,57 @@
         android:orientation="vertical"
         android:padding="@dimen/space_medium">
 
-        <TextView
-            android:id="@+id/textChangesCount"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceTitleSmall"
-            android:textColor="?attr/colorOnSurface"
-            tools:text="3 个文件改动" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/textChangesCount"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorOnSurface"
+                tools:text="3 个文件改动" />
+
+            <TextView
+                android:id="@+id/textChangesAdd"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_small"
+                android:fontFamily="monospace"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/status_success"
+                android:visibility="gone"
+                tools:text="+2"
+                tools:visibility="visible" />
+
+            <TextView
+                android:id="@+id/textChangesMod"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_small"
+                android:fontFamily="monospace"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/status_warning"
+                android:visibility="gone"
+                tools:text="~1"
+                tools:visibility="visible" />
+
+            <TextView
+                android:id="@+id/textChangesDel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_small"
+                android:fontFamily="monospace"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/status_failed"
+                android:visibility="gone"
+                tools:text="−1"
+                tools:visibility="visible" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/textChangesFiles"

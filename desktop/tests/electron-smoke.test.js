@@ -121,6 +121,31 @@ async function waitUntil(fn, timeoutMs, desc) {
   throw new Error(`timeout waiting for: ${desc}`);
 }
 
+// The panel's conversation-switch chain (selectConversation) clears
+// #promptInput mid-flight and sendAsk() silently drops an empty prompt, so
+// typing immediately after 新对话/项目创建 races that chain: the fill is wiped
+// before 发送 is clicked and the ask never reaches the server. Wait until no
+// switch is in flight (loadToken stable) and the composer is ready.
+async function settleComposer(page, desc) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const before = await page.evaluate(() => {
+      const s = window.AiPanel.getState();
+      return { token: s.loadToken, conv: s.conversationId };
+    });
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => {
+      const s = window.AiPanel.getState();
+      return {
+        token: s.loadToken,
+        conv: s.conversationId,
+        ready: s.connected && s.selectedProjectId && s.conversationId && !s.running,
+      };
+    });
+    if (after.ready && after.token === before.token && after.conv === before.conv) return;
+  }
+  throw new Error(`composer never settled: ${desc}`);
+}
+
 async function main() {
   // 0) refuse to run against leftover services from a previous failed run
   await assertPortFree(STUB_PORT);
@@ -238,6 +263,9 @@ async function main() {
     "project selected",
   );
   const projectId = await page.evaluate(() => window.AiPanel.getState().selectedProjectId);
+  // Project creation kicks off loadConversations -> selectConversation; let it
+  // settle before typing turn 1 or the fill is wiped mid-switch.
+  await settleComposer(page, "after project creation");
   console.log("ok - project created", projectId);
 
   const send = async (text) => {
@@ -470,6 +498,9 @@ async function main() {
 
   // 12) fast conversation switching must not cross wires
   await page.click("#btnNewChat");
+  // createNewConversation -> selectConversation clears the input mid-flight;
+  // wait for the new conversation to settle before typing.
+  await settleComposer(page, "after new chat");
   await send("新会话 CHARLIE-UNIQUE-99：简单回复即可");
   await page.waitForSelector(".tl-assistant", { timeout: 20000 });
   const convB = await page.evaluate(() => window.AiPanel.getState().conversationId);

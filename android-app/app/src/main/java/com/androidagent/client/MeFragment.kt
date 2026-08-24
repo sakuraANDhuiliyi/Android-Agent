@@ -52,8 +52,13 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
         lifecycleScope.launch {
             try {
-                val (health, jobs) = withContext(Dispatchers.IO) {
-                    api.health() to api.listJobs()
+                val (health, jobs, account) = withContext(Dispatchers.IO) {
+                    Triple(api.health(), api.listJobs(), runCatching { api.getAccount() }.getOrNull())
+                }
+                if (account != null) {
+                    prefs.displayName = account.displayName
+                    prefs.displayEmail = account.email
+                    renderProfile()
                 }
                 binding.textApiStatus.text = getString(
                     if (health.apiKeyConfigured) R.string.model_api_configured else R.string.model_api_missing,

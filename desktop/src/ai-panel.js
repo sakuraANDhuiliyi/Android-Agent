@@ -49,10 +49,13 @@
     settingsDialog: document.getElementById("settingsDialog"),
     settingsForm: document.getElementById("settingsForm"),
     serverUrl: document.getElementById("serverUrl"),
+    accountEmail: document.getElementById("accountEmail"),
+    accountPassword: document.getElementById("accountPassword"),
     apiToken: document.getElementById("apiToken"),
     registrationToken: document.getElementById("registrationToken"),
     settingsHint: document.getElementById("settingsHint"),
     btnPair: document.getElementById("btnPair"),
+    btnAccountLogin: document.getElementById("btnAccountLogin"),
     btnOpenSettings: document.getElementById("btnOpenSettings"),
     btnActivitySettings: document.getElementById("btnActivitySettings"),
     btnPauseJob: document.getElementById("btnPauseJob"),
@@ -890,6 +893,50 @@
     els.registrationToken.value = "";
     await connect();
     toast(`配对成功: ${account.user_id}`);
+  }
+
+  function desktopDevice() {
+    let deviceId = "";
+    try {
+      deviceId = localStorage.getItem("android-agent-device-id") || "";
+      if (!deviceId) {
+        deviceId = `desktop-${crypto.randomUUID()}`;
+        localStorage.setItem("android-agent-device-id", deviceId);
+      }
+    } catch (_) {
+      deviceId = `desktop-${Date.now()}`;
+    }
+    return {
+      device_id: deviceId,
+      device_name: navigator.platform || "Desktop",
+      device_type: "desktop",
+      platform: navigator.userAgentData?.platform || navigator.platform || "Desktop",
+      app_version: "1.0.0",
+    };
+  }
+
+  async function loginAccount() {
+    const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
+    const email = els.accountEmail?.value.trim() || "";
+    const password = els.accountPassword?.value || "";
+    if (!email || !password) {
+      els.settingsHint.textContent = "请输入邮箱和密码";
+      return;
+    }
+    els.btnAccountLogin.disabled = true;
+    client.configure({ baseUrl, token: "" });
+    try {
+      const auth = await client.login(email, password, desktopDevice());
+      els.apiToken.value = auth.token || "";
+      els.accountPassword.value = "";
+      await connect();
+      toast(`账号已登录: ${auth.account?.display_name || auth.account?.email || auth.user_id}`);
+    } catch (err) {
+      els.settingsHint.textContent = err.message;
+      throw err;
+    } finally {
+      els.btnAccountLogin.disabled = false;
+    }
   }
 
   // —— Projects / conversations ——
@@ -1874,6 +1921,10 @@
       } catch (_) {
         /* keep open */
       }
+    });
+
+    els.btnAccountLogin?.addEventListener("click", () => {
+      loginAccount().catch(() => {});
     });
 
     els.createProjectForm.addEventListener("submit", async (ev) => {

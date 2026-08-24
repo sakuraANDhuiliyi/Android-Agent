@@ -52,6 +52,7 @@
         err.retryable = parsed.retryable;
         err.detail = data && data.detail;
         err.body = data;
+        err.data = data;
         throw err;
       }
       return data;
@@ -67,6 +68,25 @@
         headers: { "X-Registration-Token": registrationToken },
         body: {},
       });
+    }
+
+    login(email, password, device) {
+      return this.request("/api/auth/login", {
+        method: "POST",
+        body: { email, password, device },
+      });
+    }
+
+    account() {
+      return this.request("/api/account");
+    }
+
+    devices() {
+      return this.request("/api/devices");
+    }
+
+    logoutOtherDevices() {
+      return this.request("/api/devices/logout-others", { method: "POST", body: {} });
     }
 
     models() {

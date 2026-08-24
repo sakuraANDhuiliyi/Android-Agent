@@ -429,6 +429,78 @@ class WorkerUnitTests(unittest.TestCase):
         pending = self.store.get_pending_messages(task_id, types=["steer"])
         self.assertEqual(len(pending), 0)
 
+    def test_pause_during_agent_loop_is_not_wrapped_as_failure(self) -> None:
+        # T08 P1 regression: PauseRequested raised at a turn boundary used to
+        # be caught by the provider fallback loop and re-raised as a plain
+        # RuntimeError, mapping the task onto "failed" instead of "paused".
+        from agent.loop import PauseRequested, run_agent
+        from agent.stream import (
+            StreamedCompletion,
+            _Choice,
+            _Fn,
+            _Message,
+            _ToolCall,
+            _Usage,
+        )
+        from agent.tools import ToolResult
+
+        task_id, _, _ = self._create_queued_task()
+        call_count = {"n": 0}
+
+        def fake_stream(client, *, model, messages, on_event=None, cancel_check=None, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return StreamedCompletion(
+                    choices=[
+                        _Choice(
+                            message=_Message(
+                                content=None,
+                                tool_calls=[
+                                    _ToolCall(
+                                        id="call-1",
+                                        function=_Fn(
+                                            name="read_file",
+                                            arguments='{"path":"a.kt"}',
+                                        ),
+                                    )
+                                ],
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                    usage=_Usage(),
+                )
+            return StreamedCompletion(
+                choices=[
+                    _Choice(message=_Message(content="final"), finish_reason="stop")
+                ],
+                usage=_Usage(),
+            )
+
+        def fake_dispatch_tool(*_args, **_kwargs):
+            return ToolResult(True, "content")
+
+        def check_pause() -> None:
+            # Raise at the second turn boundary, i.e. after turn 1 streamed a
+            # tool call — the window where the wrapper bug reproduced.
+            if call_count["n"] >= 1:
+                raise PauseRequested("任务已暂停")
+
+        with (
+            patch("agent.loop.stream_openai_chat", side_effect=fake_stream),
+            patch("agent.loop.dispatch_tool", side_effect=fake_dispatch_tool),
+        ):
+            with self.assertRaises(PauseRequested):
+                run_agent(
+                    _settings(),
+                    self.root,
+                    "user",
+                    "project",
+                    "prompt",
+                    check_pause=check_pause,
+                )
+        self.assertEqual(call_count["n"], 1)
+
     def test_follow_up_creates_next_turn(self) -> None:
         task_id, conversation_id, _ = self._create_queued_task()
         self.store.add_task_message(
@@ -656,18 +728,31 @@ class WorkerApiTests(unittest.TestCase):
                 pause = client.post(f"/api/jobs/{job_id}/pause")
                 self.assertEqual(pause.status_code, 202)
                 self.assertEqual(pause.json()["job"]["status"], "paused")
+                # T08 P1 regression: cancel on a paused task finalizes it now —
+                # no worker is attached to consume a bare flag.
                 first = client.post(f"/api/jobs/{job_id}/cancel")
                 self.assertEqual(first.status_code, 202)
-                self.assertTrue(first.json()["job"]["cancel_requested"])
-                self.assertEqual(first.json()["job"]["display_status"], "cancel_requested")
+                self.assertEqual(first.json()["job"]["status"], "canceled")
+                self.assertEqual(first.json()["job"]["display_status"], "canceled")
                 second = client.post(f"/api/jobs/{job_id}/cancel")
                 self.assertEqual(second.status_code, 202)
                 self.assertEqual(
                     second.json()["job"]["display_status"],
-                    "cancel_requested",
+                    "canceled",
                 )
                 resume = client.post(f"/api/jobs/{job_id}/resume")
                 self.assertEqual(resume.status_code, 409)
+                # The turn and conversation events must agree with the task.
+                event_store = ConversationEventStore(
+                    TaskStore(self._data / "agent.db")
+                )
+                turn = event_store.get_turn_by_task(job_id, user_id="local")
+                self.assertIsNotNone(turn)
+                self.assertEqual(turn["status"], "canceled")
+                events = event_store.list_turn_events(turn["id"], user_id="local")
+                self.assertTrue(
+                    any(e["event_type"] == "turn_canceled" for e in events)
+                )
 
     def test_websocket_cursor_reconnect_no_duplicates(self) -> None:
         def fake_agent(*_args, **kwargs):

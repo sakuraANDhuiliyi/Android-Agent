@@ -249,11 +249,21 @@ class TaskWorker:
                 claim_token=claim_token,
             )
             try:
+                # release_task flips a raced cancel to 'canceled'; mirror that
+                # into the turn so task and timeline agree.
+                turn_status = (
+                    "canceled"
+                    if self.store.is_cancel_requested(task["id"])
+                    else "paused"
+                )
                 event_store.update_turn_status(
                     turn_id,
-                    "paused",
+                    turn_status,
                     user_id=task["user_id"],
                     finished_at=time.time(),
+                    error_message=(
+                        "用户已请求停止任务" if turn_status == "canceled" else None
+                    ),
                 )
             except Exception:
                 logger.exception("Failed to set turn status to paused for task %s", task["id"])

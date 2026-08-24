@@ -38,6 +38,7 @@
     lastEventId: 0,
     plan: [],
     approvals: [],
+    inboxApprovals: [],
     toolCalls: [],
     toolResults: [],
     running: false,
@@ -216,6 +217,9 @@
       }
       case "SET_JOBS":
         next.jobs = action.jobs || [];
+        break;
+      case "SET_INBOX_APPROVALS":
+        next.inboxApprovals = action.approvals || [];
         break;
       case "SET_CURRENT_JOB":
         next.currentJobId = action.jobId;

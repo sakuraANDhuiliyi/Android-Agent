@@ -50,7 +50,7 @@ Authorization: Bearer <token>
 
 当前已支持跨 Conversation 的可控项目记忆（候选审批 + 本地 FTS 检索）。通用多实例消息队列仍未实现；服务中断任务仅修复事件链，恢复执行需要用户显式触发。
 
-## 设备初始化与目录隔离
+## 账号、多设备登录与目录隔离
 
 服务端默认关闭网络注册。首次使用先在运行 Agent 的电脑上创建账号：
 
@@ -66,12 +66,23 @@ python3 -m agent register-user
 
 之后所有 API 请求都通过 `Authorization: Bearer <token>` 确定用户身份。客户端不能通过修改 `user_id` 访问其他用户目录。
 
-> Token 只显示一次。丢失后无法恢复原账号，需要重新创建账号。
+> Token 只显示一次。丢失后无法恢复原值；启用管理后台后可为原账号签发新 Token。
+
+Android 客户端也支持邮箱密码账号。设置 `registration_enabled: true` 后可使用
+`POST /api/auth/register` 注册、`POST /api/auth/login` 登录；每次登录创建一条独立
+设备会话。`GET /api/devices` 可查看当前账号的设备，支持撤销单台设备或登出其他
+设备。修改密码默认撤销其他设备，注销账号会撤销全部凭据并删除用户工作区、构建
+产物和任务数据。密码只保存带随机盐的 scrypt 或 PBKDF2-SHA256 摘要。
+
+受信内网默认可免邮箱验证。面向公网时应设置 `email_verification_required: true`，
+并配置 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`smtp_from`；
+敏感 SMTP 密码建议通过 `AGENT_SMTP_PASSWORD` 环境变量注入。验证码仅保存 SHA-256
+摘要、15 分钟过期且只能使用一次。
 
 如确需让手机通过网络配对，在 `config.yaml` 同时设置
 `registration_enabled: true` 和随机长字符串 `registration_token`，并在手机端填写该注册密钥。注册密钥不会保存在手机偏好中。
 
-三端统一调用 `POST /api/pair` 完成配对；`POST /api/register` 仅作为旧客户端兼容别名。浏览器 WebSocket 会先通过 Bearer Token 申请 5-120 秒、单次使用且绑定具体 Job/Terminal 的 ticket，长效 Token 不进入 URL。桌面 Token 使用系统 `safeStorage`，Android Token 使用 Keystore 加密，调试 Web 只使用当前标签页的 `sessionStorage`。
+旧客户端继续调用 `POST /api/pair` 完成配对；`POST /api/register` 是兼容别名。账号客户端使用 `/api/auth/*`，已有配对 Token 无需迁移即可继续工作。浏览器 WebSocket 会先通过 Bearer Token 申请 5-120 秒、单次使用且绑定具体 Job/Terminal 的 ticket，长效 Token 不进入 URL。桌面 Token 使用系统 `safeStorage`，Android Token 使用 Keystore 加密，调试 Web 只使用当前标签页的 `sessionStorage`。
 
 ## 启动服务
 
@@ -85,9 +96,29 @@ python3 -m agent serve
 启动后：
 
 - 本地调试操作台：`http://127.0.0.1:8000/ui/`（仅 loopback 且 `debug_web_ui_enabled: true` 时挂载）
+- 账号管理后台：`http://127.0.0.1:8000/admin/`（需显式启用，见下文）
 - API 文档：`http://127.0.0.1:8000/docs`
 
 服务默认只监听 `127.0.0.1`。手机连接时需要显式把 `server_host` 改为 `0.0.0.0`；Android Debug 构建可在受信局域网使用 `http://192.168.1.100:8000`，Release 构建只允许 HTTPS。所有 API 请求仍必须携带有效 Token。PTY 终端默认关闭，只有在受信网络中确有需要时才设置 `terminal_enabled: true`。
+
+### 账号管理后台
+
+管理后台可以搜索、创建和注销账号，修改显示名称与邮箱验证状态，禁用账号、重置
+密码，以及签发、查看元数据和撤销设备/API Token。密码摘要、Token 哈希和已有 Token
+原文不会返回给浏览器；新 Token 仅在签发成功时显示一次。
+
+后台默认关闭。推荐通过环境变量启动，管理员 Token 必须至少 24 位，且不能复用普通
+用户 Token：
+
+```bash
+export AGENT_ADMIN_UI_ENABLED=true
+export AGENT_ADMIN_TOKEN="$(openssl rand -hex 32)"
+python3 -m agent serve
+```
+
+打开 `http://127.0.0.1:8000/admin/`，输入上述 Token。浏览器只在当前标签页的
+`sessionStorage` 中保存它，退出或关闭标签页后清除。若管理后台需要经过公网访问，
+必须置于 HTTPS 反向代理之后并限制来源 IP；不要直接暴露 HTTP 控制面。
 
 ## 网络搜索（Tavily）
 

@@ -67,10 +67,28 @@
         tools:visibility="visible" />
 
     <LinearLayout
-        android:id="@+id/layoutSteps"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
+        android:orientation="horizontal"
         android:visibility="gone"
-        tools:visibility="visible" />
+        android:id="@+id/layoutStepsWrap"
+        tools:visibility="visible">
+
+        <View
+            android:id="@+id/stepsRail"
+            android:layout_width="2dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="7dp"
+            android:layout_marginTop="6dp"
+            android:layout_marginBottom="6dp"
+            android:background="@color/signal_outline_variant" />
+
+        <LinearLayout
+            android:id="@+id/layoutSteps"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:orientation="vertical" />
+    </LinearLayout>
 </LinearLayout>

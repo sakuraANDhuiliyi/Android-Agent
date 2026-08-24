@@ -6,8 +6,8 @@
   "scripts": {
     "start": "ELECTRON_RUN_AS_NODE= electron .",
     "dev": "ELECTRON_RUN_AS_NODE= electron .",
-    "check": "node --check src/agent-api.js && node --check src/state.js && node --check src/perf.js && node --check src/credentials.js && node --check src/terminal.js && node --check src/timeline.js && node --check src/agent-timeline.js && node --check src/ai-panel.js && node --check src/renderer.js && node --check src/main.js && node --check src/preload.js",
-    "test:unit": "node tests/agent-api.test.js && node tests/state.test.js && node tests/events.test.js && node tests/timeline.test.js && node tests/agent-timeline.test.js && node tests/task-status.test.js && node tests/api-contract.test.js && node tests/perf.test.js && node tests/credentials.test.js",
+    "check": "node --check src/theme.js && node --check src/approval-inbox.js && node --check src/agent-api.js && node --check src/state.js && node --check src/perf.js && node --check src/credentials.js && node --check src/terminal.js && node --check src/timeline.js && node --check src/agent-timeline.js && node --check src/ai-panel.js && node --check src/renderer.js && node --check src/main.js && node --check src/preload.js && node --check src/theokit/theokit-icons.js && node --check src/theokit/theokit-core.js && node --check src/theokit/theokit-primitives.js && node --check src/theokit/theokit-primitives-b.js && node --check src/theokit/theokit-composites.js && node --check src/theokit/theokit-showcase.js",
+    "test:unit": "node tests/theme.test.js && node tests/approval-inbox.test.js && node tests/agent-api.test.js && node tests/state.test.js && node tests/events.test.js && node tests/timeline.test.js && node tests/agent-timeline.test.js && node tests/task-status.test.js && node tests/api-contract.test.js && node tests/perf.test.js && node tests/credentials.test.js && node tests/theokit.test.js",
     "test:screenshot": "node tests/screenshot.test.js",
     "dist:mac": "node scripts/package-macos.js",
     "verify:signature": "bash ../scripts/verify_desktop_signature.sh"
@@ -17,6 +17,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@theokit/ui": "^1.4.1",
     "electron-updater": "6.8.9",
     "monaco-editor": "^0.52.2",
     "xterm": "^5.3.0",
@@ -29,5 +30,8 @@
     "@electron/packager": "20.0.4",
     "electron": "41.7.1",
     "playwright": "1.60.0"
+  },
+  "overrides": {
+    "js-yaml": "^4.3.1"
   }
 }

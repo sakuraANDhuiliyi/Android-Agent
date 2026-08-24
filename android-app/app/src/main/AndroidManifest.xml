@@ -38,6 +38,7 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity android:name=".RegisterActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ForgotPasswordActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".VerifyEmailActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".AccountSecurityActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ChangePasswordActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
@@ -79,6 +80,11 @@
             android:exported="false"
             android:parentActivityName=".ProjectDetailActivity"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".TheokitShowcaseActivity"
+            android:exported="false"
+            android:parentActivityName=".MainNavActivity" />
 
         <activity
             android:name=".FileBrowserActivity"

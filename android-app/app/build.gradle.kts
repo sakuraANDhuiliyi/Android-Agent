@@ -16,7 +16,8 @@ val hasReleaseSigning = listOf(
 
 android {
     namespace = "com.androidagent.client"
-    compileSdk = 34
+    compileSdk = 36
+    buildToolsVersion = "36.1.0"
 
     defaultConfig {
         applicationId = "com.androidagent.client"

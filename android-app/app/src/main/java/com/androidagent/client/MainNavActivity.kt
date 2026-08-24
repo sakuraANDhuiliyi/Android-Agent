@@ -56,6 +56,10 @@ class MainNavActivity : AppCompatActivity() {
                     refreshPendingBadge()
                     true
                 }
+                R.id.action_theokit -> {
+                    TheokitShowcaseActivity.start(this)
+                    true
+                }
                 else -> false
             }
         }

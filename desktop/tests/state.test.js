@@ -73,6 +73,14 @@ function run() {
   const s7 = reducer(s6, { type: "SELECT_TERMINAL", terminalId: "t1" });
   assert.strictEqual(s7.activeTerminalId, "t1");
 
+  // Cross-project approval inbox is independent from the active job timeline.
+  const s8 = reducer(s7, {
+    type: "SET_INBOX_APPROVALS",
+    approvals: [{ id: "j1:a1", jobId: "j1" }],
+  });
+  assert.strictEqual(s8.inboxApprovals.length, 1);
+  assert.strictEqual(s8.inboxApprovals[0].id, "j1:a1");
+
   console.log("state.test: OK");
 }
 

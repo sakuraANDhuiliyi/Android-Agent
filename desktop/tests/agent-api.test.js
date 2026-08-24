@@ -85,6 +85,17 @@ async function run() {
   const projects = await api.projects();
   assert.strictEqual(projects.path, "/api/projects");
 
+  const login = await api.login("user@example.com", "secure-123", {
+    device_id: "desktop-1",
+    device_name: "MacBook Pro",
+    device_type: "desktop",
+  });
+  assert.strictEqual(login.path, "/api/auth/login");
+  assert.strictEqual(login.body.device.device_id, "desktop-1");
+
+  const devices = await api.devices();
+  assert.strictEqual(devices.path, "/api/devices");
+
   const conv = await api.createConversation("p1", "test");
   assert.strictEqual(conv.path, "/api/projects/p1/conversations");
   assert.strictEqual(conv.body.title, "test");
@@ -132,6 +143,16 @@ async function run() {
   const authed = requests.find((r) => r.headers.authorization === "Bearer secret");
   assert.ok(authed);
 
+  await stopServer();
+  const errorPort = await startServer((_req, res) => {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ detail: "已在其他端处理" }));
+  });
+  api.configure({ baseUrl: `http://127.0.0.1:${errorPort}` });
+  await assert.rejects(
+    () => api.resolveApproval("j1", "a1", true),
+    (error) => error.status === 409 && error.message === "已在其他端处理",
+  );
   await stopServer();
   console.log("agent-api.test: OK");
 }

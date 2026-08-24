@@ -210,6 +210,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         + ("已启用（需要注册密钥）" if settings.registration_enabled else "已关闭")
     )
     print("  远程终端: " + ("已启用" if settings.terminal_enabled else "已关闭"))
+    if settings.admin_ui_enabled:
+        print(f"  管理后台: http://127.0.0.1:{port}/admin/")
+    else:
+        print("  管理后台: 已关闭")
 
     uvicorn.run(app, host=host, port=port, log_level="info")
     return 0

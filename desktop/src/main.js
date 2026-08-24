@@ -185,22 +185,20 @@ function probeHealth(port, timeoutMs = 800) {
       {
         host: "127.0.0.1",
         port,
-        path: "/api/health",
+        // /api/health requires auth (401 without token), so a 401 would be
+        // misread as "not running" and trigger a doomed respawn (exit code 3
+        // on bind conflict). /docs is public and proves the API is alive.
+        path: "/docs",
         timeout: timeoutMs,
       },
       (res) => {
-        let body = "";
         res.setEncoding("utf8");
-        res.on("data", (chunk) => {
-          body += chunk;
+        res.on("data", () => {
+          /* body unused */
         });
         res.on("end", () => {
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              resolve(JSON.parse(body));
-            } catch (_) {
-              resolve({ status: "ok" });
-            }
+            resolve({ status: "ok" });
           } else {
             resolve(null);
           }
@@ -344,7 +342,7 @@ async function startAgentProcess() {
 
   return {
     ok: false,
-    error: "启动超时：未能连上 /api/health",
+    error: "启动超时：未能连上服务（/docs）",
     logTail: agentLogTail.slice(-2000),
     ...(await getAgentStatus()),
   };

@@ -56,24 +56,12 @@ class MainActivity : AppCompatActivity() {
         binding.btnConnect.setOnClickListener { connectServer() }
         binding.btnRegister.setOnClickListener { confirmRegisterUser() }
         binding.btnToggleAdvanced.setOnClickListener { toggleAdvanced() }
-        binding.btnGoRegister.setOnClickListener { RegisterActivity.start(this) }
-        binding.btnForgot.setOnClickListener { CloudPreview.show(this) }
-        binding.btnLoginCloud.setOnClickListener {
-            val email = binding.editEmail.text?.toString()?.trim().orEmpty()
-            if (email.isBlank()) {
-                binding.layoutEmail.error = getString(R.string.cloud_login_unavailable)
-            } else {
-                prefs.displayEmail = email
-            }
-            if (binding.editApiToken.text.isNullOrBlank()) {
-                binding.layoutAdvanced.visibility = View.VISIBLE
-                advancedOpen = true
-                binding.btnToggleAdvanced.setText(R.string.collapse)
-                toast(getString(R.string.cloud_login_unavailable))
-            } else {
-                connectServer()
-            }
+        binding.btnGoRegister.setOnClickListener {
+            prefs.serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty().ifBlank { prefs.serverUrl }
+            RegisterActivity.start(this)
         }
+        binding.btnForgot.setOnClickListener { ForgotPasswordActivity.start(this) }
+        binding.btnLoginCloud.setOnClickListener { loginAccount() }
 
         if (intent.getBooleanExtra(DeepLink.EXTRA_EDIT_CONNECTION, false)) {
             advancedOpen = true
@@ -129,6 +117,48 @@ class MainActivity : AppCompatActivity() {
                 binding.textStatus.text = getString(R.string.connect_failed_status, e.message ?: "")
             } finally {
                 binding.btnConnect.isEnabled = true
+            }
+        }
+    }
+
+    private fun loginAccount() {
+        binding.layoutEmail.error = null
+        binding.layoutPassword.error = null
+        val email = binding.editEmail.text?.toString()?.trim().orEmpty()
+        val password = binding.editPassword.text?.toString().orEmpty()
+        if (email.isBlank()) {
+            binding.layoutEmail.error = getString(R.string.email_required)
+            return
+        }
+        if (password.isBlank()) {
+            binding.layoutPassword.error = getString(R.string.password_required)
+            return
+        }
+        val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
+            .ifBlank { prefs.serverUrl }
+        binding.btnLoginCloud.isEnabled = false
+        binding.textStatus.text = getString(R.string.connecting)
+        lifecycleScope.launch {
+            try {
+                val auth = withContext(Dispatchers.IO) {
+                    AgentApi(serverUrl).login(email, password, currentDevice(this@MainActivity))
+                }
+                prefs.serverUrl = serverUrl
+                prefs.saveAuth(auth)
+                maybeRequestNotificationPermission()
+                MainNavActivity.start(this@MainActivity)
+                finish()
+            } catch (e: ApiException) {
+                when (e.errorCode) {
+                    "account_not_found" -> binding.layoutEmail.error = e.detail
+                    "invalid_password" -> binding.layoutPassword.error = e.detail
+                    "email_not_verified" -> VerifyEmailActivity.start(this@MainActivity, email)
+                    else -> binding.textStatus.text = e.detail
+                }
+            } catch (e: Exception) {
+                binding.textStatus.text = getString(R.string.connect_failed_status, e.message ?: "")
+            } finally {
+                binding.btnLoginCloud.isEnabled = true
             }
         }
     }

@@ -940,15 +940,6 @@
       setPreviewOpen(false);
     });
 
-    document.querySelectorAll(".activity-btn[data-view]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".activity-btn[data-view]").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        if (btn.dataset.view === "search") openPalette("file");
-        if (btn.dataset.view === "explorer" && state.sidebarCollapsed) toggleSidebar();
-      });
-    });
-
     els.paletteInput.addEventListener("input", () => renderPalette(els.paletteInput.value));
     els.paletteInput.addEventListener("keydown", async (ev) => {
       if (ev.key === "Escape") {
@@ -1088,11 +1079,49 @@
 
     amdRequire(["vs/editor/editor.main"], async () => {
       monaco = window.monaco;
+      // Violet Forge Monaco themes — built-in neutrals with Theo-violet
+      // selection/cursor/line-highlight, matching @theokit/ui tokens.
+      monaco.editor.defineTheme("violet-forge-dark", {
+        base: "vs-dark",
+        inherit: true,
+        rules: [],
+        colors: {
+          "editor.background": "#0a0a0a",
+          "editor.foreground": "#f5f5f5",
+          "editorLineNumber.foreground": "#5a5a5a",
+          "editorLineNumber.activeForeground": "#999999",
+          "editor.selectionBackground": "#3d2a5c",
+          "editor.inactiveSelectionBackground": "#2a1d40",
+          "editor.lineHighlightBackground": "#161616",
+          "editorCursor.foreground": "#b17fe8",
+          "editorIndentGuide.background1": "#292929",
+          "editorIndentGuide.activeBackground1": "#4a4a4a",
+          "editorWidget.background": "#121212",
+          "editorWidget.border": "#292929",
+          "editorSuggestWidget.background": "#121212",
+          "editorSuggestWidget.selectedBackground": "#3d2a5c",
+          "input.background": "#1c1c1c",
+        },
+      });
+      monaco.editor.defineTheme("violet-forge-light", {
+        base: "vs",
+        inherit: true,
+        rules: [],
+        colors: {
+          "editor.background": "#ffffff",
+          "editor.selectionBackground": "#e7ddf5",
+          "editor.inactiveSelectionBackground": "#f0eafa",
+          "editor.lineHighlightBackground": "#f5f5f5",
+          "editorCursor.foreground": "#6f49b1",
+        },
+      });
+      const activeMonacoTheme = () =>
+        window.ThemeManager?.getResolved?.() === "light" ? "violet-forge-light" : "violet-forge-dark";
       editor = monaco.editor.create(els.monacoHost, {
-        theme: "vs-dark",
+        theme: activeMonacoTheme(),
         automaticLayout: true,
         fontSize: 13,
-        fontFamily: 'Menlo, Monaco, "SF Mono", Consolas, monospace',
+        fontFamily: '"Geist Mono", Menlo, Monaco, "SF Mono", Consolas, monospace',
         minimap: { enabled: true },
         scrollBeyondLastLine: false,
         tabSize: 4,
@@ -1103,6 +1132,10 @@
         bracketPairColorization: { enabled: true },
         guides: { bracketPairs: true, indentation: true },
         find: { addExtraSpaceOnTop: false },
+      });
+
+      window.addEventListener("android-agent-theme-change", () => {
+        monaco.editor.setTheme(activeMonacoTheme());
       });
 
       editor.onDidChangeCursorPosition(() => updateStatusFromEditor());
@@ -1156,6 +1189,47 @@
         els.diffMonaco.style.display = "";
       }
 
+      /** Multiset line difference: how many lines only exist on one side. */
+      function diffLineStats(original, modified) {
+        const tally = (lines) => {
+          const m = new Map();
+          for (const line of lines) m.set(line, (m.get(line) || 0) + 1);
+          return m;
+        };
+        const a = tally(String(original || "").split("\n"));
+        const b = tally(String(modified || "").split("\n"));
+        let added = 0;
+        let deleted = 0;
+        for (const [line, n] of b) {
+          const prev = a.get(line) || 0;
+          if (n > prev) added += n - prev;
+        }
+        for (const [line, n] of a) {
+          const now = b.get(line) || 0;
+          if (n > now) deleted += n - now;
+        }
+        return { added, deleted };
+      }
+
+      function renderDiffStats(original, modified) {
+        if (!els.diffStats) return;
+        els.diffStats.textContent = "";
+        const { added, deleted } = diffLineStats(original, modified);
+        const addEl = document.createElement("span");
+        addEl.className = "diff-stat is-add";
+        addEl.textContent = `+${added}`;
+        const delEl = document.createElement("span");
+        delEl.className = "diff-stat is-del";
+        delEl.textContent = `−${deleted}`;
+        els.diffStats.append(addEl, delEl);
+        els.diffStats.title = `新增 ${added} 行 · 删除 ${deleted} 行`;
+        els.diffStats.hidden = false;
+      }
+
+      function hideDiffStats() {
+        if (els.diffStats) els.diffStats.hidden = true;
+      }
+
       function openDiff({ original, modified, path, language = "plaintext", title, review = false }) {
         const perf = window.DesktopPerf || {};
         const gate =
@@ -1176,6 +1250,7 @@
         els.monacoDiffHost.hidden = false;
         updateEmpty();
         hideDiffNotice();
+        renderDiffStats(original, modified);
         els.diffMonaco.style.display = "";
         // Review mode (checkpoint diffs) is read-only by contract: the
         // accept/reject actions do not apply and must not be offered.
@@ -1190,7 +1265,7 @@
         // reopening the same file never accumulates models.
         disposeDiffEditor();
         diffEditor = monaco.editor.createDiffEditor(els.diffMonaco, {
-          theme: "vs-dark",
+          theme: activeMonacoTheme(),
           automaticLayout: true,
           renderSideBySide: true,
           readOnly: true,
@@ -1208,6 +1283,7 @@
         updateEmpty();
         els.diffTitle.textContent = title || "Diff";
         disposeDiffEditor();
+        hideDiffStats();
         els.diffMonaco.style.display = "none";
         let notice = document.getElementById("diffNotice");
         if (!notice) {
@@ -1228,6 +1304,7 @@
         els.monacoDiffHost.hidden = true;
         disposeDiffEditor();
         hideDiffNotice();
+        hideDiffStats();
         updateEmpty();
       }
 
@@ -1272,6 +1349,7 @@
         setStatus: (text) => {
           els.statusErrors.textContent = text;
         },
+        setTheme: () => monaco.editor.setTheme(activeMonacoTheme()),
       };
 
       window.AiPanel?.init?.();

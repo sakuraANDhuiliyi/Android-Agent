@@ -68,6 +68,9 @@ object ConversationTimelineBuilder {
             override val version: Int,
             val turnKey: String,
             val files: List<String>,
+            val added: Int,
+            val modified: Int,
+            val deleted: Int,
         ) : Row()
 
         /** Turn 终态结果卡：状态、耗时、构建、APK 与操作入口。 */
@@ -410,7 +413,18 @@ object ConversationTimelineBuilder {
                 val arr = changes.content.optJSONArray("files")
                 if (arr != null) for (i in 0 until arr.length()) files.add(arr.optString(i))
                 if (files.isNotEmpty()) {
-                    rows.add(Row.Changes("row:${changes.key}", changes.version, turn.key, files))
+                    val counts = changes.content.optJSONObject("counts")
+                    rows.add(
+                        Row.Changes(
+                            id = "row:${changes.key}",
+                            version = changes.version,
+                            turnKey = turn.key,
+                            files = files,
+                            added = counts?.optInt("added", 0) ?: 0,
+                            modified = counts?.optInt("modified", 0) ?: files.size,
+                            deleted = counts?.optInt("deleted", 0) ?: 0,
+                        ),
+                    )
                 }
             }
             if (turn.status in TERMINAL_STATUSES || turn.status == "awaiting_approval") {

@@ -11,21 +11,27 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.databinding.ActivitySimplePageBinding
 import com.androidagent.client.databinding.ItemSettingsRowBinding
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.checkbox.MaterialCheckBox
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AccountSecurityActivity : AppCompatActivity() {
 
     private lateinit var prefs: AgentPrefs
+    private lateinit var api: AgentApi
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val binding = ActivitySimplePageBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = AgentPrefs(this)
+        api = AgentApi(prefs.serverUrl, prefs.apiToken)
         binding.toolbar.setTitle(R.string.row_account_security)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
@@ -40,10 +46,10 @@ class AccountSecurityActivity : AppCompatActivity() {
             startActivity(Intent(this, ChangePasswordActivity::class.java))
         }
         addRow(binding.content, getString(R.string.bind_email), email) {
-            CloudPreview.show(this)
+            Toast.makeText(this, R.string.email_managed_by_account, Toast.LENGTH_SHORT).show()
         }
         addRow(binding.content, getString(R.string.logout)) {
-            ConnectionSettingsActivity.start(this)
+            logout()
         }
 
         val danger = TextView(this).apply {
@@ -56,6 +62,7 @@ class AccountSecurityActivity : AppCompatActivity() {
         addRow(binding.content, getString(R.string.delete_account), danger = true) {
             confirmDelete()
         }
+        refreshAccount()
     }
 
     private fun addInfoCard(parent: LinearLayout, name: String, email: String, accountId: String) {
@@ -122,8 +129,16 @@ class AccountSecurityActivity : AppCompatActivity() {
             .setTitle(R.string.edit_display_name)
             .setView(layout)
             .setPositiveButton(R.string.save_display_name) { _, _ ->
-                prefs.displayName = input.text?.toString().orEmpty()
-                recreate()
+                val name = input.text?.toString().orEmpty()
+                lifecycleScope.launch {
+                    try {
+                        val account = withContext(Dispatchers.IO) { api.updateAccount(name) }
+                        prefs.displayName = account.displayName
+                        recreate()
+                    } catch (e: Exception) {
+                        Toast.makeText(this@AccountSecurityActivity, e.message, Toast.LENGTH_LONG).show()
+                    }
+                }
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
@@ -131,9 +146,14 @@ class AccountSecurityActivity : AppCompatActivity() {
 
     private fun confirmDelete() {
         val check = MaterialCheckBox(this).apply { text = getString(R.string.delete_account_confirm_check) }
+        val password = com.google.android.material.textfield.TextInputEditText(this).apply {
+            hint = getString(R.string.password)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 16, 48, 0)
+            addView(password)
             addView(check)
         }
         val dialog = AlertDialog.Builder(this)
@@ -148,10 +168,44 @@ class AccountSecurityActivity : AppCompatActivity() {
                 Toast.makeText(this, R.string.delete_account_confirm_check, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            CloudPreview.show(this)
-            dialog.dismiss()
+            lifecycleScope.launch {
+                try {
+                    withContext(Dispatchers.IO) { api.deleteAccount(password.text?.toString().orEmpty()) }
+                    prefs.clearAuth()
+                    startActivity(Intent(this@AccountSecurityActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+                    dialog.dismiss()
+                } catch (e: Exception) {
+                    Toast.makeText(this@AccountSecurityActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            }
         }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(getColor(R.color.status_failed))
+    }
+
+    private fun refreshAccount() {
+        lifecycleScope.launch {
+            try {
+                val account = withContext(Dispatchers.IO) { api.getAccount() }
+                val changed = prefs.displayName != account.displayName || prefs.displayEmail != account.email
+                prefs.displayName = account.displayName
+                prefs.displayEmail = account.email
+                if (changed) recreate()
+            } catch (_: Exception) {
+                // Token-only legacy accounts remain usable with their local label.
+            }
+        }
+    }
+
+    private fun logout() {
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { api.logout() }
+            } catch (_: Exception) {
+                // Local credentials must still be cleared if the server is offline.
+            }
+            prefs.clearAuth()
+            startActivity(Intent(this@AccountSecurityActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        }
     }
 
     companion object {

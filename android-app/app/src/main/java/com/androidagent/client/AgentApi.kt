@@ -52,6 +52,47 @@ data class RegisteredAccount(
     val token: String,
 )
 
+data class AccountInfo(
+    val userId: String,
+    val email: String,
+    val displayName: String,
+    val emailVerified: Boolean,
+)
+
+data class DeviceDescriptor(
+    val deviceId: String,
+    val deviceName: String,
+    val deviceType: String = "android",
+    val platform: String = "Android",
+    val appVersion: String = "",
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("device_id", deviceId)
+        .put("device_name", deviceName)
+        .put("device_type", deviceType)
+        .put("platform", platform)
+        .put("app_version", appVersion)
+}
+
+data class AuthAccount(
+    val account: AccountInfo,
+    val token: String?,
+    val sessionId: String?,
+    val requiresVerification: Boolean = false,
+)
+
+data class DeviceSession(
+    val sessionId: String,
+    val deviceId: String,
+    val deviceName: String,
+    val deviceType: String,
+    val platform: String,
+    val appVersion: String,
+    val createdAt: String,
+    val lastSeenAt: String,
+    val current: Boolean,
+)
+
 data class ModelOption(
     val id: String,
     val provider: String,
@@ -213,6 +254,101 @@ class AgentApi(
             token = json.getString("token"),
         )
     }
+
+    fun registerAccount(
+        email: String,
+        password: String,
+        displayName: String = "",
+        device: DeviceDescriptor,
+    ): AuthAccount = parseAuthAccount(
+        postJson(
+            "/api/auth/register",
+            JSONObject()
+                .put("email", email)
+                .put("password", password)
+                .put("display_name", displayName)
+                .put("device", device.toJson()),
+        ),
+    )
+
+    fun login(email: String, password: String, device: DeviceDescriptor): AuthAccount =
+        parseAuthAccount(
+            postJson(
+                "/api/auth/login",
+                JSONObject().put("email", email).put("password", password).put("device", device.toJson()),
+            ),
+        )
+
+    fun verifyEmail(email: String, code: String, device: DeviceDescriptor): AuthAccount =
+        parseAuthAccount(
+            postJson(
+                "/api/auth/verify-email",
+                JSONObject().put("email", email).put("code", code).put("device", device.toJson()),
+            ),
+        )
+
+    fun resendVerification(email: String) {
+        postJson("/api/auth/resend-verification", JSONObject().put("email", email))
+    }
+
+    fun forgotPassword(email: String) {
+        postJson("/api/auth/forgot-password", JSONObject().put("email", email))
+    }
+
+    fun resetPassword(email: String, code: String, newPassword: String) {
+        postJson(
+            "/api/auth/reset-password",
+            JSONObject().put("email", email).put("code", code).put("new_password", newPassword),
+        )
+    }
+
+    fun logout() {
+        postJson("/api/auth/logout", JSONObject())
+    }
+
+    fun getAccount(): AccountInfo = parseAccount(getJson("/api/account"))
+
+    fun updateAccount(displayName: String): AccountInfo =
+        parseAccount(patchJson("/api/account", JSONObject().put("display_name", displayName)))
+
+    fun changePassword(oldPassword: String, newPassword: String, revokeOthers: Boolean = true) {
+        postJson(
+            "/api/account/change-password",
+            JSONObject()
+                .put("old_password", oldPassword)
+                .put("new_password", newPassword)
+                .put("revoke_other_sessions", revokeOthers),
+        )
+    }
+
+    fun deleteAccount(password: String) {
+        deleteJson("/api/account", JSONObject().put("password", password))
+    }
+
+    fun listDevices(): List<DeviceSession> {
+        val items = getJson("/api/devices").optJSONArray("devices") ?: JSONArray()
+        return (0 until items.length()).map { index ->
+            val item = items.getJSONObject(index)
+            DeviceSession(
+                sessionId = item.optString("session_id"),
+                deviceId = item.optString("device_id"),
+                deviceName = item.optString("device_name"),
+                deviceType = item.optString("device_type"),
+                platform = item.optString("platform"),
+                appVersion = item.optString("app_version"),
+                createdAt = item.optString("created_at"),
+                lastSeenAt = item.optString("last_seen_at"),
+                current = item.optBoolean("current"),
+            )
+        }
+    }
+
+    fun revokeDevice(sessionId: String) {
+        delete("/api/devices/${java.net.URLEncoder.encode(sessionId, "UTF-8")}")
+    }
+
+    fun logoutOtherDevices(): Int =
+        postJson("/api/devices/logout-others", JSONObject()).optInt("revoked")
 
     fun health(): HealthInfo {
         val json = getJson("/api/health")
@@ -564,6 +700,20 @@ class AgentApi(
         )
     }
 
+    private fun parseAccount(json: JSONObject): AccountInfo = AccountInfo(
+        userId = json.optString("user_id"),
+        email = json.optString("email"),
+        displayName = json.optString("display_name"),
+        emailVerified = json.optBoolean("email_verified"),
+    )
+
+    private fun parseAuthAccount(json: JSONObject): AuthAccount = AuthAccount(
+        account = parseAccount(json.optJSONObject("account") ?: json),
+        token = json.optString("token").takeIf { it.isNotBlank() && it != "null" },
+        sessionId = json.optString("session_id").takeIf { it.isNotBlank() && it != "null" },
+        requiresVerification = json.optBoolean("requires_verification"),
+    )
+
     private fun parseConversation(json: JSONObject): ConversationInfo {
         return ConversationInfo(
             id = json.optString("id"),
@@ -797,6 +947,18 @@ class AgentApi(
         }
     }
 
+    private fun deleteJson(path: String, body: JSONObject) {
+        val request = buildRequest(path).newBuilder()
+            .delete(body.toString().toRequestBody(jsonMediaType))
+            .build()
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful && response.code != 204) {
+                throw mapHttpError(response.code, text)
+            }
+        }
+    }
+
     private fun buildRequest(path: String): Request {
         val builder = Request.Builder()
             .url("$normalizedBaseUrl$path")
@@ -811,8 +973,13 @@ class AgentApi(
         fun mapHttpError(code: Int, body: String): ApiException {
             val envelope = parseErrorEnvelope(body, code)
             val detail = envelope.userMessage
+            val accountError = envelope.code in setOf(
+                "account_not_found", "invalid_password", "email_not_verified",
+                "email_exists", "invalid_email", "weak_password", "invalid_code",
+                "invalid_display_name",
+            )
             val message = when (code) {
-                401 -> "未授权，请重新初始化设备连接"
+                401 -> if (accountError) detail else "未授权，请重新登录"
                 403 -> "无权访问该资源"
                 404 -> "资源不存在或无权访问"
                 409 -> detail.ifBlank { "操作冲突" }

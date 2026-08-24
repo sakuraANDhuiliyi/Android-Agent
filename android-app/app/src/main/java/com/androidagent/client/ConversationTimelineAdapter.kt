@@ -261,9 +261,17 @@ class ConversationTimelineAdapter(
         fun bind(row: Row.Changes, callbacks: Callbacks) {
             binding.textChangesCount.text =
                 binding.root.context.getString(R.string.files_changed, row.files.size)
+            bindCount(binding.textChangesAdd, row.added, "+")
+            bindCount(binding.textChangesMod, row.modified, "~")
+            bindCount(binding.textChangesDel, row.deleted, "−")
             binding.textChangesFiles.text = row.files.take(4).joinToString("\n") +
                 if (row.files.size > 4) "\n…" else ""
             binding.btnViewChanges.setOnClickListener { callbacks.onViewChanges(row.turnKey) }
+        }
+
+        private fun bindCount(view: TextView, count: Int, prefix: String) {
+            view.visibility = if (count > 0) View.VISIBLE else View.GONE
+            view.text = "$prefix$count"
         }
     }
 
@@ -377,10 +385,10 @@ class ConversationTimelineAdapter(
             binding.rowHeader.setOnClickListener { callbacks.onToggleWork(row.turnKey, !row.expanded) }
 
             if (!row.expanded) {
-                binding.layoutSteps.visibility = View.GONE
+                binding.layoutStepsWrap.visibility = View.GONE
                 return
             }
-            binding.layoutSteps.visibility = View.VISIBLE
+            binding.layoutStepsWrap.visibility = View.VISIBLE
             renderSteps(binding.layoutSteps, row.steps, callbacks, adapter)
         }
 

@@ -220,9 +220,40 @@ def request_cancel(job_id: str, user_id: str) -> bool:
                 payload={"source": "api", "cascaded_from": job_id},
             )
             reject_job_approvals(tid, user_id, reason="canceled")
+            _finalize_canceled_paused_turn(tid, user_id)
         if job:
             cancel_gradle(job["user_id"], job["project_id"])
     return changed
+
+
+def _finalize_canceled_paused_turn(task_id: str, user_id: str) -> None:
+    """Paused tasks are terminalized by the store on cancel; mirror that into
+    the conversation turn and events so clients see a consistent canceled
+    timeline instead of a turn stuck on "paused"."""
+    task = _store.get_task(task_id, user_id)
+    if not task or task.get("status") != "canceled":
+        return
+    conversation_id = task.get("conversation_id") or ""
+    turn_id = _turn_id_for_task(task_id)
+    if not conversation_id or not turn_id:
+        return
+    try:
+        ConversationEventStore(_store).finalize_lifecycle(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            task_id=task_id,
+            user_id=user_id,
+            event_type=EventType.TURN_CANCELED,
+            event_key=f"turn:{turn_id}:canceled",
+            event_payload={"error": "用户已请求停止任务"},
+            status="canceled",
+            finished_at=time.time(),
+            error_message="用户已请求停止任务",
+            task_event_type="canceled",
+            task_event_payload={"message": "用户已请求停止任务"},
+        )
+    except Exception:
+        logger.exception("Failed to finalize canceled paused task %s", task_id)
 
 
 def add_job_message(

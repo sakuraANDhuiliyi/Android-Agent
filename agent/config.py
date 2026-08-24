@@ -93,8 +93,17 @@ class Settings:
     provider_fallbacks: list["Settings"] = field(default_factory=list)
     registration_enabled: bool = False
     registration_token: str = ""
+    email_verification_required: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_starttls: bool = True
     terminal_enabled: bool = False
     debug_web_ui_enabled: bool = True
+    admin_ui_enabled: bool = False
+    admin_token: str = ""
     ws_ticket_ttl_seconds: int = 30
     max_request_bytes: int = 2 * 1024 * 1024
     max_prompt_chars: int = 100_000
@@ -226,8 +235,19 @@ def _build_settings(
         provider_fallbacks=[],
         registration_enabled=bool(shared.get("registration_enabled", False)),
         registration_token=str(shared.get("registration_token", "") or ""),
+        email_verification_required=bool(
+            shared.get("email_verification_required", False)
+        ),
+        smtp_host=str(shared.get("smtp_host", "") or ""),
+        smtp_port=int(shared.get("smtp_port", 587)),
+        smtp_username=str(shared.get("smtp_username", "") or ""),
+        smtp_password=str(shared.get("smtp_password", "") or ""),
+        smtp_from=str(shared.get("smtp_from", "") or ""),
+        smtp_starttls=bool(shared.get("smtp_starttls", True)),
         terminal_enabled=bool(shared.get("terminal_enabled", False)),
         debug_web_ui_enabled=bool(shared.get("debug_web_ui_enabled", True)),
+        admin_ui_enabled=bool(shared.get("admin_ui_enabled", False)),
+        admin_token=str(shared.get("admin_token", "") or ""),
         ws_ticket_ttl_seconds=int(shared.get("ws_ticket_ttl_seconds", 30)),
         max_request_bytes=int(shared.get("max_request_bytes", 2 * 1024 * 1024)),
         max_prompt_chars=int(shared.get("max_prompt_chars", 100_000)),
@@ -401,6 +421,36 @@ def load_settings() -> Settings:
             or file_data.get("registration_token")
             or ""
         ).strip(),
+        "email_verification_required": _env_bool(
+            "AGENT_EMAIL_VERIFICATION_REQUIRED",
+            _as_bool(
+                file_data.get("email_verification_required", False),
+                name="email_verification_required",
+            ),
+        ),
+        "smtp_host": (
+            os.environ.get("AGENT_SMTP_HOST") or file_data.get("smtp_host") or ""
+        ).strip(),
+        "smtp_port": int(
+            os.environ.get("AGENT_SMTP_PORT") or file_data.get("smtp_port") or 587
+        ),
+        "smtp_username": (
+            os.environ.get("AGENT_SMTP_USERNAME")
+            or file_data.get("smtp_username")
+            or ""
+        ).strip(),
+        "smtp_password": (
+            os.environ.get("AGENT_SMTP_PASSWORD")
+            or file_data.get("smtp_password")
+            or ""
+        ),
+        "smtp_from": (
+            os.environ.get("AGENT_SMTP_FROM") or file_data.get("smtp_from") or ""
+        ).strip(),
+        "smtp_starttls": _env_bool(
+            "AGENT_SMTP_STARTTLS",
+            _as_bool(file_data.get("smtp_starttls", True), name="smtp_starttls"),
+        ),
         "terminal_enabled": _as_bool(
             file_data.get("terminal_enabled", False),
             name="terminal_enabled",
@@ -409,6 +459,13 @@ def load_settings() -> Settings:
             file_data.get("debug_web_ui_enabled", True),
             name="debug_web_ui_enabled",
         ),
+        "admin_ui_enabled": _env_bool(
+            "AGENT_ADMIN_UI_ENABLED",
+            _as_bool(file_data.get("admin_ui_enabled", False), name="admin_ui_enabled"),
+        ),
+        "admin_token": str(
+            os.environ.get("AGENT_ADMIN_TOKEN") or file_data.get("admin_token") or ""
+        ).strip(),
         "ws_ticket_ttl_seconds": max(
             5, min(int(file_data.get("ws_ticket_ttl_seconds", 30)), 120)
         ),
@@ -516,6 +573,8 @@ ARTIFACT_BACKENDS = frozenset({"local", "object"})
 
 def validate_deployment_settings(settings: Settings) -> None:
     """Fail closed when a multi-instance mode is missing required URLs."""
+    if settings.admin_ui_enabled and len(settings.admin_token) < 24:
+        raise ValueError("启用 admin_ui_enabled 时，必须配置至少 24 位的 admin_token")
     mode = (settings.deployment_mode or "sqlite").strip().lower()
     if mode not in DEPLOYMENT_MODES:
         raise ValueError(

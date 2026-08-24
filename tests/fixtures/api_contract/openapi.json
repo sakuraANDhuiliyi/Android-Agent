@@ -1,6 +1,82 @@
 {
   "components": {
     "schemas": {
+      "AccountLoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceRequest"
+          },
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "device"
+        ],
+        "title": "AccountLoginRequest",
+        "type": "object"
+      },
+      "AccountRegisterRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceRequest"
+          },
+          "display_name": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "device"
+        ],
+        "title": "AccountRegisterRequest",
+        "type": "object"
+      },
+      "AccountUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "AccountUpdateRequest",
+        "type": "object"
+      },
       "ApprovalDecisionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -82,6 +158,34 @@
           "prompt"
         ],
         "title": "AskRequest",
+        "type": "object"
+      },
+      "ChangePasswordRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "new_password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "New Password",
+            "type": "string"
+          },
+          "old_password": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Old Password",
+            "type": "string"
+          },
+          "revoke_other_sessions": {
+            "default": true,
+            "title": "Revoke Other Sessions",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "old_password",
+          "new_password"
+        ],
+        "title": "ChangePasswordRequest",
         "type": "object"
       },
       "ConversationAskRequest": {
@@ -247,6 +351,76 @@
         "title": "CreateTerminalRequest",
         "type": "object"
       },
+      "DeleteAccountRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "title": "DeleteAccountRequest",
+        "type": "object"
+      },
+      "DeviceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "default": "",
+            "maxLength": 40,
+            "title": "App Version",
+            "type": "string"
+          },
+          "device_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Device Id",
+            "type": "string"
+          },
+          "device_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Device Name",
+            "type": "string"
+          },
+          "device_type": {
+            "default": "android",
+            "maxLength": 32,
+            "title": "Device Type",
+            "type": "string"
+          },
+          "platform": {
+            "default": "Android",
+            "maxLength": 80,
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "device_name"
+        ],
+        "title": "DeviceRequest",
+        "type": "object"
+      },
+      "EmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "EmailRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -396,6 +570,36 @@
         "title": "MemoryEditRequest",
         "type": "object"
       },
+      "ResetPasswordRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "new_password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "New Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "code",
+          "new_password"
+        ],
+        "title": "ResetPasswordRequest",
+        "type": "object"
+      },
       "RestoreCheckpointRequest": {
         "additionalProperties": false,
         "properties": {
@@ -523,6 +727,33 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VerifyEmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceRequest"
+          },
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "code",
+          "device"
+        ],
+        "title": "VerifyEmailRequest",
+        "type": "object"
+      },
       "WebSocketTicketRequest": {
         "additionalProperties": false,
         "properties": {
@@ -575,6 +806,480 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/account": {
+      "delete": {
+        "operationId": "delete_account_route_api_account_delete",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Account Route"
+      },
+      "get": {
+        "operationId": "get_account_api_account_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Account Api Account Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Account"
+      },
+      "patch": {
+        "operationId": "patch_account_api_account_patch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Account Api Account Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Account"
+      }
+    },
+    "/api/account/change-password": {
+      "post": {
+        "operationId": "change_account_password_api_account_change_password_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Account Password"
+      }
+    },
+    "/api/auth/forgot-password": {
+      "post": {
+        "operationId": "forgot_password_api_auth_forgot_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Forgot Password Api Auth Forgot Password Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Forgot Password"
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "login_account_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Login Account Api Auth Login Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login Account"
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout_api_auth_logout_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout"
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "register_account_api_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Register Account Api Auth Register Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Account"
+      }
+    },
+    "/api/auth/resend-verification": {
+      "post": {
+        "operationId": "resend_verification_api_auth_resend_verification_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Resend Verification Api Auth Resend Verification Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resend Verification"
+      }
+    },
+    "/api/auth/reset-password": {
+      "post": {
+        "operationId": "reset_password_api_auth_reset_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Password"
+      }
+    },
+    "/api/auth/verify-email": {
+      "post": {
+        "operationId": "verify_email_api_auth_verify_email_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify Email Api Auth Verify Email Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Email"
+      }
+    },
     "/api/conversations/{conversation_id}": {
       "delete": {
         "operationId": "remove_conversation_api_conversations__conversation_id__delete",
@@ -976,6 +1681,152 @@
           }
         },
         "summary": "Restore Conversation Endpoint"
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "operationId": "get_devices_api_devices_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Devices Api Devices Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Devices"
+      }
+    },
+    "/api/devices/logout-others": {
+      "post": {
+        "operationId": "logout_other_devices_api_devices_logout_others_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Logout Other Devices Api Devices Logout Others Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout Other Devices"
+      }
+    },
+    "/api/devices/{session_id}": {
+      "delete": {
+        "operationId": "revoke_device_api_devices__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Device"
       }
     },
     "/api/diagnostics": {
@@ -5404,12 +6255,26 @@
   },
   "x-android-agent-contract": 1,
   "x-android-agent-paths": [
+    "DELETE /api/account",
+    "GET /api/account",
+    "PATCH /api/account",
+    "POST /api/account/change-password",
+    "POST /api/auth/forgot-password",
+    "POST /api/auth/login",
+    "POST /api/auth/logout",
+    "POST /api/auth/register",
+    "POST /api/auth/resend-verification",
+    "POST /api/auth/reset-password",
+    "POST /api/auth/verify-email",
     "DELETE /api/conversations/{conversation_id}",
     "GET /api/conversations/{conversation_id}",
     "PATCH /api/conversations/{conversation_id}",
     "POST /api/conversations/{conversation_id}/ask",
     "GET /api/conversations/{conversation_id}/events",
     "POST /api/conversations/{conversation_id}/restore",
+    "GET /api/devices",
+    "POST /api/devices/logout-others",
+    "DELETE /api/devices/{session_id}",
     "GET /api/diagnostics",
     "GET /api/health",
     "GET /api/jobs",

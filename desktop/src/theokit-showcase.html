@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self';"
+  />
+  <title>TheoKit 组件总览 — Android Agent</title>
+  <!-- TheoKit UI (@theokit/ui) — Violet Forge design tokens + compiled component styles -->
+  <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/tokens.css" />
+  <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/fonts.css" />
+  <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/components.css" />
+  <link rel="stylesheet" href="theokit/theokit-extra.css" />
+  <style>
+    .showcase-root {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      min-height: 100vh;
+      background: var(--background);
+      color: var(--foreground);
+    }
+    .showcase-nav {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      padding: 1rem 0.75rem;
+      display: grid;
+      gap: 2px;
+      align-content: start;
+    }
+    .showcase-nav h1 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 0 0.25rem 0.5rem;
+    }
+    .showcase-nav a {
+      display: block;
+      padding: 0.3rem 0.5rem;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--muted-foreground);
+      text-decoration: none;
+    }
+    .showcase-nav a:hover { background: var(--muted); color: var(--foreground); }
+    .showcase-main {
+      max-width: 980px;
+      padding: 1.5rem 2rem 4rem;
+    }
+    .showcase-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .showcase-topbar .meta { font-size: 12px; color: var(--muted-foreground); }
+    .showcase-theme-btn {
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--foreground);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .showcase-theme-btn:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="showcase-root">
+    <nav class="showcase-nav" id="showcaseNav" aria-label="组件目录">
+      <h1>TheoKit 组件总览</h1>
+      <a href="#s-buttons">Buttons</a>
+      <a href="#s-agent">Agent status &amp; events</a>
+      <a href="#s-chat">Chat &amp; message pipeline</a>
+      <a href="#s-composer">Composer</a>
+      <a href="#s-prompts">Prompts</a>
+      <a href="#s-approval">Approvals &amp; permissions</a>
+      <a href="#s-tools">Tools &amp; diff</a>
+      <a href="#s-plan">Plans, progress &amp; logs</a>
+      <a href="#s-session">Session &amp; context</a>
+      <a href="#s-model">Models &amp; usage</a>
+      <a href="#s-infra">Infrastructure</a>
+      <a href="#s-rules">Rules, skills &amp; memory</a>
+      <a href="#s-panels">Panels &amp; viewers</a>
+      <a href="#s-stream">Stream &amp; timeline</a>
+      <a href="#s-editor">Editors &amp; slides</a>
+    </nav>
+    <main class="showcase-main">
+      <div class="showcase-topbar">
+        <span class="meta" id="showcaseMeta">Theokit vanilla JS 迁移组件库</span>
+        <button type="button" class="showcase-theme-btn" id="btnShowcaseTheme">切换主题</button>
+      </div>
+      <div id="showcaseRoot"></div>
+    </main>
+  </div>
+
+  <script src="theokit/theokit-icons.js"></script>
+  <script src="theokit/theokit-core.js"></script>
+  <script src="theokit/theokit-primitives.js"></script>
+  <script src="theokit/theokit-primitives-b.js"></script>
+  <script src="theokit/theokit-composites.js"></script>
+  <script src="theokit/theokit-showcase.js"></script>
+  <script src="theokit/theokit-showcase-init.js"></script>
+</body>
+</html>

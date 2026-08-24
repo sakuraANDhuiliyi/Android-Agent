@@ -7,6 +7,10 @@
     content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:;"
   />
   <title>Android Agent</title>
+  <script src="theme.js"></script>
+  <!-- TheoKit UI (@theokit/ui) — Violet Forge design tokens + self-hosted Geist fonts -->
+  <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/tokens.css" />
+  <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/fonts.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -30,20 +34,24 @@
 
     <div class="workbench" id="workbench">
       <nav class="activitybar" aria-label="活动栏">
-        <button type="button" class="activity-btn active" data-view="explorer" title="资源管理器 (⌘⇧E)">
+        <button type="button" class="activity-btn active" data-view="explorer" title="资源管理器 (⌘⇧E)" aria-label="资源管理器">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 4h8l2 2h8v14H3V4zm2 2v12h14V8h-7.17l-2-2H5z"/></svg>
         </button>
-        <button type="button" class="activity-btn" data-view="search" title="搜索 (⌘⇧F)">
+        <button type="button" class="activity-btn" data-view="search" title="搜索 (⌘⇧F)" aria-label="搜索">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 5L20.49 19l-5-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         </button>
-        <button type="button" class="activity-btn" data-view="conversations" title="对话 (⌘⇧C)">
+        <button type="button" class="activity-btn" data-view="conversations" title="对话 (⌘⇧C)" aria-label="对话">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6.17L4 17.17V4h16v12zM7 9h2v2H7V9zm4 0h2v2h-2V9zm4 0h2v2h-2V9z"/></svg>
         </button>
-        <button type="button" class="activity-btn" data-view="jobs" title="任务 (⌘⇧J)">
+        <button type="button" class="activity-btn" data-view="jobs" title="任务 (⌘⇧J)" aria-label="任务">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zM16 4v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z"/></svg>
         </button>
+        <button type="button" class="activity-btn" data-view="approvals" title="待处理审批 (⌘⇧A)" aria-label="待处理审批">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 12h-4a3 3 0 0 1-6 0H5V5h14v10zm-9.1-3.2-2.2-2.2 1.4-1.4.8.8 4-4 1.4 1.4-5.4 5.4z"/></svg>
+          <span class="activity-badge" id="pendingApprovalBadge" hidden>0</span>
+        </button>
         <div class="activity-spacer"></div>
-        <button type="button" class="activity-btn" id="btnToggleAiActivity" title="AI 对话 (⌘L)">
+        <button type="button" class="activity-btn activity-ai-toggle" id="btnToggleAiActivity" title="AI 对话 (⌘L)" aria-label="切换 Agent 面板">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12zM7 9h2v2H7V9zm4 0h2v2h-2V9zm4 0h2v2h-2V9z"/></svg>
         </button>
         <button type="button" class="activity-btn" id="btnActivitySettings" title="连接设置" aria-label="连接设置">
@@ -93,6 +101,16 @@
               </div>
             </div>
             <div class="job-list" id="jobList"></div>
+          </div>
+          <div class="sidebar-view" data-view="approvals" hidden>
+            <div class="sidebar-header">
+              <span>待处理</span>
+              <div class="sidebar-actions">
+                <span class="sidebar-count" id="approvalInboxCount">0 项</span>
+                <button type="button" class="icon-btn" id="btnRefreshApprovals" title="刷新待处理审批" aria-label="刷新待处理审批">↻</button>
+              </div>
+            </div>
+            <div class="approval-inbox" id="approvalInbox" aria-live="polite"></div>
           </div>
         </div>
       </aside>
@@ -338,13 +356,32 @@
   <!-- Settings dialog -->
   <dialog id="settingsDialog">
     <form method="dialog" id="settingsForm">
-      <h3>Agent 连接</h3>
+      <h3>设置</h3>
+      <label>
+        外观
+        <select id="themeSelect">
+          <option value="system">跟随系统</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+        </select>
+      </label>
       <label>
         服务地址
         <input id="serverUrl" type="url" value="http://127.0.0.1:8000" autocomplete="off" />
       </label>
+      <p class="settings-section-label">账号登录（跨设备同步）</p>
       <label>
-        访问 Token（必填）
+        邮箱
+        <input id="accountEmail" type="email" autocomplete="username" />
+      </label>
+      <label>
+        密码
+        <input id="accountPassword" type="password" autocomplete="current-password" />
+      </label>
+      <button type="button" class="ghost-btn" id="btnAccountLogin">登录账号</button>
+      <p class="settings-section-label">高级连接</p>
+      <label>
+        访问 Token
         <input id="apiToken" type="password" placeholder="python3 -m agent register-user" autocomplete="off" />
       </label>
       <label>
@@ -356,6 +393,30 @@
         <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
         <button type="button" class="ghost-btn" id="btnPair">配对</button>
         <button type="submit" class="primary-btn" value="connect" id="btnConnect">连接</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Cross-project approval detail, matching the Android approval sheet. -->
+  <dialog id="approvalInboxDialog" class="approval-detail-dialog">
+    <form method="dialog" id="approvalInboxForm">
+      <div class="approval-detail-heading">
+        <div>
+          <div class="approval-detail-eyebrow" id="approvalDetailSource">项目</div>
+          <h3 id="approvalDetailTitle">待处理操作</h3>
+        </div>
+        <span class="approval-risk" id="approvalDetailRisk" hidden>高风险</span>
+      </div>
+      <p class="approval-detail-intent" id="approvalDetailIntent"></p>
+      <div class="approval-detail-meta" id="approvalDetailMeta"></div>
+      <details>
+        <summary>查看技术详情</summary>
+        <pre class="approval-detail-payload" id="approvalDetailPayload"></pre>
+      </details>
+      <div class="dialog-actions approval-detail-actions">
+        <button type="submit" class="ghost-btn" value="cancel">关闭</button>
+        <button type="button" class="ghost-btn" id="btnInboxReject">拒绝</button>
+        <button type="button" class="primary-btn" id="btnInboxApprove">仅允许本次</button>
       </div>
     </form>
   </dialog>
@@ -407,6 +468,7 @@
   <script src="agent-api.js"></script>
   <script src="state.js"></script>
   <script src="perf.js"></script>
+  <script src="approval-inbox.js"></script>
   <script src="timeline.js"></script>
   <script src="agent-timeline.js"></script>
   <script src="layout-preview.js"></script>

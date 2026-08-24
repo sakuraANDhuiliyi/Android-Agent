@@ -1,5 +1,6 @@
 package com.androidagent.client
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -85,6 +86,9 @@ class JobWatcher(
                             wsHandle?.close()
                             wsHandle = null
                         }
+                    } catch (e: CancellationException) {
+                        // 页面退出时 lifecycleScope 取消属正常关闭，不是同步故障
+                        throw e
                     } catch (e: Exception) {
                         useWs = false
                         onError(e)
@@ -102,6 +106,8 @@ class JobWatcher(
                     }
                     delay(ReconnectPolicy.delayMs(0))
                     useWs = true
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     onError(e)
                     delay(ReconnectPolicy.delayMs(attempt))

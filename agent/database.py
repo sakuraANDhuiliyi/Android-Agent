@@ -358,6 +358,44 @@ class TaskStore:
         with self._connect() as owned:
             return _read(owned)
 
+    def purge_user_data(self, user_id: str) -> None:
+        """Permanently remove persisted task, conversation and extension data."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+                ).fetchall()
+            }
+            if "task_dependencies" in tables:
+                conn.execute(
+                    """DELETE FROM task_dependencies WHERE task_id IN
+                       (SELECT id FROM tasks WHERE user_id=?) OR depends_on_task_id IN
+                       (SELECT id FROM tasks WHERE user_id=?)""",
+                    (user_id, user_id),
+                )
+            if "conversations" in tables:
+                conn.execute("DELETE FROM conversations WHERE user_id=?", (user_id,))
+            if "tasks" in tables:
+                conn.execute("DELETE FROM tasks WHERE user_id=?", (user_id,))
+            for table in ("checkpoints", "project_sessions", "diagnostics", "ws_tickets"):
+                if table in tables:
+                    conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+            if "memories" in tables:
+                memory_ids = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT id FROM memories WHERE user_id=?", (user_id,)
+                    ).fetchall()
+                ]
+                if "memories_fts" in tables:
+                    conn.executemany(
+                        "DELETE FROM memories_fts WHERE memory_id=?",
+                        [(memory_id,) for memory_id in memory_ids],
+                    )
+                conn.execute("DELETE FROM memories WHERE user_id=?", (user_id,))
+
     def _migrate_legacy_sessions(self) -> None:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1113,11 +1151,23 @@ class TaskStore:
                 return False
             if bool(row["cancel_requested"]):
                 return True
-            cursor = conn.execute(
-                """UPDATE tasks SET cancel_requested=1
-                   WHERE id=? AND user_id=?""",
-                (task_id, user_id),
-            )
+            if row["status"] == "paused":
+                # No worker is attached to a paused task, so a bare flag would
+                # never be consumed and resume_task's cancel_requested=0 guard
+                # would refuse to requeue it (permanent wedge). Finalize now.
+                cursor = conn.execute(
+                    """UPDATE tasks SET status='canceled', cancel_requested=1,
+                       claim_owner=NULL, claim_token=NULL, lease_expires_at=NULL,
+                       heartbeat_at=NULL, finished_at=?, error_message='用户已请求停止任务'
+                       WHERE id=? AND user_id=? AND status='paused'""",
+                    (time.time(), task_id, user_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """UPDATE tasks SET cancel_requested=1
+                       WHERE id=? AND user_id=?""",
+                    (task_id, user_id),
+                )
         return cursor.rowcount > 0
 
     def list_child_tasks(self, parent_task_id: str, user_id: str | None = None) -> list[dict[str, Any]]:
@@ -1332,6 +1382,18 @@ class TaskStore:
         encoded = dict(redact_sensitive_value(values))
         if "changed_files" in encoded:
             encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
+        if status == "paused":
+            # A cancel that raced the pause must not park the task: no worker
+            # remains attached to consume the flag. Release as canceled.
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT cancel_requested FROM tasks WHERE id=?",
+                    (task_id,),
+                ).fetchone()
+            if row and row[0]:
+                status = "canceled"
+                encoded["finished_at"] = time.time()
+                encoded.setdefault("error_message", "用户已请求停止任务")
         encoded["status"] = status
         encoded["claim_owner"] = None
         encoded["claim_token"] = None
@@ -1411,6 +1473,18 @@ class TaskStore:
     def pause_task(self, task_id: str, user_id: str) -> bool:
         now = time.time()
         with self._connect() as conn:
+            # A queued task already asked to cancel must not be parked paused:
+            # no worker remains to consume the flag, and the old flag-clearing
+            # update silently discarded the cancel. Let the cancel win.
+            raced = conn.execute(
+                """UPDATE tasks SET status='canceled', finished_at=?,
+                   error_message='用户已请求停止任务'
+                   WHERE id=? AND user_id=? AND status='queued'
+                   AND cancel_requested=1""",
+                (now, task_id, user_id),
+            )
+            if raced.rowcount > 0:
+                return True
             queued = conn.execute(
                 """UPDATE tasks SET status='paused', cancel_requested=0,
                    pause_requested=0

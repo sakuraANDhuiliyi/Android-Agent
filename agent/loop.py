@@ -29,6 +29,7 @@ from agent.mcp_manager import get_mcp_manager
 from agent.processes import CancellationRequested as ProcessCancellationRequested
 from agent.stream import StreamedCompletion, stream_anthropic_message, stream_openai_chat
 from agent.tools import ToolResult, dispatch_tool, get_tool_definitions
+from agent.worker import PauseRequested, TaskLeaseLost
 
 EventCallback = Callable[[str, Any], None]
 CancelCheck = Callable[[], None]
@@ -131,7 +132,9 @@ def run_agent(
                 extra_system_prompt=extra_system_prompt,
                 run_mode=run_mode,
             )
-        except CancellationRequested:
+        except (CancellationRequested, PauseRequested, TaskLeaseLost):
+            # Control-flow signals must reach run_task untouched; wrapping
+            # them here maps a pause/lease-loss onto "failed".
             raise
         except Exception as exc:
             errors.append(f"{current_settings.provider}: {exc}")

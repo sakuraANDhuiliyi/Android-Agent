@@ -139,6 +139,11 @@
     <string name="approval_risk_high">高风险</string>
     <string name="approval_risk_medium">中风险</string>
     <string name="approval_risk_low">低风险</string>
+    <string name="approval_risk_read">只读</string>
+    <string name="approval_risk_workspace_write">工作区写入</string>
+    <string name="approval_risk_network">网络</string>
+    <string name="approval_risk_process">进程</string>
+    <string name="approval_risk_destructive">破坏性</string>
     <string name="approval_allow_once">仅允许本次</string>
     <string name="approval_allow_always">始终允许此类操作</string>
     <string name="approval_always_blocked">高风险操作不能设为始终允许</string>
@@ -233,7 +238,7 @@
     <string name="time_days_ago">%1$d 天前</string>
 
     <string name="nav_me">我的</string>
-    <string name="cloud_feature_preview">云端账号能力尚未接入，当前仅展示界面</string>
+    <string name="cloud_feature_preview">该能力需要连接云端服务</string>
     <string name="login_tagline">用 Android Agent 在云端构建 App</string>
     <string name="email">邮箱</string>
     <string name="password">密码</string>
@@ -241,8 +246,11 @@
     <string name="login">登录</string>
     <string name="register">注册</string>
     <string name="custom_server_advanced">自定义服务地址（高级）</string>
-    <string name="custom_server_https_only">仅支持 HTTPS。现网请在此填写服务地址与访问 Token。</string>
-    <string name="cloud_login_unavailable">云端账号尚未接入，请展开「自定义服务地址」使用 Token 连接</string>
+    <string name="custom_server_https_only">仅支持 HTTPS。可使用账号登录，也可用访问 Token 连接。</string>
+    <string name="cloud_login_unavailable">请填写邮箱和密码，或展开高级设置使用访问 Token</string>
+    <string name="email_required">请输入邮箱</string>
+    <string name="password_required">请输入密码</string>
+    <string name="register_failed">注册失败，请稍后重试</string>
     <string name="register_account">注册账号</string>
     <string name="confirm_password">确认密码</string>
     <string name="password_strength">密码强度：%1$s</string>
@@ -259,6 +267,12 @@
     <string name="verify_email_help">请检查垃圾邮件、确认邮箱地址是否正确，或等待几分钟后再试。</string>
     <string name="resend_email">重新发送邮件</string>
     <string name="verified_continue">我已验证，继续</string>
+    <string name="verification_code">6 位验证码</string>
+    <string name="verification_code_required">请输入 6 位验证码</string>
+    <string name="verification_resent">验证邮件已重新发送</string>
+    <string name="reset_password">重置密码</string>
+    <string name="send_reset_code">发送重置验证码</string>
+    <string name="reset_code_sent">如该邮箱已注册，重置验证码将发送到邮箱</string>
     <string name="account_not_found">账号不存在</string>
     <string name="password_incorrect">密码错误</string>
     <string name="email_verify_required">需要先验证邮箱</string>
@@ -292,9 +306,11 @@
     <string name="confirm_delete_account">确认注销</string>
     <string name="old_password">旧密码</string>
     <string name="new_password">新密码</string>
-    <string name="password_rule">8–16 位，至少包含字母、数字和特殊字符中的两种</string>
+    <string name="password_rule">8–128 位，至少包含字母、数字和特殊字符中的两种</string>
     <string name="save_new_password">保存新密码</string>
-    <string name="password_not_stored">密码不会被存储或传输；云端账号接入后才会生效。</string>
+    <string name="password_not_stored">密码仅通过 HTTPS 传输，服务端只保存带随机盐的强摘要。</string>
+    <string name="password_changed">密码已更新</string>
+    <string name="email_managed_by_account">当前邮箱已绑定到此账号</string>
     <string name="devices_subtitle">管理已登录的设备与会话</string>
     <string name="current_device">当前设备</string>
     <string name="this_device">此设备</string>
@@ -303,6 +319,9 @@
     <string name="no_other_devices">暂无其他已登录设备</string>
     <string name="logout_other_devices">登出所有其他设备</string>
     <string name="devices_logout_hint">登出其他设备不会中断云端正在运行的任务。</string>
+    <string name="logout_device">登出</string>
+    <string name="last_active">最近活跃：</string>
+    <string name="devices_logged_out">已登出 %1$d 台设备</string>
     <string name="api_overview">API 总览</string>
     <string name="api_ready">已就绪</string>
     <string name="api_missing_key">缺少 Key</string>
@@ -420,4 +439,6 @@
     <string name="more_actions">更多操作</string>
     <string name="display_name_hint">显示名称</string>
     <string name="save_display_name">保存名称</string>
+    <string name="theokit_showcase_title">TheoKit 组件总览</string>
+    <string name="theokit_showcase">TheoKit 组件总览</string>
 </resources>

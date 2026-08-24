@@ -39,6 +39,7 @@
                 android:textAppearance="?attr/textAppearanceTitleSmall" />
 
             <com.google.android.material.card.MaterialCardView
+                android:id="@+id/cardCurrentDevice"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
@@ -99,12 +100,19 @@
                 android:textAppearance="?attr/textAppearanceTitleSmall" />
 
             <TextView
+                android:id="@+id/textNoOtherDevices"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
                 android:text="@string/no_other_devices"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <LinearLayout
+                android:id="@+id/containerOtherDevices"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLogoutOthers"

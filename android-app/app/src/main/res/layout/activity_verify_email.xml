@@ -39,10 +39,28 @@
         android:textAppearance="?attr/textAppearanceBodyMedium"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
-    <TextView
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/layoutCode"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
+        android:hint="@string/verification_code">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/editCode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:digits="0123456789"
+            android:gravity="center"
+            android:inputType="number"
+            android:maxLength="6"
+            android:textSize="22sp" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
         android:background="@drawable/bg_banner_info"
         android:padding="16dp"
         android:text="@string/verify_email_help"

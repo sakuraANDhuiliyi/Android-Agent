@@ -186,6 +186,14 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         super.onStop()
     }
 
+    override fun onDestroy() {
+        // lifecycleScope 取消只终结协程，不会关掉 OkHttp WebSocket；
+        // 不显式 stop 会让服务端持续为一个已销毁的页面推送事件。
+        watcher?.stop()
+        watcher = null
+        super.onDestroy()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putSerializable(STATE_EXPANSION, HashMap(policy.snapshot()))

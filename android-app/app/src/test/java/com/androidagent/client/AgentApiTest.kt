@@ -53,6 +53,50 @@ class AgentApiTest {
     }
 
     @Test
+    fun accountAndDeviceSessionFlowUsesCloudEndpoints() {
+        server.enqueue(MockResponse().setBody(
+            """{"account":{"user_id":"u1","email":"linchu@example.com","display_name":"林初","email_verified":true},"token":"new-token","session_id":"ses_phone","requires_verification":false}""",
+        ))
+        val auth = api.login(
+            "linchu@example.com",
+            "secure-123",
+            DeviceDescriptor("phone", "Pixel 8 Pro", platform = "Android 15"),
+        )
+        assertEquals("u1", auth.account.userId)
+        assertEquals("new-token", auth.token)
+        val loginRequest = server.takeRequest()
+        assertEquals("/api/auth/login", loginRequest.path)
+        assertTrue(loginRequest.body.readUtf8().contains("Pixel 8 Pro"))
+
+        server.enqueue(MockResponse().setBody(
+            """{"devices":[{"session_id":"ses_phone","device_id":"phone","device_name":"Pixel 8 Pro","device_type":"android","platform":"Android 15","app_version":"1.0","created_at":"now","last_seen_at":"now","current":true},{"session_id":"ses_web","device_id":"web","device_name":"MacBook Pro","device_type":"desktop","platform":"macOS","app_version":"1.0","created_at":"before","last_seen_at":"before","current":false}]}""",
+        ))
+        val devices = api.listDevices()
+        assertEquals(2, devices.size)
+        assertTrue(devices.first().current)
+        assertEquals("MacBook Pro", devices.last().deviceName)
+        assertEquals("/api/devices", server.takeRequest().path)
+
+        server.enqueue(MockResponse().setResponseCode(204))
+        api.revokeDevice("ses_web")
+        assertEquals("DELETE", server.takeRequest().method)
+    }
+
+    @Test
+    fun accountLoginErrorKeepsServerCodeAndMessage() {
+        server.enqueue(MockResponse().setResponseCode(401).setBody(
+            """{"detail":{"message":"密码错误","code":"invalid_password"},"error":{"schema_version":1,"code":"invalid_password","retryable":false,"user_message":"密码错误"}}""",
+        ))
+        try {
+            api.login("user@example.com", "bad", DeviceDescriptor("phone", "Phone"))
+            fail()
+        } catch (e: ApiException) {
+            assertEquals("invalid_password", e.errorCode)
+            assertEquals("密码错误", e.message)
+        }
+    }
+
+    @Test
     fun conversationPaginationAndRename() {
         server.enqueue(
             MockResponse().setBody(

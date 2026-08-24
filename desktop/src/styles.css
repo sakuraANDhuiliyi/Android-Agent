@@ -1,109 +1,90 @@
 :root {
-  /* Signal Workbench — dark (default) */
-  --bg: #0f1115;
-  --bg-elevated: #15181d;
-  --bg-panel: #1c2027;
-  --bg-sidebar: #15181d;
-  --bg-activity: #111318;
-  --bg-input: #1c2027;
-  --bg-hover: #222731;
-  --bg-active: #262c36;
-  --bg-selection: #1e3768;
-  --line: #2c313b;
-  --line-strong: #414856;
-  --text: #edf0f5;
+  /* Signal Workbench — dark (default).
+   * Palette re-anchored on @theokit/ui "Violet Forge" tokens (tokens.css):
+   * Theo-violet primary, burnt-sienna warm accent, 100% desaturated neutrals.
+   * theme.js toggles the `.dark` class alongside data-theme, so every
+   * var(--…) reference below resolves through TheoKit's light/dark sets. */
+  --bg: var(--background);
+  --bg-elevated: var(--card);
+  --bg-panel: var(--secondary);
+  --bg-sidebar: var(--card);
+  --bg-activity: var(--card);
+  --bg-input: var(--secondary);
+  --bg-hover: color-mix(in oklab, var(--foreground) 8%, var(--secondary));
+  --bg-active: color-mix(in oklab, var(--foreground) 14%, var(--secondary));
+  --bg-selection: color-mix(in oklab, var(--primary) 30%, var(--secondary));
+  --line: var(--border);
+  --line-strong: color-mix(in oklab, var(--foreground) 22%, var(--border));
+  --text: var(--foreground);
   --text-bright: #ffffff;
-  --muted: #a3aab5;
-  --accent: #8eb1ff;
-  --accent-2: #a8c6ff;
-  --accent-hover: #a8c6ff;
-  --focus: #8eb1ff;
-  --dirty: #e5b84c;
-  --danger: #ff8a86;
-  --danger-hover: #ff9b98;
-  --ok: #5ccb91;
-  --warn: #e5b84c;
-  --teal: #56d6c9;
-  --btn-primary-bg: #1e3768;
-  --btn-primary-fg: #a8c6ff;
-  --diff-add-bg: #142a20;
-  --diff-add-fg: #72d9a2;
-  --diff-del-bg: #321a1d;
-  --diff-del-fg: #ff9b98;
-  --statusbar-bg: #171a20;
+  --muted: var(--muted-foreground);
+  --accent: var(--primary-glow);
+  --accent-2: color-mix(in oklab, var(--primary-glow) 70%, white);
+  --accent-hover: color-mix(in oklab, var(--primary-glow) 70%, white);
+  --accent-warm: oklch(0.621 0.132 39); /* burnt sienna — TheoKit accent (theme-invariant) */
+  --focus: var(--primary-glow);
+  --dirty: var(--warning);
+  --danger: var(--destructive);
+  --danger-hover: color-mix(in oklab, var(--destructive) 85%, white);
+  --ok: var(--success);
+  --warn: var(--warning);
+  --teal: var(--info);
+  --btn-primary-bg: var(--primary);
+  --btn-primary-fg: var(--primary-foreground);
+  --diff-add-bg: color-mix(in oklab, var(--success) 14%, var(--background));
+  --diff-add-fg: var(--success);
+  --diff-del-bg: color-mix(in oklab, var(--destructive) 14%, var(--background));
+  --diff-del-fg: var(--destructive);
+  --statusbar-bg: var(--card);
   /* Agent timeline tokens */
-  --tl-bg: #0f1115;
-  --tl-surface: #15181d;
-  --tl-surface-hover: #1c2027;
-  --tl-border: #2c313b;
-  --tl-text: #edf0f5;
-  --tl-muted: #a3aab5;
-  --tl-subtle: #7d8592;
-  --tl-accent: #8eb1ff;
-  --tl-success: #5ccb91;
-  --tl-warning: #e5b84c;
-  --tl-danger: #ff8a86;
+  --tl-bg: var(--background);
+  --tl-surface: var(--card);
+  --tl-surface-hover: color-mix(in oklab, var(--foreground) 8%, var(--secondary));
+  --tl-border: var(--border);
+  --tl-text: var(--foreground);
+  --tl-muted: var(--muted-foreground);
+  --tl-subtle: color-mix(in oklab, var(--muted-foreground) 60%, var(--background));
+  --tl-accent: var(--primary-glow);
+  --tl-success: var(--success);
+  --tl-warning: var(--warning);
+  --tl-danger: var(--destructive);
+  --tl-info: var(--info);
+  --tl-warm: var(--accent-warm);
+  /* Radius scale adopts Violet Forge steps (6/10/14) as literals — the
+   * var() indirection would self-collide with TheoKit's own --radius-* set. */
   --radius: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5);
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  /* Shadows and fonts intentionally NOT redefined: TheoKit's adaptive
+   * --shadow-* (foreground-tinted) and Geist --font-mono apply directly. */
+  --font-ui: var(--font-body);
   --activity-w: 48px;
   --sidebar-w: 260px;
   --ai-w: 440px;
   --preview-w: 360px;
   --title-h: 40px;
   --status-h: 22px;
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease: var(--ease-out-soft);
 }
 
-/* Signal Workbench — light (opt-in via <html data-theme="light">) */
+/* Signal Workbench — light (opt-in via <html data-theme="light">).
+ * Surfaces, borders and status colors already flip automatically through the
+ * TheoKit tokens (theme.js removes the `.dark` class), so only the
+ * accent family and text-contrast variants need light-specific values. */
 [data-theme="light"] {
-  --bg: #f6f7f9;
-  --bg-elevated: #ffffff;
-  --bg-panel: #f0f2f5;
-  --bg-sidebar: #ffffff;
-  --bg-activity: #f0f2f5;
-  --bg-input: #f0f2f5;
-  --bg-hover: #eceff3;
-  --bg-active: #e5e9ef;
-  --bg-selection: #eaf1ff;
-  --line: #dde1e7;
-  --line-strong: #c6cbd4;
-  --text: #171a1f;
   --text-bright: #000000;
-  --muted: #606772;
-  --accent: #2f66d0;
-  --accent-2: #2a5cbd;
-  --accent-hover: #2558b3;
-  --focus: #2f66d0;
-  --dirty: #9a6700;
-  --danger: #c83532;
-  --danger-hover: #b02c29;
-  --ok: #18794e;
-  --warn: #9a6700;
-  --teal: #087f78;
-  --btn-primary-bg: #2f66d0;
-  --btn-primary-fg: #ffffff;
-  --diff-add-bg: #e9f7ef;
-  --diff-add-fg: #116b42;
-  --diff-del-bg: #fcecec;
-  --diff-del-fg: #a62d2a;
-  --statusbar-bg: #eceef2;
-  --tl-bg: #ffffff;
-  --tl-surface: #f6f7f9;
-  --tl-surface-hover: #f0f2f5;
-  --tl-border: #dde1e7;
-  --tl-text: #171a1f;
-  --tl-muted: #606772;
-  --tl-subtle: #7a828e;
-  --tl-accent: #2f66d0;
-  --tl-success: #18794e;
-  --tl-warning: #9a6700;
-  --tl-danger: #c83532;
+  --accent: var(--primary);
+  --accent-2: var(--primary);
+  --accent-hover: var(--primary-deep);
+  --focus: var(--primary);
+  --danger-hover: color-mix(in oklab, var(--destructive) 80%, black);
+  --diff-add-bg: color-mix(in oklab, var(--success) 10%, var(--background));
+  --diff-add-fg: color-mix(in oklab, var(--success) 72%, black);
+  --diff-del-bg: color-mix(in oklab, var(--destructive) 8%, var(--background));
+  --diff-del-fg: color-mix(in oklab, var(--destructive) 78%, black);
+  --tl-surface-hover: color-mix(in oklab, var(--foreground) 6%, var(--secondary));
+  --tl-subtle: color-mix(in oklab, var(--muted-foreground) 75%, var(--background));
+  --tl-accent: var(--primary);
 }
 
 * { box-sizing: border-box; }
@@ -183,7 +164,7 @@ button { transition: background-color 0.12s var(--ease), border-color 0.12s var(
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  background: linear-gradient(135deg, #4f9dff, #33d2c3);
+  background: linear-gradient(135deg, var(--primary-glow), var(--accent-warm));
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, var(--shadow-sm);
 }
 
@@ -296,6 +277,28 @@ button { transition: background-color 0.12s var(--ease), border-color 0.12s var(
   box-shadow: 0 0 8px rgba(59, 143, 238, 0.6);
 }
 
+.activity-ai-toggle { display: none; }
+
+.activity-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--bg);
+  border: 2px solid var(--bg-activity);
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
 .activity-spacer { flex: 1; }
 
 .sidebar {
@@ -330,6 +333,16 @@ button { transition: background-color 0.12s var(--ease), border-color 0.12s var(
 }
 
 .sidebar-actions { display: flex; gap: 2px; }
+
+.sidebar-count {
+  align-self: center;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
 
 .sidebar-subtitle {
   padding: 2px 14px 8px;
@@ -707,7 +720,7 @@ button { transition: background-color 0.12s var(--ease), border-color 0.12s var(
 .ap-progress-bar {
   width: 55%;
   height: 100%;
-  background: #42a5f5;
+  background: var(--primary);
 }
 
 .ap-space {
@@ -1267,10 +1280,27 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
   margin: 6px 0 2px 5px;
-  padding: 2px 0 2px 12px;
-  border-left: 2px solid var(--tl-border);
+  padding: 4px 0 2px 14px;
+  border-left: 2px solid color-mix(in srgb, var(--tl-accent) 28%, transparent);
+  border-radius: 0 0 0 10px;
 }
+.tl-work-body::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tl-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tl-accent) 15%, transparent);
+}
+.tl-turn.is-succeeded .tl-work-body { border-left-color: color-mix(in srgb, var(--tl-success) 30%, transparent); }
+.tl-turn.is-succeeded .tl-work-body::before { background: var(--tl-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tl-success) 15%, transparent); }
+.tl-turn.is-failed .tl-work-body { border-left-color: color-mix(in srgb, var(--tl-danger) 30%, transparent); }
+.tl-turn.is-failed .tl-work-body::before { background: var(--tl-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tl-danger) 15%, transparent); }
 
 /* User message: neutral lifted block, no bubble, no role label */
 .tl-user {
@@ -1454,6 +1484,12 @@ kbd {
   cursor: pointer;
   text-align: left;
 }
+.tl-plan-head::before {
+  content: "◆";
+  font-size: 9px;
+  color: var(--tl-accent);
+  flex-shrink: 0;
+}
 .tl-plan-title { font-weight: 600; }
 .tl-plan-progress { color: var(--tl-muted); font-size: 12px; margin-left: auto; }
 .tl-plan-body { padding: 0 10px 8px; }
@@ -1506,11 +1542,17 @@ kbd {
   background: var(--tl-subtle);
   flex-shrink: 0;
 }
+/* Category tint at rest (read/search/write/command); status rules below
+   have higher specificity and override while running or failed. */
+.tl-tool-dot.is-read { background: var(--tl-success); }
+.tl-tool-dot.is-search { background: var(--tl-info); }
+.tl-tool-dot.is-write { background: var(--tl-warning); }
+.tl-tool-dot.is-command { background: var(--tl-warm); }
 .tl-tool.is-running .tl-tool-dot { background: var(--tl-accent); animation: tl-pulse 1.2s ease infinite; }
-.tl-tool.is-success .tl-tool-dot { background: var(--tl-success); }
+.tl-tool.is-success .tl-tool-dot { opacity: 0.6; }
 .tl-tool.is-failed .tl-tool-dot { background: var(--tl-danger); }
 .tl-tool.is-waiting_approval .tl-tool-dot { background: var(--tl-warning); }
-.tl-tool.is-canceled .tl-tool-dot, .tl-tool.is-rejected .tl-tool-dot, .tl-tool.is-timeout .tl-tool-dot { background: var(--tl-subtle); }
+.tl-tool.is-canceled .tl-tool-dot, .tl-tool.is-rejected .tl-tool-dot, .tl-tool.is-timeout .tl-tool-dot { background: var(--tl-subtle); opacity: 0.6; }
 @keyframes tl-pulse { 50% { opacity: 0.4; } }
 .tl-tool-name { font-weight: 600; flex-shrink: 0; }
 .tl-tool-summary {
@@ -1617,6 +1659,7 @@ kbd {
 /* Approval card */
 .tl-approval {
   border: 1px solid var(--tl-warning);
+  border-left-width: 4px;
   border-radius: 10px;
   background: rgba(213, 163, 66, 0.07);
   padding: 10px 12px;
@@ -1624,11 +1667,22 @@ kbd {
   flex-direction: column;
   gap: 8px;
 }
+/* Pending approvals carry a risk-graded rail on the left edge */
+.tl-approval.is-pending[data-risk="read"] { border-left-color: var(--tl-success); }
+.tl-approval.is-pending[data-risk="workspace_write"] { border-left-color: var(--tl-warning); }
+.tl-approval.is-pending[data-risk="network"] { border-left-color: var(--tl-info); }
+.tl-approval.is-pending[data-risk="process"] { border-left-color: var(--tl-warm); }
+.tl-approval.is-pending[data-risk="destructive"] {
+  border-color: var(--tl-danger);
+  border-left-color: var(--tl-danger);
+  background: color-mix(in srgb, var(--tl-danger) 6%, transparent);
+}
 .tl-approval.is-approved,
 .tl-approval.is-rejected,
 .tl-approval.is-timeout,
 .tl-approval.is-canceled {
   border-color: var(--tl-border);
+  border-left-color: var(--tl-border);
   background: transparent;
 }
 .tl-approval-title {
@@ -1655,7 +1709,7 @@ kbd {
 .tl-risk.is-read { color: var(--tl-success); }
 .tl-risk.is-workspace_write { color: var(--tl-warning); }
 .tl-risk.is-network { color: var(--tl-accent); }
-.tl-risk.is-process { color: #c993d9; }
+.tl-risk.is-process { color: var(--tl-warm); }
 .tl-risk.is-destructive { color: var(--tl-danger); }
 .tl-approval-body { display: flex; flex-direction: column; gap: 6px; }
 .tl-approval-reason { margin: 0; font-size: 12px; color: var(--tl-muted); line-height: 1.5; }
@@ -1758,7 +1812,11 @@ kbd {
 }
 .tl-changes-head { display: flex; align-items: center; gap: 8px; }
 .tl-changes-title { font-size: 13px; font-weight: 600; color: var(--tl-text); }
-.tl-changes-stats { font-size: 11px; color: var(--tl-muted); flex: 1; }
+.tl-changes-stats { display: inline-flex; gap: 7px; flex: 1; font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
+.tl-stat.is-add { color: var(--tl-success); }
+.tl-stat.is-mod { color: var(--tl-warning); }
+.tl-stat.is-del { color: var(--tl-danger); }
+.tl-stat.is-ren { color: var(--tl-accent); }
 .tl-changes-files { display: flex; flex-direction: column; }
 .tl-change-file {
   display: flex;
@@ -1870,7 +1928,13 @@ kbd {
   color: var(--tl-text);
   max-width: 200px;
 }
-.composer-chip .kind { color: var(--tl-subtle); flex-shrink: 0; }
+.composer-chip .kind {
+  color: var(--tl-accent);
+  background: color-mix(in srgb, var(--tl-accent) 12%, transparent);
+  border-radius: 4px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
 .composer-chip .label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2161,7 +2225,17 @@ dialog label {
   color: var(--muted);
 }
 
-dialog input {
+.settings-section-label {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+dialog input,
+dialog select {
   background: var(--bg-input);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -2171,7 +2245,8 @@ dialog input {
   transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
 }
 
-dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 143, 238, 0.18); }
+dialog input:focus,
+dialog select:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
 
 .dialog-hint { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .dialog-actions {
@@ -2179,6 +2254,16 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+dialog .ghost-btn {
+  color: var(--text-bright);
+  border-color: var(--line-strong);
+  background: var(--bg-input);
+}
+
+dialog .ghost-btn:hover {
+  background: var(--bg-hover);
 }
 
 .toast {
@@ -2228,7 +2313,7 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
   outline: none;
 }
 .search-box input:focus { border-color: var(--focus); }
-.search-results, .conversation-list, .job-list {
+.search-results, .conversation-list, .job-list, .approval-inbox {
   flex: 1;
   overflow: auto;
   padding: 4px 0;
@@ -2252,6 +2337,121 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
 .job-item .status.running { background: var(--accent); }
 .job-item .status.succeeded { background: var(--ok); }
 .job-item .status.failed { background: var(--danger); }
+
+/* Cross-project approval inbox — compact list/detail, matching Android semantics. */
+.approval-inbox {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-empty {
+  min-height: 180px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.sidebar-empty strong { color: var(--text); font-size: 13px; }
+.sidebar-empty span { max-width: 210px; font-size: 11px; line-height: 1.5; }
+
+.inbox-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+.inbox-approval:hover { border-color: var(--line-strong); }
+.inbox-approval-heading,
+.inbox-approval-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inbox-approval-heading { justify-content: space-between; }
+.inbox-approval-heading strong { font-size: 12px; color: var(--text-bright); }
+.inbox-approval-heading .muted { font-size: 10px; white-space: nowrap; }
+.inbox-approval-source {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-approval-intent {
+  display: block;
+  max-height: 48px;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.inbox-approval-footer { min-height: 28px; }
+.approval-risk {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.approval-detail-dialog { width: min(560px, 92vw); }
+.approval-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.approval-detail-eyebrow { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.approval-detail-intent {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.approval-detail-meta {
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.approval-detail-dialog details { border-top: 1px solid var(--line); padding-top: 10px; }
+.approval-detail-dialog summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.approval-detail-payload {
+  max-height: 260px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.approval-detail-actions { flex-wrap: wrap; }
 
 /* —— Bottom panel —— */
 .bottom-panel {
@@ -2382,6 +2582,18 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
 .diff-toolbar .diff-actions { display: flex; gap: 6px; }
 .diff-toolbar.review-mode #btnAcceptDiff,
 .diff-toolbar.review-mode #btnRejectDiff { display: none; }
+.diff-stats {
+  display: inline-flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+.diff-stats[hidden] { display: none !important; }
+.diff-stat.is-add { color: var(--tl-success); }
+.diff-stat.is-del { color: var(--tl-danger); }
 #diffFileSwitcher { max-width: 320px; margin-right: 8px; }
 .diff-truncated-warn {
   color: var(--tl-warning);
@@ -2446,11 +2658,9 @@ dialog input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 
   .sidebar { width: 0 !important; }
   .sash-sidebar, .sash-ai { display: none; }
   .activitybar { display: flex; }
-  .activity-btn[data-view="explorer"], .activity-btn[data-view="search"], .activity-btn[data-view="conversations"], .activity-btn[data-view="jobs"] {
-    display: none;
-  }
-  #btnToggleAiActivity { display: flex; }
-  #btnActivitySettings { display: flex; }
+  .activity-btn[data-view] { display: none; }
+  #btnToggleAiActivity { display: grid; }
+  #btnActivitySettings { display: grid; }
   /* Overlay-style Agent panel instead of squeezing it unreadable. */
   .workbench { position: relative; }
   .ai-pane {

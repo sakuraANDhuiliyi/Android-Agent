@@ -560,6 +560,84 @@ async function run() {
     });
   });
 
+  // Android-parity regression: Activity Bar navigation must switch the real
+  // sidebar view, and the cross-project approval inbox must use list/detail
+  // semantics with high-risk confirmation in the detail dialog.
+  await page.evaluate(() => {
+    window.AiPanel.debug.setState({ connected: true });
+    window.DesktopState.dispatch({
+      type: "SET_INBOX_APPROVALS",
+      approvals: [
+        {
+          id: "j-inbox:a-inbox",
+          jobId: "j-inbox",
+          projectId: "p-inbox",
+          projectName: "跑酷",
+          conversationId: "c-inbox",
+          conversationTitle: "部署脚本调整",
+          prompt: "清理构建产物并重新构建",
+          createdAt: Date.now() / 1000 - 120,
+          approval: {
+            id: "a-inbox",
+            kind: "process",
+            payload: {
+              command: "./gradlew clean assembleDebug",
+              cwd: ".",
+              risk: "destructive",
+              reason: "命令会删除并重建构建缓存",
+            },
+          },
+        },
+      ],
+    });
+  });
+  await page.click('.activity-btn[data-view="approvals"]');
+  await page.waitForTimeout(250);
+  const inboxChecks = await page.evaluate(() => ({
+    selected: document.querySelector('.activity-btn[data-view="approvals"]').classList.contains("active"),
+    explorerHidden: document.querySelector('.sidebar-view[data-view="explorer"]').hidden,
+    approvalsVisible: !document.querySelector('.sidebar-view[data-view="approvals"]').hidden,
+    badge: document.getElementById("pendingApprovalBadge").textContent,
+    count: document.querySelectorAll(".inbox-approval").length,
+    source: document.querySelector(".inbox-approval-source")?.textContent || "",
+    highRisk: document.querySelector(".inbox-approval .approval-risk")?.textContent || "",
+  }));
+  assert.ok(inboxChecks.selected && inboxChecks.explorerHidden && inboxChecks.approvalsVisible, "Activity Bar switches the real sidebar view");
+  assert.strictEqual(inboxChecks.badge, "1", "approval badge shows the pending count");
+  assert.strictEqual(inboxChecks.count, 1, "one cross-project approval card rendered");
+  assert.ok(inboxChecks.source.includes("跑酷") && inboxChecks.source.includes("部署脚本调整"), "approval source is human-readable");
+  assert.ok(inboxChecks.highRisk.includes("高风险"), "destructive approval requires detail review");
+  await page.screenshot({ path: path.join(__dirname, "screenshot-approvals-inbox-1440x900.png"), fullPage: false });
+
+  await page.click(".inbox-approval-footer button");
+  const detailChecks = await page.evaluate(() => ({
+    open: document.getElementById("approvalInboxDialog").open,
+    command: document.getElementById("approvalDetailIntent").textContent,
+    riskVisible: !document.getElementById("approvalDetailRisk").hidden,
+    approveDanger: document.getElementById("btnInboxApprove").classList.contains("danger-btn"),
+  }));
+  assert.ok(detailChecks.open && detailChecks.riskVisible && detailChecks.approveDanger, "high-risk approval opens a danger-confirmation detail dialog");
+  assert.strictEqual(detailChecks.command, "./gradlew clean assembleDebug");
+  await page.evaluate(() => document.getElementById("approvalInboxDialog").close("test"));
+
+  await page.click("#btnActivitySettings");
+  await page.waitForTimeout(250);
+  await page.selectOption("#themeSelect", "light");
+  const lightTheme = await page.evaluate(() => ({
+    attr: document.documentElement.dataset.theme,
+    stored: localStorage.getItem("android-agent-desktop-theme"),
+    background: getComputedStyle(document.body).backgroundColor,
+  }));
+  assert.strictEqual(lightTheme.attr, "light");
+  assert.strictEqual(lightTheme.stored, "light");
+  // TheoKit light theme: --background is pure white, serialized as oklch().
+  assert.ok(lightTheme.background.includes("oklch(1 0 0)"), "light theme tokens applied");
+  await page.screenshot({ path: path.join(__dirname, "screenshot-settings-light-1440x900.png"), fullPage: false });
+  await page.selectOption("#themeSelect", "dark");
+  await page.evaluate(() => document.getElementById("settingsDialog").close("test"));
+  await page.click('.activity-btn[data-view="explorer"]');
+  await page.evaluate(() => window.AiPanel.debug.setState({ connected: false }));
+
   async function setScene(name) {
     await page.evaluate((sceneName) => {
       const debug = window.AiPanel.debug;

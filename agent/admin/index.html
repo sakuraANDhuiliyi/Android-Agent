@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Android Agent · 管理后台</title>
+  <link rel="stylesheet" href="./admin.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+
+  <section id="loginGate" class="login-gate">
+    <form id="loginForm" class="login-card">
+      <div class="brand-mark">A</div>
+      <p class="eyebrow">ANDROID AGENT CONTROL PLANE</p>
+      <h1>管理后台</h1>
+      <p class="muted">使用独立的管理员 Token 进入。Token 仅保存在当前标签页，关闭后自动清除。</p>
+      <label>管理员 Token<input id="adminToken" type="password" autocomplete="off" required placeholder="输入 AGENT_ADMIN_TOKEN"></label>
+      <p id="loginError" class="form-error" role="alert"></p>
+      <button class="button primary wide" type="submit">安全进入</button>
+    </form>
+  </section>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark small">A</div><div><strong>Android Agent</strong><span>管理控制台</span></div></div>
+      <nav>
+        <button class="nav-item active"><span class="nav-icon">⌘</span>账号与 Token</button>
+      </nav>
+      <div class="sidebar-foot"><span class="status-dot"></span><span>控制面已连接</span><button id="logoutButton" class="text-button">退出</button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><p class="eyebrow">CONTROL PLANE</p><h1>账号与 Token</h1></div>
+        <button id="createAccountButton" class="button primary"><span>＋</span> 新建账号</button>
+      </header>
+
+      <section class="metrics" aria-label="统计概览">
+        <article class="metric"><span>总账号</span><strong id="metricAccounts">—</strong><small>已注册主体</small></article>
+        <article class="metric accent"><span>活跃 Token</span><strong id="metricTokens">—</strong><small>可用设备与 API 凭据</small></article>
+        <article class="metric"><span>已验证账号</span><strong id="metricVerified">—</strong><small>邮箱状态正常</small></article>
+        <article class="metric warning"><span>已禁用</span><strong id="metricDisabled">—</strong><small>无法登录或访问</small></article>
+      </section>
+
+      <section class="panel accounts-panel">
+        <div class="panel-head">
+          <div><h2>账号目录</h2><p id="accountCount" class="muted">正在读取…</p></div>
+          <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索邮箱、名称或用户 ID"></label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>账号</th><th>状态</th><th>活跃 Token</th><th>最近活动</th><th></th></tr></thead>
+            <tbody id="accountRows"></tbody>
+          </table>
+          <div id="emptyState" class="empty hidden"><strong>没有匹配的账号</strong><span>调整搜索条件或新建账号</span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <aside id="detailDrawer" class="drawer hidden" aria-label="账号详情">
+    <div class="drawer-head"><div><p class="eyebrow">ACCOUNT DETAIL</p><h2 id="detailName">账号详情</h2></div><button id="closeDrawer" class="icon-button" aria-label="关闭">×</button></div>
+    <div id="detailBody" class="drawer-body"></div>
+  </aside>
+  <div id="drawerBackdrop" class="backdrop hidden"></div>
+
+  <dialog id="actionDialog">
+    <form id="actionForm" method="dialog">
+      <div class="dialog-head"><div><p id="dialogEyebrow" class="eyebrow"></p><h2 id="dialogTitle"></h2></div><button class="icon-button" value="cancel" formnovalidate>×</button></div>
+      <div id="dialogFields" class="dialog-fields"></div>
+      <p id="dialogError" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button class="button ghost" value="cancel" formnovalidate>取消</button><button id="dialogSubmit" class="button primary" value="default">确认</button></div>
+    </form>
+  </dialog>
+
+  <div id="tokenReveal" class="reveal hidden" role="dialog" aria-modal="true">
+    <div class="reveal-card"><div class="success-mark">✓</div><p class="eyebrow">TOKEN ISSUED</p><h2>Token 已签发</h2><p class="muted">这是唯一一次显示完整 Token。请立即复制并妥善保存。</p><div class="token-box"><code id="revealedToken"></code><button id="copyTokenButton" class="button primary">复制</button></div><button id="closeReveal" class="button ghost wide">我已保存</button></div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="./admin.js" defer></script>
+</body>
+</html>

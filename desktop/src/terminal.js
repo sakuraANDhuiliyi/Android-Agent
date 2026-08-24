@@ -21,6 +21,13 @@
   const terminals = new Map();
   let nextId = 1;
 
+  function terminalTheme() {
+    if (window.ThemeManager?.getResolved?.() === "light") {
+      return { background: "#ffffff", foreground: "#171a1f", cursor: "#6f49b1", selectionBackground: "#e7ddf5" };
+    }
+    return { background: "#121212", foreground: "#f5f5f5", cursor: "#b17fe8", selectionBackground: "#3d2a5c" };
+  }
+
   function ensureVisible() {
     window.DesktopState?.dispatch({ type: "LAYOUT_BOTTOM_VIEW", view: "terminal" });
     els.bottomPanel.hidden = false;
@@ -50,11 +57,7 @@
       fontFamily: "'SF Mono', Menlo, Monaco, Consolas, monospace",
       fontSize: 12,
       cursorBlink: true,
-      theme: {
-        background: "#1e1e1e",
-        foreground: "#cccccc",
-        cursor: "#cccccc",
-      },
+      theme: terminalTheme(),
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -220,6 +223,11 @@
     }
   }
 
+  function setTheme() {
+    const theme = terminalTheme();
+    for (const terminal of terminals.values()) terminal.term.options.theme = theme;
+  }
+
   if (els.btnNewTerminal) {
     els.btnNewTerminal.addEventListener("click", () => newTerminal());
   }
@@ -231,7 +239,10 @@
     input: inputToActive,
     resizeAll,
     fitAll,
+    setTheme,
   };
+
+  window.addEventListener("android-agent-theme-change", setTheme);
 
   // Resize on layout change
   window.addEventListener("resize", () => {

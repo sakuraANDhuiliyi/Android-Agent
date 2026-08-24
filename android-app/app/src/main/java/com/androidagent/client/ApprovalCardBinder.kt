@@ -2,6 +2,7 @@ package com.androidagent.client
 
 import android.content.Context
 import android.view.View
+import androidx.core.content.ContextCompat
 import com.androidagent.client.databinding.ItemApprovalBinding
 import org.json.JSONObject
 
@@ -46,14 +47,32 @@ object ApprovalCardBinder {
         binding.textApprovalField1.text = fields.joinToString("\n")
         binding.layoutApprovalFields.visibility = if (fields.isEmpty()) View.GONE else View.VISIBLE
 
-        val riskLabel = when (model.risk) {
-            "high", "destructive" -> context.getString(R.string.approval_risk_high)
-            "medium" -> context.getString(R.string.approval_risk_medium)
-            "low" -> context.getString(R.string.approval_risk_low)
-            else -> null
-        }
+        val riskLabel = riskLabelOf(context, model.risk)
         binding.textApprovalRisk.text = riskLabel
         binding.textApprovalRisk.visibility = if (riskLabel == null) View.GONE else View.VISIBLE
+        val riskColor = riskColorOf(context, model.risk)
+        if (riskColor != null) {
+            binding.textApprovalRisk.setTextColor(riskColor)
+            binding.textApprovalRisk.background?.setTint((riskColor and 0x00FFFFFF) or 0x1A000000.toInt())
+        } else {
+            binding.textApprovalRisk.setTextColor(
+                resolveThemeColor(context, com.google.android.material.R.attr.colorOnErrorContainer)
+            )
+            binding.textApprovalRisk.background?.setTint(0)
+        }
+
+        // 待审批时用风险色描边，已决/未知风险回落默认描边
+        val pending = model.status == "pending"
+        if (pending && riskColor != null) {
+            binding.root.strokeWidth = dp(context, 2)
+            binding.root.strokeColor = riskColor
+        } else {
+            binding.root.strokeWidth = dp(context, 1)
+            binding.root.strokeColor = resolveThemeColor(
+                context,
+                com.google.android.material.R.attr.colorOutlineVariant
+            )
+        }
 
         val tech = technicalDetail(model.payload, kind)
         val hasTech = tech.isNotBlank()
@@ -112,6 +131,36 @@ object ApprovalCardBinder {
         val typed = context.obtainStyledAttributes(intArrayOf(attr))
         return typed.getColor(0, 0xFF5F6368.toInt()).also { typed.recycle() }
     }
+
+    private fun resolveThemeColor(context: Context, attr: Int): Int {
+        val typed = context.obtainStyledAttributes(intArrayOf(attr))
+        return typed.getColor(0, 0xFF5F6368.toInt()).also { typed.recycle() }
+    }
+
+    private fun dp(context: Context, value: Int): Int =
+        (value * context.resources.displayMetrics.density + 0.5f).toInt()
+
+    /** 服务端 RiskLevel 字面量 → 本地化标签；兼容旧 high/medium/low。 */
+    private fun riskLabelOf(context: Context, risk: String?): String? = when (risk) {
+        "read" -> context.getString(R.string.approval_risk_read)
+        "workspace_write" -> context.getString(R.string.approval_risk_workspace_write)
+        "network" -> context.getString(R.string.approval_risk_network)
+        "process" -> context.getString(R.string.approval_risk_process)
+        "destructive", "high" -> context.getString(R.string.approval_risk_high)
+        "medium" -> context.getString(R.string.approval_risk_medium)
+        "low" -> context.getString(R.string.approval_risk_low)
+        else -> null
+    }
+
+    /** 风险等级 → 语义色（与桌面端一致：绿/琥珀/蓝/紫/红）。 */
+    private fun riskColorOf(context: Context, risk: String?): Int? = when (risk) {
+        "read", "low" -> R.color.status_success
+        "workspace_write", "medium" -> R.color.status_warning
+        "network" -> R.color.status_running
+        "process" -> R.color.risk_process
+        "destructive", "high" -> R.color.status_failed
+        else -> null
+    }?.let { ContextCompat.getColor(context, it) }
 
     private fun iconOf(kind: String): Int = when (kind) {
         "command", "process", "run_command" -> R.drawable.ic_tool_command

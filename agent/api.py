@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import shutil
+import smtplib
 import socket
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -86,9 +89,10 @@ from agent.terminal import (
     terminal_outputs,
     write_terminal_input,
     shutdown_terminals,
+    purge_user_terminals,
 )
 from agent.tools import is_writable_path, list_dir_entries, read_file_meta, write_file
-from agent.users import UserStore
+from agent.users import AuthIdentity, UserStore, UserStoreError
 from agent.worktrees import list_worktrees
 from agent.diagnostics import get_diagnostic_store
 from agent.governance import (
@@ -276,6 +280,79 @@ class WebSocketTicketRequest(StrictRequest):
     resource_id: str = Field(..., min_length=1, max_length=128)
 
 
+class DeviceRequest(StrictRequest):
+    device_id: str = Field(..., min_length=1, max_length=128)
+    device_name: str = Field(..., min_length=1, max_length=120)
+    device_type: str = Field(default="android", max_length=32)
+    platform: str = Field(default="Android", max_length=80)
+    app_version: str = Field(default="", max_length=40)
+
+
+class AccountRegisterRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    display_name: str = Field(default="", max_length=80)
+    device: DeviceRequest
+
+
+class AccountLoginRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+    device: DeviceRequest
+
+
+class VerifyEmailRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    code: str = Field(..., min_length=6, max_length=12)
+    device: DeviceRequest
+
+
+class EmailRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+
+
+class ResetPasswordRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    code: str = Field(..., min_length=6, max_length=12)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class AccountUpdateRequest(StrictRequest):
+    display_name: str = Field(..., min_length=1, max_length=80)
+
+
+class ChangePasswordRequest(StrictRequest):
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    revoke_other_sessions: bool = True
+
+
+class DeleteAccountRequest(StrictRequest):
+    password: str = Field(default="", max_length=128)
+
+
+class AdminCreateAccountRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    display_name: str = Field(default="", max_length=80)
+    email_verified: bool = True
+
+
+class AdminUpdateAccountRequest(StrictRequest):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    email_verified: Optional[bool] = None
+    disabled: Optional[bool] = None
+
+
+class AdminIssueTokenRequest(StrictRequest):
+    name: str = Field(..., min_length=1, max_length=120)
+    device_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class AdminResetPasswordRequest(StrictRequest):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 _PRIVATE_EVENT_FIELDS = frozenset(
     {
         "apikey",
@@ -318,6 +395,45 @@ def _bearer_token(authorization: str | None) -> str:
         return ""
     value = authorization.strip()
     return value[7:].strip() if value.lower().startswith("bearer ") else ""
+
+
+def _device_dict(device: DeviceRequest) -> dict[str, str]:
+    return {
+        "device_id": device.device_id,
+        "device_name": device.device_name,
+        "device_type": device.device_type,
+        "platform": device.platform,
+        "app_version": device.app_version,
+    }
+
+
+def _auth_payload(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account": result["account"],
+        "user_id": result["account"]["user_id"],
+        "token": result.get("token"),
+        "token_type": "Bearer",
+        "session_id": result.get("session_id"),
+    }
+
+
+def _send_account_code(settings: Settings, email: str, code: str, purpose: str) -> None:
+    if not settings.smtp_host or not settings.smtp_from:
+        raise RuntimeError("服务端尚未配置邮箱发送服务")
+    subject = "验证你的 Android Agent 邮箱" if purpose == "verify_email" else "重置 Android Agent 密码"
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.smtp_from
+    message["To"] = email
+    message.set_content(
+        f"{subject}\n\n验证码：{code}\n\n验证码 15 分钟内有效。如非本人操作，请忽略本邮件。"
+    )
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+        if settings.smtp_starttls:
+            smtp.starttls()
+        if settings.smtp_username:
+            smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.send_message(message)
 
 
 def _project_status(user_id: str, project_id: str) -> dict[str, Any]:
@@ -412,9 +528,12 @@ def create_app(
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+        error_code = None
+        if isinstance(exc.detail, dict):
+            error_code = str(exc.detail.get("code") or "") or None
         return JSONResponse(
             status_code=exc.status_code,
-            content=build_error_body(exc.status_code, exc.detail),
+            content=build_error_body(exc.status_code, exc.detail, code=error_code),
             headers=exc.headers,
         )
 
@@ -446,22 +565,59 @@ def create_app(
                 content=build_error_body(429, str(exc), code="rate_limited"),
                 headers={"Retry-After": "60"},
             )
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path == "/admin" or request.url.path.startswith(("/admin/", "/api/admin/")):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+                "base-uri 'none'; form-action 'self'"
+            )
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
-    def authenticated_user(authorization: str | None) -> str:
+    def authenticated_identity(authorization: str | None) -> AuthIdentity:
         token = _bearer_token(authorization)
         if not token:
             raise HTTPException(status_code=401, detail="未提供 API Token")
-        registered_user = app.state.user_store.authenticate(token)
-        if registered_user:
-            return registered_user
+        identity = app.state.user_store.authenticate_identity(token)
+        if identity:
+            return identity
         try:
-            return resolve_user_id(app.state.settings, authorization)
+            return AuthIdentity(resolve_user_id(app.state.settings, authorization), None)
         except PermissionError as e:
             raise HTTPException(status_code=401, detail=str(e)) from e
 
-    def current_user(authorization: Optional[str] = Header(default=None)) -> str:
-        return authenticated_user(authorization)
+    def current_identity(authorization: Optional[str] = Header(default=None)) -> AuthIdentity:
+        return authenticated_identity(authorization)
+
+    def current_user(identity: AuthIdentity = Depends(current_identity)) -> str:
+        return identity.user_id
+
+    def current_admin(
+        request: Request,
+        authorization: Optional[str] = Header(default=None),
+    ) -> None:
+        if not settings.admin_ui_enabled:
+            raise HTTPException(status_code=404, detail="管理后台未启用")
+        token = _bearer_token(authorization)
+        if not token or not hmac.compare_digest(token, settings.admin_token):
+            client_host = request.client.host if request.client else "unknown"
+            try:
+                http_limiter.check(
+                    f"admin-auth-failed:{client_host}",
+                    limit=30,
+                    window_seconds=15 * 60,
+                )
+            except QuotaExceededError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail="管理员鉴权尝试过于频繁，请稍后再试",
+                    headers={"Retry-After": "900"},
+                ) from exc
+            raise HTTPException(status_code=401, detail="无效的管理员 Token")
 
     def require_terminal_enabled() -> None:
         if not settings.terminal_enabled:
@@ -538,6 +694,351 @@ def create_app(
             "token": token,
             "token_type": "Bearer",
         }
+
+    def account_error(exc: UserStoreError, status_code: int = 400) -> HTTPException:
+        return HTTPException(
+            status_code=status_code,
+            detail={"message": str(exc), "code": exc.code},
+        )
+
+    @app.post("/api/auth/register", status_code=201)
+    def register_account(body: AccountRegisterRequest, request: Request) -> dict[str, Any]:
+        if not settings.registration_enabled:
+            raise HTTPException(status_code=404, detail="网络注册未启用")
+        client_host = request.client.host if request.client else "unknown"
+        try:
+            reg_limiter.check(
+                f"account-register:{client_host}",
+                limit=settings.max_registration_per_hour,
+                window_seconds=3600,
+            )
+        except QuotaExceededError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": "3600"},
+            ) from exc
+        if settings.email_verification_required and (
+            not settings.smtp_host or not settings.smtp_from
+        ):
+            raise HTTPException(status_code=503, detail="服务端尚未配置邮箱发送服务")
+        ensure_write_budget()
+        try:
+            result = app.state.user_store.register_account(
+                body.email,
+                body.password,
+                display_name=body.display_name,
+                email_verified=not settings.email_verification_required,
+                device=_device_dict(body.device),
+            )
+            user_id = result["account"]["user_id"]
+            user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
+            user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
+            if settings.email_verification_required:
+                code = app.state.user_store.create_code(user_id, "verify_email")
+                _send_account_code(settings, body.email, code, "verify_email")
+            payload = _auth_payload(result)
+            payload["requires_verification"] = settings.email_verification_required
+            return payload
+        except UserStoreError as exc:
+            raise account_error(exc, 409 if exc.code == "email_exists" else 400) from exc
+        except (OSError, smtplib.SMTPException) as exc:
+            raise HTTPException(status_code=503, detail="验证邮件发送失败，请稍后重试") from exc
+
+    @app.post("/api/auth/login")
+    def login_account(body: AccountLoginRequest, request: Request) -> dict[str, Any]:
+        client_host = request.client.host if request.client else "unknown"
+        email_key = hashlib.sha256(body.email.strip().lower().encode("utf-8")).hexdigest()[:16]
+        try:
+            http_limiter.check(
+                f"account-login:{client_host}:{email_key}",
+                limit=20,
+                window_seconds=15 * 60,
+            )
+        except QuotaExceededError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="登录尝试过于频繁，请稍后再试",
+                headers={"Retry-After": "900"},
+            ) from exc
+        try:
+            return _auth_payload(
+                app.state.user_store.login(
+                    body.email,
+                    body.password,
+                    device=_device_dict(body.device),
+                )
+            )
+        except UserStoreError as exc:
+            raise account_error(exc, 401) from exc
+
+    @app.post("/api/auth/verify-email")
+    def verify_email(body: VerifyEmailRequest) -> dict[str, Any]:
+        try:
+            result = app.state.user_store.verify_email_and_login(
+                body.email,
+                body.code,
+                device=_device_dict(body.device),
+            )
+            return _auth_payload(result)
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+
+    @app.post("/api/auth/resend-verification", status_code=202)
+    def resend_verification(body: EmailRequest) -> dict[str, bool]:
+        # Do not reveal whether an address exists.
+        try:
+            account = app.state.user_store.account_for_email(body.email)
+        except UserStoreError:
+            account = None
+        if account and not account["email_verified"] and settings.email_verification_required:
+            try:
+                code = app.state.user_store.create_code(account["user_id"], "verify_email")
+                _send_account_code(settings, body.email, code, "verify_email")
+            except (OSError, smtplib.SMTPException, RuntimeError):
+                pass
+        return {"accepted": True}
+
+    @app.post("/api/auth/forgot-password", status_code=202)
+    def forgot_password(body: EmailRequest) -> dict[str, bool]:
+        try:
+            account = app.state.user_store.account_for_email(body.email)
+        except UserStoreError:
+            account = None
+        if account and settings.smtp_host and settings.smtp_from:
+            try:
+                code = app.state.user_store.create_code(account["user_id"], "reset_password")
+                _send_account_code(settings, body.email, code, "reset_password")
+            except (OSError, smtplib.SMTPException, RuntimeError):
+                pass
+        return {"accepted": True}
+
+    @app.post("/api/auth/reset-password", status_code=204)
+    def reset_password(body: ResetPasswordRequest) -> None:
+        try:
+            app.state.user_store.reset_password(body.email, body.code, body.new_password)
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+
+    @app.post("/api/auth/logout", status_code=204)
+    def logout(identity: AuthIdentity = Depends(current_identity)) -> None:
+        if identity.session_id:
+            app.state.user_store.revoke_session(identity.user_id, identity.session_id)
+
+    @app.get("/api/account")
+    def get_account(identity: AuthIdentity = Depends(current_identity)) -> dict[str, Any]:
+        try:
+            return app.state.user_store.get_account(identity.user_id)
+        except UserStoreError as exc:
+            raise account_error(exc, 404) from exc
+
+    @app.patch("/api/account")
+    def patch_account(
+        body: AccountUpdateRequest,
+        identity: AuthIdentity = Depends(current_identity),
+    ) -> dict[str, Any]:
+        try:
+            return app.state.user_store.update_account(
+                identity.user_id,
+                display_name=body.display_name,
+            )
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+
+    @app.post("/api/account/change-password", status_code=204)
+    def change_account_password(
+        body: ChangePasswordRequest,
+        identity: AuthIdentity = Depends(current_identity),
+    ) -> None:
+        try:
+            app.state.user_store.change_password(
+                identity.user_id,
+                body.old_password,
+                body.new_password,
+                current_session_id=identity.session_id,
+                revoke_other_sessions=body.revoke_other_sessions,
+            )
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+
+    @app.delete("/api/account", status_code=204)
+    def delete_account_route(
+        body: DeleteAccountRequest,
+        identity: AuthIdentity = Depends(current_identity),
+    ) -> None:
+        try:
+            app.state.user_store.delete_account(identity.user_id, body.password)
+        except UserStoreError as exc:
+            raise account_error(exc, 401 if exc.code == "invalid_password" else 400) from exc
+        app.state.task_store.purge_user_data(identity.user_id)
+        purge_user_terminals(identity.user_id)
+        shutil.rmtree(user_workspaces_dir(identity.user_id), ignore_errors=True)
+        shutil.rmtree(user_builds_dir(identity.user_id), ignore_errors=True)
+
+    @app.get("/api/devices")
+    def get_devices(identity: AuthIdentity = Depends(current_identity)) -> dict[str, Any]:
+        return {
+            "devices": app.state.user_store.list_sessions(
+                identity.user_id,
+                current_session_id=identity.session_id,
+            )
+        }
+
+    @app.delete("/api/devices/{session_id}", status_code=204)
+    def revoke_device(
+        session_id: str,
+        identity: AuthIdentity = Depends(current_identity),
+    ) -> None:
+        try:
+            revoked = app.state.user_store.revoke_session(identity.user_id, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="设备会话不存在") from exc
+        if not revoked:
+            raise HTTPException(status_code=404, detail="设备会话不存在")
+
+    @app.post("/api/devices/logout-others")
+    def logout_other_devices(identity: AuthIdentity = Depends(current_identity)) -> dict[str, int]:
+        return {
+            "revoked": app.state.user_store.revoke_other_sessions(
+                identity.user_id,
+                identity.session_id,
+            )
+        }
+
+    @app.get("/api/admin/overview", include_in_schema=False)
+    def admin_overview(_admin: None = Depends(current_admin)) -> dict[str, int]:
+        return app.state.user_store.admin_overview()
+
+    @app.get("/api/admin/accounts", include_in_schema=False)
+    def admin_accounts(
+        query: str = Query(default="", max_length=200),
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, Any]:
+        accounts = app.state.user_store.admin_list_accounts(query)
+        return {"accounts": accounts, "count": len(accounts)}
+
+    @app.post("/api/admin/accounts", status_code=201, include_in_schema=False)
+    def admin_create_account(
+        body: AdminCreateAccountRequest,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, Any]:
+        ensure_write_budget()
+        try:
+            result = app.state.user_store.register_account(
+                body.email,
+                body.password,
+                display_name=body.display_name,
+                email_verified=body.email_verified,
+                issue_session=False,
+            )
+        except UserStoreError as exc:
+            raise account_error(exc, 409 if exc.code == "email_exists" else 400) from exc
+        user_id = result["account"]["user_id"]
+        user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
+        user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
+        return result["account"]
+
+    @app.get("/api/admin/accounts/{user_id}", include_in_schema=False)
+    def admin_account(
+        user_id: str,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, Any]:
+        try:
+            return app.state.user_store.admin_get_account(user_id)
+        except (UserStoreError, ValueError) as exc:
+            raise account_error(exc, 404) if isinstance(exc, UserStoreError) else HTTPException(status_code=404, detail="账号不存在")
+
+    @app.patch("/api/admin/accounts/{user_id}", include_in_schema=False)
+    def admin_update_account(
+        user_id: str,
+        body: AdminUpdateAccountRequest,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, Any]:
+        try:
+            return app.state.user_store.admin_update_account(
+                user_id,
+                display_name=body.display_name,
+                email_verified=body.email_verified,
+                disabled=body.disabled,
+            )
+        except (UserStoreError, ValueError) as exc:
+            if isinstance(exc, UserStoreError):
+                raise account_error(exc, 404 if exc.code == "account_not_found" else 400) from exc
+            raise HTTPException(status_code=404, detail="账号不存在") from exc
+
+    @app.post("/api/admin/accounts/{user_id}/tokens", status_code=201, include_in_schema=False)
+    def admin_issue_token(
+        user_id: str,
+        body: AdminIssueTokenRequest,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, str]:
+        try:
+            result = app.state.user_store.admin_issue_token(
+                user_id,
+                device_id=body.device_id or "",
+                device_name=body.name,
+                device_type="api_token",
+                platform="管理后台",
+                app_version="",
+            )
+        except (UserStoreError, ValueError) as exc:
+            if isinstance(exc, UserStoreError):
+                raise account_error(exc, 409) from exc
+            raise HTTPException(status_code=404, detail="账号不存在") from exc
+        return {**result, "token_type": "Bearer"}
+
+    @app.delete("/api/admin/accounts/{user_id}/tokens/{session_id}", status_code=204, include_in_schema=False)
+    def admin_revoke_token(
+        user_id: str,
+        session_id: str,
+        _admin: None = Depends(current_admin),
+    ) -> None:
+        try:
+            revoked = app.state.user_store.revoke_session(user_id, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Token 不存在") from exc
+        if not revoked:
+            raise HTTPException(status_code=404, detail="Token 不存在或已撤销")
+
+    @app.post("/api/admin/accounts/{user_id}/revoke-all", include_in_schema=False)
+    def admin_revoke_all(
+        user_id: str,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, int]:
+        try:
+            app.state.user_store.get_account(user_id)
+            return {"revoked": app.state.user_store.revoke_other_sessions(user_id, None)}
+        except (UserStoreError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="账号不存在") from exc
+
+    @app.post("/api/admin/accounts/{user_id}/reset-password", include_in_schema=False)
+    def admin_reset_password(
+        user_id: str,
+        body: AdminResetPasswordRequest,
+        _admin: None = Depends(current_admin),
+    ) -> dict[str, int]:
+        try:
+            return {"revoked": app.state.user_store.admin_set_password(user_id, body.new_password)}
+        except (UserStoreError, ValueError) as exc:
+            if isinstance(exc, UserStoreError):
+                raise account_error(exc, 404 if exc.code == "account_not_found" else 400) from exc
+            raise HTTPException(status_code=404, detail="账号不存在") from exc
+
+    @app.delete("/api/admin/accounts/{user_id}", status_code=204, include_in_schema=False)
+    def admin_delete_account(
+        user_id: str,
+        _admin: None = Depends(current_admin),
+    ) -> None:
+        try:
+            app.state.user_store.admin_delete_account(user_id)
+        except (UserStoreError, ValueError) as exc:
+            if isinstance(exc, UserStoreError):
+                raise account_error(exc, 404) from exc
+            raise HTTPException(status_code=404, detail="账号不存在") from exc
+        app.state.task_store.purge_user_data(user_id)
+        purge_user_terminals(user_id)
+        shutil.rmtree(user_workspaces_dir(user_id), ignore_errors=True)
+        shutil.rmtree(user_builds_dir(user_id), ignore_errors=True)
 
     @app.get("/api/health")
     def health(user_id: str = Depends(current_user)) -> dict[str, Any]:
@@ -1952,7 +2453,7 @@ def create_app(
         auth_header = websocket.headers.get("authorization")
         if auth_header:
             try:
-                user_id = authenticated_user(auth_header)
+                user_id = authenticated_identity(auth_header).user_id
             except HTTPException:
                 await websocket.close(code=4401)
                 return
@@ -2000,7 +2501,7 @@ def create_app(
         auth_header = websocket.headers.get("authorization")
         if auth_header:
             try:
-                user_id = authenticated_user(auth_header)
+                user_id = authenticated_identity(auth_header).user_id
             except HTTPException:
                 await websocket.close(code=4401)
                 return
@@ -2047,6 +2548,7 @@ def create_app(
             return
 
     web_dir = Path(__file__).resolve().parent / "web"
+    admin_dir = Path(__file__).resolve().parent / "admin"
     loopback_hosts = {"127.0.0.1", "::1", "localhost"}
     if (
         web_dir.is_dir()
@@ -2065,6 +2567,17 @@ def create_app(
             "/ui",
             StaticFiles(directory=str(web_dir), html=True),
             name="ui",
+        )
+
+    if admin_dir.is_dir() and settings.admin_ui_enabled and settings.admin_token:
+        @app.get("/admin", include_in_schema=False)
+        def admin_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/admin/")
+
+        app.mount(
+            "/admin",
+            StaticFiles(directory=str(admin_dir), html=True),
+            name="admin",
         )
 
     return app

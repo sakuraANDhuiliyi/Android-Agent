@@ -54,6 +54,7 @@ class DiffActivity : AppCompatActivity() {
                 files = diff.files
                 val first = files.firstOrNull()
                 binding.textDiffPath.text = first?.path ?: getString(R.string.view_diff)
+                bindFileCounts(files)
                 showPatch(first?.patch.orEmpty(), first?.truncated == true)
                 binding.recyclerDiffFiles.adapter = DiffFileAdapter(files) { entry ->
                     binding.textDiffPath.text = entry.path
@@ -71,6 +72,20 @@ class DiffActivity : AppCompatActivity() {
                 toast(userMessage(e))
             }
         }
+    }
+
+    private fun bindFileCounts(files: List<DiffEntry>) {
+        val added = files.count { it.change == "added" }
+        val deleted = files.count { it.change == "deleted" }
+        val modified = files.size - added - deleted
+        bindCount(binding.textDiffFileAdd, added, "+")
+        bindCount(binding.textDiffFileMod, modified, "~")
+        bindCount(binding.textDiffFileDel, deleted, "−")
+    }
+
+    private fun bindCount(view: android.widget.TextView, count: Int, prefix: String) {
+        view.visibility = if (count > 0) android.view.View.VISIBLE else android.view.View.GONE
+        view.text = "$prefix$count"
     }
 
     private fun showPatch(patch: String, truncated: Boolean) {
@@ -153,7 +168,17 @@ class DiffActivity : AppCompatActivity() {
         override fun getItemCount(): Int = items.size
         override fun onBindViewHolder(holder: VH, position: Int) {
             val item = items[position]
-            holder.binding.textPath.text = "${item.change}  ${item.path}"
+            val (badge, colorRes) = when (item.change) {
+                "added" -> "ADD" to R.color.status_success
+                "deleted" -> "DEL" to R.color.status_failed
+                "renamed" -> "REN" to R.color.status_running
+                else -> "MOD" to R.color.status_warning
+            }
+            holder.binding.textChangeBadge.text = badge
+            holder.binding.textChangeBadge.setTextColor(
+                androidx.core.content.ContextCompat.getColor(holder.binding.root.context, colorRes)
+            )
+            holder.binding.textPath.text = item.path
             holder.binding.root.setOnClickListener { onClick(item) }
         }
     }

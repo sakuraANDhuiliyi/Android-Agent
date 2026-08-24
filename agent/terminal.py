@@ -146,6 +146,20 @@ class TerminalStore:
             )
         return self.get_session(session_id, user_id)
 
+    def purge_user(self, user_id: str) -> None:
+        with self._connect() as conn:
+            session_ids = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT id FROM terminal_sessions WHERE user_id=?", (user_id,)
+                ).fetchall()
+            ]
+            conn.executemany(
+                "DELETE FROM terminal_outputs WHERE session_id=?",
+                [(session_id,) for session_id in session_ids],
+            )
+            conn.execute("DELETE FROM terminal_sessions WHERE user_id=?", (user_id,))
+
     def get_session(self, session_id: str, user_id: str | None = None) -> dict[str, Any] | None:
         with self._connect() as conn:
             if user_id is not None:
@@ -660,6 +674,22 @@ class TerminalManager:
                     redact_sensitive_text(str(exc)),
                 )
 
+    def purge_user(self, user_id: str) -> None:
+        with self._lock:
+            sessions = [
+                session
+                for session in self._sessions.values()
+                if session.user_id == user_id
+            ]
+            for session in sessions:
+                self._sessions.pop(session.session_id, None)
+        for session in sessions:
+            try:
+                session.terminate()
+            except Exception as exc:
+                logger.warning("terminal purge failed session=%s: %s", session.session_id, exc)
+        TerminalStore().purge_user(user_id)
+
 
 _manager = TerminalManager()
 
@@ -715,3 +745,7 @@ def mark_interrupted_terminals() -> None:
 
 def shutdown_terminals() -> None:
     _manager.close()
+
+
+def purge_user_terminals(user_id: str) -> None:
+    _manager.purge_user(user_id)

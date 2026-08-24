@@ -10,8 +10,14 @@
   const els = {
     sidebarTabs: document.getElementById("sidebarTabs"),
     sidebarContent: document.getElementById("sidebarContent"),
+    sidebar: document.getElementById("sidebar"),
     conversationList: document.getElementById("conversationList"),
     jobList: document.getElementById("jobList"),
+    approvalInbox: document.getElementById("approvalInbox"),
+    approvalInboxCount: document.getElementById("approvalInboxCount"),
+    pendingApprovalBadge: document.getElementById("pendingApprovalBadge"),
+    btnRefreshApprovals: document.getElementById("btnRefreshApprovals"),
+    themeSelect: document.getElementById("themeSelect"),
     searchInput: document.getElementById("searchInput"),
     searchResults: document.getElementById("searchResults"),
     btnSearch: document.getElementById("btnSearch"),
@@ -28,7 +34,21 @@
     renameConversationForm: document.getElementById("renameConversationForm"),
     renameConversationId: document.getElementById("renameConversationId"),
     renameConversationTitle: document.getElementById("renameConversationTitle"),
+    approvalInboxDialog: document.getElementById("approvalInboxDialog"),
+    approvalDetailSource: document.getElementById("approvalDetailSource"),
+    approvalDetailTitle: document.getElementById("approvalDetailTitle"),
+    approvalDetailRisk: document.getElementById("approvalDetailRisk"),
+    approvalDetailIntent: document.getElementById("approvalDetailIntent"),
+    approvalDetailMeta: document.getElementById("approvalDetailMeta"),
+    approvalDetailPayload: document.getElementById("approvalDetailPayload"),
+    btnInboxReject: document.getElementById("btnInboxReject"),
+    btnInboxApprove: document.getElementById("btnInboxApprove"),
   };
+
+  const approvalSubmitting = new Set();
+  let approvalDetailItem = null;
+  let approvalLastLoadedAt = 0;
+  let approvalLoadPromise = null;
 
   // —— Sidebar tabs ——
   function initSidebarTabs() {
@@ -43,11 +63,30 @@
     });
   }
 
+  function initActivityBar() {
+    document.querySelectorAll(".activity-btn[data-view]").forEach((button) => {
+      button.addEventListener("click", () => selectSidebarView(button.dataset.view));
+    });
+  }
+
+  function selectSidebarView(view) {
+    if (!view) return;
+    dispatch({ type: "LAYOUT_SIDEBAR_VIEW", view });
+    if (els.sidebar?.classList.contains("collapsed")) editor().toggleSidebar?.();
+    renderSidebarTabs();
+    renderSidebarView();
+    if (view === "search") requestAnimationFrame(() => els.searchInput?.focus());
+    if (view === "approvals") loadPendingApprovals({ force: true });
+  }
+
   function renderSidebarTabs() {
-    if (!els.sidebarTabs) return;
     const view = state().sidebarView || "explorer";
-    for (const tab of els.sidebarTabs.querySelectorAll(".sidebar-tab")) {
+    const tabs = els.sidebarTabs
+      ? els.sidebarTabs.querySelectorAll(".sidebar-tab")
+      : document.querySelectorAll(".activity-btn[data-view]");
+    for (const tab of tabs) {
       tab.classList.toggle("active", tab.dataset.view === view);
+      tab.setAttribute("aria-current", tab.dataset.view === view ? "page" : "false");
     }
   }
 
@@ -60,6 +99,7 @@
     }
     if (view === "conversations") renderConversationList();
     if (view === "jobs") renderJobList();
+    if (view === "approvals") renderApprovalInbox();
   }
 
   // —— Conversations ——
@@ -199,6 +239,208 @@
     await ai().openJob?.(jobId);
   }
 
+  // —— Cross-project approval inbox (mirrors the Android "待处理" destination) ——
+  async function loadPendingApprovals({ force = false } = {}) {
+    const aiState = ai().getState?.() || {};
+    if (!aiState.connected) {
+      dispatch({ type: "SET_INBOX_APPROVALS", approvals: [] });
+      renderApprovalInbox({ message: "连接 Agent 后可查看待处理审批" });
+      return [];
+    }
+    const now = Date.now();
+    if (!force && now - approvalLastLoadedAt < 6000) return state().inboxApprovals || [];
+    if (approvalLoadPromise) return approvalLoadPromise;
+
+    approvalLoadPromise = (async () => {
+      try {
+        const jobsData = await api().jobs();
+        const jobs = jobsData.jobs || [];
+        const activeJobs = jobs.filter((job) => window.ApprovalInbox.ACTIVE_STATUSES.has(job.status));
+        const approvalResults = await Promise.all(
+          activeJobs.map(async (job) => {
+            try {
+              const data = await api().listApprovals(job.id);
+              return [job.id, data.approvals || []];
+            } catch (_) {
+              return [job.id, []];
+            }
+          }),
+        );
+        const approvalsByJob = Object.fromEntries(approvalResults);
+        const projectData = aiState.projects?.length ? { projects: aiState.projects } : await api().projects();
+        const conversations = [...(aiState.conversations || [])];
+        const knownConversationIds = new Set(conversations.map((conversation) => conversation.id));
+        const missingConversationIds = [...new Set(
+          activeJobs
+            .map((job) => job.conversation_id || job.conversationId)
+            .filter((id) => id && !knownConversationIds.has(id)),
+        )];
+        const conversationResults = await Promise.all(
+          missingConversationIds.map(async (id) => {
+            try {
+              return await api().getConversation(id);
+            } catch (_) {
+              return null;
+            }
+          }),
+        );
+        conversations.push(...conversationResults.filter(Boolean));
+        const items = window.ApprovalInbox.buildApprovalInbox({
+          jobs: activeJobs,
+          approvalsByJob,
+          projects: projectData.projects || [],
+          conversations,
+        });
+        dispatch({ type: "SET_INBOX_APPROVALS", approvals: items });
+        approvalLastLoadedAt = Date.now();
+        renderApprovalInbox();
+        return items;
+      } catch (err) {
+        renderApprovalInbox({ message: `加载失败：${err.message}` });
+        return state().inboxApprovals || [];
+      } finally {
+        approvalLoadPromise = null;
+      }
+    })();
+    return approvalLoadPromise;
+  }
+
+  function renderApprovalInbox({ message = "" } = {}) {
+    if (!els.approvalInbox) return;
+    const items = state().inboxApprovals || [];
+    const count = items.length;
+    els.approvalInboxCount.textContent = `${count} 项`;
+    els.pendingApprovalBadge.textContent = count > 99 ? "99+" : String(count);
+    els.pendingApprovalBadge.hidden = count === 0;
+    const activityButton = els.pendingApprovalBadge.closest(".activity-btn");
+    if (activityButton) activityButton.title = count ? `待处理审批（${count}）` : "待处理审批";
+
+    els.approvalInbox.textContent = "";
+    if (!count) {
+      const empty = document.createElement("div");
+      empty.className = "sidebar-empty";
+      const title = document.createElement("strong");
+      title.textContent = message ? "暂时无法加载" : "没有待处理操作";
+      const hint = document.createElement("span");
+      hint.textContent = message || "Agent 需要确认时会集中显示在这里";
+      empty.append(title, hint);
+      els.approvalInbox.appendChild(empty);
+      return;
+    }
+
+    for (const item of items) {
+      const card = document.createElement("article");
+      card.className = "inbox-approval";
+
+      const heading = document.createElement("div");
+      heading.className = "inbox-approval-heading";
+      const kind = document.createElement("strong");
+      kind.textContent = window.ApprovalInbox.kindLabel(item);
+      const age = document.createElement("span");
+      age.className = "muted";
+      age.textContent = window.ApprovalInbox.relativeTime(item.createdAt);
+      heading.append(kind, age);
+
+      const source = document.createElement("div");
+      source.className = "inbox-approval-source";
+      source.textContent = [item.projectName, item.conversationTitle].filter(Boolean).join(" · ");
+
+      const intent = document.createElement("code");
+      intent.className = "inbox-approval-intent";
+      intent.textContent = window.ApprovalInbox.intent(item);
+
+      const footer = document.createElement("div");
+      footer.className = "inbox-approval-footer";
+      if (window.ApprovalInbox.isDestructive(item)) {
+        const risk = document.createElement("span");
+        risk.className = "approval-risk";
+        risk.textContent = "高风险 · 需查看详情";
+        footer.appendChild(risk);
+      }
+      const spacer = document.createElement("span");
+      spacer.className = "spacer";
+      footer.appendChild(spacer);
+      if (!window.ApprovalInbox.isDestructive(item)) {
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "ghost-btn sm";
+        reject.textContent = "拒绝";
+        reject.addEventListener("click", () => decideInboxApproval(item, false));
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.className = "primary-btn sm";
+        approve.textContent = "允许本次";
+        approve.addEventListener("click", () => decideInboxApproval(item, true));
+        footer.append(reject, approve);
+      }
+      const detail = document.createElement("button");
+      detail.type = "button";
+      detail.className = "ghost-btn sm";
+      detail.textContent = "查看";
+      detail.addEventListener("click", () => openApprovalDetail(item));
+      footer.appendChild(detail);
+
+      card.append(heading, source, intent, footer);
+      els.approvalInbox.appendChild(card);
+    }
+  }
+
+  function openApprovalDetail(item) {
+    if (!els.approvalInboxDialog) return;
+    approvalDetailItem = item;
+    const destructive = window.ApprovalInbox.isDestructive(item);
+    const payload = item.approval?.payload || {};
+    els.approvalDetailSource.textContent = [item.projectName, item.conversationTitle].filter(Boolean).join(" · ");
+    els.approvalDetailTitle.textContent = window.ApprovalInbox.kindLabel(item);
+    els.approvalDetailIntent.textContent = window.ApprovalInbox.intent(item);
+    els.approvalDetailRisk.hidden = !destructive;
+    els.approvalDetailMeta.textContent = [
+      payload.cwd ? `工作目录：${payload.cwd}` : "",
+      payload.reason ? `原因：${payload.reason}` : "",
+      item.prompt ? `任务：${item.prompt}` : "",
+    ].filter(Boolean).join("\n");
+    els.approvalDetailPayload.textContent = JSON.stringify(payload, null, 2);
+    els.btnInboxApprove.className = destructive ? "danger-btn" : "primary-btn";
+    els.approvalInboxDialog.showModal();
+  }
+
+  async function decideInboxApproval(item, approved) {
+    if (!item || approvalSubmitting.has(item.id)) return;
+    approvalSubmitting.add(item.id);
+    const buttons = els.approvalInbox?.querySelectorAll("button") || [];
+    buttons.forEach((button) => { button.disabled = true; });
+    els.btnInboxApprove.disabled = true;
+    els.btnInboxReject.disabled = true;
+    try {
+      await api().resolveApproval(item.jobId, item.approval.id, approved);
+      dispatch({
+        type: "SET_INBOX_APPROVALS",
+        approvals: (state().inboxApprovals || []).filter((candidate) => candidate.id !== item.id),
+      });
+      els.approvalInboxDialog?.close("resolved");
+      editor().toast?.(approved ? "已允许本次操作" : "已拒绝操作");
+      renderApprovalInbox();
+      approvalLastLoadedAt = 0;
+    } catch (err) {
+      if ([403, 404, 409].includes(err.status)) {
+        dispatch({
+          type: "SET_INBOX_APPROVALS",
+          approvals: (state().inboxApprovals || []).filter((candidate) => candidate.id !== item.id),
+        });
+        els.approvalInboxDialog?.close("handled-elsewhere");
+        editor().toast?.("此操作已在其他端处理");
+        renderApprovalInbox();
+      } else {
+        editor().toast?.(`提交失败：${err.message}`);
+      }
+    } finally {
+      approvalSubmitting.delete(item.id);
+      buttons.forEach((button) => { button.disabled = false; });
+      els.btnInboxApprove.disabled = false;
+      els.btnInboxReject.disabled = false;
+    }
+  }
+
   // —— Search ——
   async function runSearch() {
     const pid = state().selectedProjectId;
@@ -331,6 +573,10 @@
       if (meta && e.shiftKey && e.key.toLowerCase() === "j") {
         dispatch({ type: "LAYOUT_SIDEBAR_VIEW", view: "jobs" });
       }
+      if (meta && e.shiftKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectSidebarView("approvals");
+      }
       if (meta && e.key.toLowerCase() === "l") {
         editor().showAi?.();
       }
@@ -358,6 +604,7 @@
     if (state().sidebarView === "jobs" || state().bottomView === "terminal") {
       await loadJobs();
     }
+    await loadPendingApprovals();
     renderSidebarView();
     renderProblems();
   }
@@ -389,11 +636,27 @@
   // —— Bindings ——
   function bind() {
     initSidebarTabs();
+    initActivityBar();
     initBottomPanel();
     initKeyboard();
     renderSidebarTabs();
     renderSidebarView();
     renderBottomTabs();
+
+    window.DesktopState?.subscribe?.((_next, action) => {
+      if (action?.type === "LAYOUT_SIDEBAR_VIEW") {
+        renderSidebarTabs();
+        renderSidebarView();
+      }
+    });
+
+    if (els.themeSelect) {
+      els.themeSelect.value = window.ThemeManager?.getMode?.() || "dark";
+      els.themeSelect.addEventListener("change", () => window.ThemeManager?.setMode?.(els.themeSelect.value));
+    }
+    els.btnRefreshApprovals?.addEventListener("click", () => loadPendingApprovals({ force: true }));
+    els.btnInboxReject?.addEventListener("click", () => decideInboxApproval(approvalDetailItem, false));
+    els.btnInboxApprove?.addEventListener("click", () => decideInboxApproval(approvalDetailItem, true));
 
     if (els.btnArchiveConversation) {
       els.btnArchiveConversation.addEventListener("click", () => {
