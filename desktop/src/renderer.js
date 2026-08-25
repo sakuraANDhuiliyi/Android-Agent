@@ -982,7 +982,8 @@
     els.btnWelcomeConnect?.addEventListener("click", () => window.AiPanel?.openSettings?.());
     renderWelcomeRecent();
 
-    // Focus mode: 代码 / Agent / 审阅 (narrow-window single-pane switch)
+    // Focus mode: keep the existing workbench modes intact and mount the
+    // codexia-derived Agent Windows workspace only when explicitly selected.
     if (els.focusSwitch) {
       let focusMode = "code";
       const applyFocusMode = (mode, { quiet = false } = {}) => {
@@ -993,6 +994,9 @@
           btn.setAttribute("aria-selected", String(active));
         });
         document.body.dataset.focusMode = mode;
+        const agentWindows = mode === "agent-windows";
+        window.CodexiaAgentView?.setVisible?.(agentWindows);
+        if (agentWindows) return;
         const narrow = window.matchMedia("(max-width: 900px)").matches;
         if (mode === "agent") {
           els.aiPane.classList.remove("collapsed");
@@ -1353,6 +1357,7 @@
       };
 
       window.AiPanel?.init?.();
+      window.CodexiaAgentView?.init?.();
 
       const defaultWs = await api.getDefaultWorkspace();
       if (defaultWs) await openFolder(defaultWs);

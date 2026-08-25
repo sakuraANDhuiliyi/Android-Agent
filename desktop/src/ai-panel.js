@@ -1256,8 +1256,10 @@
       state.conversations = [conv, ...state.conversations.filter((c) => c.id !== conv.id)];
       await selectConversation(conv.id, { loadHistory: true });
       toast("已开新对话");
+      return conv;
     } catch (err) {
       toast(err.message);
+      return null;
     }
   }
 
@@ -1310,6 +1312,9 @@
       if (!job) {
         toast("任务不存在或已归档");
         return;
+      }
+      if (job.project_id && job.project_id !== state.selectedProjectId) {
+        await selectProject(job.project_id);
       }
       if (job.conversation_id && job.conversation_id !== state.conversationId) {
         await selectConversation(job.conversation_id, { loadHistory: true });
@@ -1686,6 +1691,7 @@
       if (data.conversation_id) state.conversationId = data.conversation_id;
       watchJob(job.id);
       await loadJobHistory(projectId, state.conversationId);
+      return job;
     } catch (err) {
       setRunning(false);
       els.promptInput.value = rawDraft;
@@ -1693,7 +1699,20 @@
       autosizePrompt();
       toast(err.message);
       renderTimeline();
+      return null;
     }
+  }
+
+  async function startAgentFromWindow(prompt, projectId) {
+    const text = String(prompt || "").trim();
+    if (!text || !projectId) throw new Error("请选择项目并输入问题");
+    if (!state.connected) throw new Error("Agent 服务未连接");
+    if (projectId !== state.selectedProjectId) await selectProject(projectId);
+    const conversation = await createNewConversation();
+    if (!conversation) throw new Error("无法创建 Agent 对话");
+    els.promptInput.value = text;
+    autosizePrompt();
+    return sendAsk();
   }
 
   async function controlJob(action) {
@@ -2037,6 +2056,7 @@
     onActiveFileChanged,
     onWorkspaceChanged,
     openJob: loadHistoricalJob,
+    startAgent: startAgentFromWindow,
     client,
     getState: () => state,
     dispatch: (action) => {
