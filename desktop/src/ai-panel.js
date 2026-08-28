@@ -1703,16 +1703,40 @@
     }
   }
 
-  async function startAgentFromWindow(prompt, projectId) {
+  async function startAgentFromWindow(prompt, projectId, options = {}) {
     const text = String(prompt || "").trim();
     if (!text || !projectId) throw new Error("请选择项目并输入问题");
     if (!state.connected) throw new Error("Agent 服务未连接");
     if (projectId !== state.selectedProjectId) await selectProject(projectId);
-    const conversation = await createNewConversation();
-    if (!conversation) throw new Error("无法创建 Agent 对话");
+    if (options.conversationId && options.conversationId !== state.conversationId) {
+      await selectConversation(options.conversationId, { loadHistory: true });
+    } else if (options.newConversation !== false || !state.conversationId) {
+      const conversation = await createNewConversation();
+      if (!conversation) throw new Error("无法创建 Agent 对话");
+    }
+    if (["read_only", "workspace", "ask"].includes(options.runMode)) {
+      state.runMode = options.runMode;
+      if (els.runModeSelect) els.runModeSelect.value = options.runMode;
+      savePrefs();
+    }
+    if (options.provider !== undefined && els.modelSelect) {
+      const provider = String(options.provider || "");
+      if (Array.from(els.modelSelect.options).some((option) => option.value === provider)) {
+        els.modelSelect.value = provider;
+      }
+    }
     els.promptInput.value = text;
     autosizePrompt();
     return sendAsk();
+  }
+
+  async function createConversationFromWindow(projectId) {
+    if (!projectId) throw new Error("请先选择项目");
+    if (!state.connected) throw new Error("Agent 服务未连接");
+    if (projectId !== state.selectedProjectId) await selectProject(projectId);
+    const conversation = await createNewConversation();
+    if (!conversation) throw new Error("无法创建 Agent 对话");
+    return conversation;
   }
 
   async function controlJob(action) {
@@ -2057,6 +2081,11 @@
     onWorkspaceChanged,
     openJob: loadHistoricalJob,
     startAgent: startAgentFromWindow,
+    selectProject: (projectId, options) => selectProject(projectId, options),
+    selectConversation: (conversationId, options) => selectConversation(conversationId, options),
+    createConversation: createConversationFromWindow,
+    openReview: openTurnDiffReview,
+    refreshProjects,
     client,
     getState: () => state,
     dispatch: (action) => {

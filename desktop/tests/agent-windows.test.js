@@ -57,6 +57,28 @@ function run() {
   assert.strictEqual(events[1].type, "assistant_message");
   assert.strictEqual(internal.titleFor({ id: "j1", prompt: "  Build   the page  " }), "Build the page");
 
+  const streamed = internal.displayEventsFor({
+    id: "j2",
+    events: [
+      { id: 1, type: "user_message", content: [{ type: "text", text: "请修复" }] },
+      { id: 2, type: "text_delta", message_id: "m1", delta: "这是一" },
+      { id: 3, type: "text_delta", message_id: "m1", delta: "句完整回复。" },
+      { id: 4, type: "assistant_message", message_id: "m1", text_blocks: [{ type: "text", text: "这是一句完整回复。" }] },
+    ],
+  });
+  assert.strictEqual(streamed.filter((event) => event.type === "assistant_message").length, 1);
+  assert.strictEqual(streamed.find((event) => event.type === "assistant_message")._displayText, "这是一句完整回复。");
+
+  const legacyFragments = internal.displayEventsFor({
+    id: "j3",
+    events: [
+      { id: 1, type: "assistant", content: "一句话" },
+      { id: 2, type: "assistant", content: "不应被拆开" },
+    ],
+  });
+  assert.strictEqual(legacyFragments.length, 1);
+  assert.strictEqual(legacyFragments[0]._displayText, "一句话不应被拆开");
+
   console.log("agent-windows.test: OK");
 }
 

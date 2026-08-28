@@ -11,6 +11,7 @@
   <!-- TheoKit UI (@theokit/ui) — Violet Forge design tokens + self-hosted Geist fonts -->
   <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/tokens.css" />
   <link rel="stylesheet" href="../node_modules/@theokit/ui/dist/fonts.css" />
+  <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="codexia-agent/AgentView.css" />
 </head>
@@ -35,43 +36,47 @@
     </header>
 
     <div class="workbench" id="workbench">
-      <!-- Codexia's full AppLayout shell, kept separate from the existing workbench. -->
+      <!-- Agent Windows workspace; the existing desktop workbench stays mounted. -->
       <section class="cx-shell" id="codexiaAgentView" aria-label="Agent Windows" hidden>
-        <aside class="cx-sidebar" aria-label="Codexia sidebar">
+        <aside class="cx-sidebar" aria-label="Agent Windows sidebar">
           <div class="cx-sidebar-drag" data-tauri-drag-region></div>
           <div class="cx-sidebar-top">
             <span class="cx-traffic-lights" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="cx-sidebar-top-actions">
               <button type="button" class="cx-icon-button" id="cxAgentBack" title="返回代码工作台" aria-label="返回代码工作台"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
-              <button type="button" class="cx-icon-button" id="cxSidebarSearch" title="Search" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button>
+              <button type="button" class="cx-history-arrow" disabled aria-label="后退">‹</button>
+              <button type="button" class="cx-history-arrow" disabled aria-label="前进">›</button>
             </span>
           </div>
-          <nav class="cx-primary-nav">
-            <button type="button" id="cxNewAgent"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg><span>New Chat</span></button>
-            <button type="button"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"/><path d="M8 3h8l2 4H6z"/></svg><span>Plugins</span></button>
-            <button type="button"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M12 10v3l2 2M9 2h6"/></svg><span>Automations</span></button>
-            <button type="button"><svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></svg><span>Insights</span></button>
-            <button type="button"><svg viewBox="0 0 24 24"><path d="m12 17-5 4 2-7-5-4 7-.4L12 3l1 6.6 7 .4-5 4 2 7Z"/></svg><span>Pinned</span><b>›</b></button>
-          </nav>
-          <div class="cx-agent-switcher">
-            <button type="button" class="active" title="Codex"><img src="codexia-agent/assets/codex-color.svg" alt="Codex" /></button>
-            <button type="button" title="Claude Code"><img src="codexia-agent/assets/claudecode-color.svg" alt="Claude Code" /></button>
-            <span></span>
-            <button type="button" title="Filter"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>
-            <button type="button" title="New project"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v11H3z"/><path d="M16 13v5M13.5 15.5h5"/></svg></button>
+          <div class="cx-sidebar-brand">
+            <strong>Android Agent</strong><span></span>
+            <button type="button" class="cx-icon-button" id="cxSidebarSearch" title="搜索任务" aria-label="搜索任务"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button>
+            <button type="button" class="cx-icon-button" id="cxSettings" title="连接与设置" aria-label="连接与设置"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6.2L14.6 3h-5L9 6.2a7 7 0 0 0-1.5.9l-2.4-1-2 3.4L5.1 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.5.9l.6 3.2h5l.5-3.2a7 7 0 0 0 1.5-.9l2.4 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg></button>
           </div>
+          <div class="cx-sidebar-search-box" id="cxSidebarSearchBox" hidden><input id="cxTaskSearch" type="search" placeholder="搜索 Agent 任务…" aria-label="搜索 Agent 任务"/><button type="button" id="cxCloseSearch">×</button></div>
+          <nav class="cx-primary-nav">
+            <button type="button" id="cxNewAgent"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg><span>新对话</span><b>＋</b></button>
+            <button type="button" id="cxFilterTasks"><svg viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"/></svg><span>运行任务</span></button>
+            <button type="button" data-panel="review"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="m8 12 2 2 5-5"/></svg><span>审查</span></button>
+            <button type="button" data-panel="terminal"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></svg><span>终端</span></button>
+            <button type="button" data-panel="files"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v11H3z"/></svg><span>文件</span></button>
+          </nav>
+          <div class="cx-sidebar-section-head"><span>项目</span><button type="button" id="cxNewProject" title="添加项目">＋</button></div>
           <div class="cx-project-list" id="cxProjectList"></div>
+          <div class="cx-sidebar-section-head cx-recent-head"><span>最近</span></div>
+          <div class="cx-recent-list" id="cxRecentList"></div>
           <footer class="cx-sidebar-footer">
-            <button type="button" title="Account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M6 21v-2a6 6 0 0 1 12 0v2"/></svg></button>
-            <button type="button" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.38.36.72.66 1 .3.28.7.43 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.76.6Z"/></svg></button>
+            <button type="button" id="cxAccount" title="账户与连接"><span class="cx-avatar">AA</span><span>Android Agent</span></button>
+            <button type="button" id="cxSidebarDownload" title="返回桌面工作台">⇩</button>
           </footer>
         </aside>
 
         <main class="cx-agent-main">
           <header class="cx-agent-header" data-tauri-drag-region>
-            <span class="cx-agent-header-spacer"></span>
+            <div class="cx-agent-title"><button type="button" class="cx-sidebar-restore" id="cxSidebarRestore" title="展开侧边栏" aria-label="展开侧边栏"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v11H3z"/></svg><strong id="cxHeaderTitle">Agent Windows</strong><button type="button" aria-label="更多">···</button></div>
             <div class="cx-agent-header-actions">
-              <button type="button" class="cx-open-in"><span>▣</span> Open in</button>
+              <button type="button" class="cx-header-share" id="cxHeaderShare" title="复制工作区路径">⇧</button>
+              <button type="button" class="cx-open-in" id="cxOpenIn"><span>⌁</span> 打开位置</button>
               <button type="button" class="cx-open-caret">⌄</button>
               <span class="cx-layout-switch" role="group" aria-label="Agent layout">
                 <button type="button" class="cx-layout-button active" data-layout="solo" title="Solo view"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></svg></button>
@@ -82,17 +87,34 @@
           </header>
           <div class="cx-scene" id="cxAgentCards" data-layout="solo" aria-live="polite"></div>
           <footer class="cx-agent-composer">
-            <button type="button" class="cx-agent-selector"><img src="codexia-agent/assets/codex-color.svg" alt=""/><span>Codex</span><span>⌃</span></button>
+            <div class="cx-add-menu" id="cxAddMenu" hidden>
+              <span class="cx-add-menu-label">添加</span>
+              <button type="button" id="cxAddFile"><span>⌕</span><strong>文件和文件夹</strong></button>
+              <button type="button" id="cxAddCurrentFile"><span>▣</span><strong>附加当前编辑器文件</strong></button>
+              <button type="button" id="cxAddGoal"><span>◎</span><strong>目标</strong><small>设置要持续追求的目标</small></button>
+              <button type="button" id="cxPlanMode"><span>◌</span><strong>计划模式</strong><small>先规划，再执行</small></button>
+              <span class="cx-add-menu-label">工作区</span>
+              <button type="button" data-panel="review"><span>✓</span><strong>审查更改</strong><small>查看 Agent 修改的文件</small></button>
+              <button type="button" data-panel="terminal"><span>⌘</span><strong>终端</strong><small>打开项目终端</small></button>
+              <button type="button" data-panel="todos"><span>☷</span><strong>Todos</strong><small>管理任务清单</small></button>
+              <button type="button" data-panel="files"><span>▱</span><strong>项目文件</strong><small>浏览和预览工作区文件</small></button>
+            </div>
             <div class="cx-composer-shell">
               <textarea id="cxAgentPrompt" rows="2" placeholder="Do anything... / $ @" aria-label="Agent prompt"></textarea>
               <div class="cx-composer-bar">
-                <button type="button" class="cx-composer-plus" title="Attach">＋</button>
-                <button type="button" class="cx-approval-mode">▣&nbsp; Approval for me</button>
+                <button type="button" class="cx-composer-plus" id="cxAttach" title="Attach a file">＋</button>
+                <button type="button" class="cx-approval-mode" id="cxApprovalMode">▣&nbsp; Approval for me</button>
+                <span class="cx-task-controls" id="cxTaskControls" hidden>
+                  <span id="cxTaskStatus">Running</span>
+                  <button type="button" id="cxPauseTask">Pause</button>
+                  <button type="button" id="cxResumeTask" hidden>Resume</button>
+                  <button type="button" id="cxStopTask">Stop</button>
+                </span>
                 <span class="cx-composer-spacer"></span>
-                <button type="button" class="cx-model-button">GPT-5.6-Terra</button>
+                <select class="cx-model-button" id="cxModelSelect" aria-label="Agent model"><option value="">Default model</option></select>
                 <button type="button" class="cx-effort-button">Medium</button>
                 <button type="button" class="cx-chevron-button">⌄</button>
-                <button type="button" class="cx-mic-button" title="Voice"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+                <button type="button" class="cx-mic-button" id="cxMic" title="Voice"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
                 <button type="button" class="cx-send-button" id="cxSendAgent" title="Start agent"><svg viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></svg></button>
               </div>
             </div>
@@ -102,17 +124,21 @@
         <div class="cx-panel-resizer" aria-hidden="true"><span>⋮</span></div>
         <aside class="cx-right-panel">
           <header class="cx-right-tabs" data-tauri-drag-region>
-            <div class="cx-right-tab-list">
-              <button type="button" data-panel="review"><span>＋</span> Review</button>
-              <button type="button" data-panel="terminal"><span>▣</span> Terminal</button>
-              <button type="button" class="active" data-panel="todos"><span>☷</span> Todos</button>
-              <button type="button" data-panel="files"><span>▱</span> Files</button>
-              <button type="button" class="cx-panel-plus" title="Open panel">＋</button>
-            </div>
-            <div class="cx-panel-actions"><button title="Focus panel">↗</button><button title="Hide panel">◧</button></div>
+            <button type="button" class="cx-panel-home" id="cxPanelHome" title="功能入口">‹</button>
+            <strong id="cxPanelTitle">工作区</strong>
+            <div class="cx-panel-actions"><button type="button" id="cxFocusPanel" title="聚焦面板">↗</button><button type="button" id="cxCollapsePanel" title="隐藏面板">◧</button></div>
           </header>
+          <section class="cx-right-content cx-launcher" data-panel-content="launcher">
+            <div class="cx-launcher-list">
+              <button type="button" data-panel="review"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="m8 12 2 2 5-5"/></svg><span>审查</span><kbd>⌃⇧G</kbd></button>
+              <button type="button" data-panel="terminal"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></svg><span>终端</span><kbd>⌃`</kbd></button>
+              <button type="button" id="cxOpenBrowser"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span>浏览器</span><kbd>⌘T</kbd></button>
+              <button type="button" data-panel="files"><svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v11H3z"/></svg><span>文件</span><kbd>⌘P</kbd></button>
+              <button type="button" data-panel="todos"><svg viewBox="0 0 24 24"><circle cx="7" cy="7" r="2"/><path d="m6 7 1 1 2-3M12 7h7M5 14h14M5 19h14"/></svg><span>任务清单</span><kbd>⌥⌘S</kbd></button>
+            </div>
+          </section>
           <section class="cx-right-content" data-panel-content="todos">
-            <div class="cx-todo-toolbar"><button type="button" id="cxHideDone">Hide done</button></div>
+            <div class="cx-todo-toolbar"><button type="button" id="cxClearDone" hidden>Clear done</button><button type="button" id="cxHideDone">Hide done</button></div>
             <div class="cx-category-head"><button type="button" id="cxCategoryToggle">⌄ <span>Categories</span></button><button type="button" id="cxAddCategory">＋</button></div>
             <div class="cx-categories" id="cxCategories"></div>
             <div class="cx-todo-list" id="cxTodoList"></div>
@@ -123,9 +149,19 @@
             </div>
             <div class="cx-plux"><button type="button">Capture from any app, with attachments and archive — plux</button><button type="button" id="cxDismissPlux">×</button></div>
           </section>
-          <section class="cx-right-content cx-panel-placeholder" data-panel-content="review" hidden><span>Review changes from the current Agent here.</span></section>
-          <section class="cx-right-content cx-panel-placeholder" data-panel-content="terminal" hidden><span>Terminal</span><code>$ Ready</code></section>
-          <section class="cx-right-content cx-panel-placeholder" data-panel-content="files" hidden><span>Files for the selected workspace appear here.</span></section>
+          <section class="cx-right-content cx-review-panel" data-panel-content="review" hidden>
+            <div class="cx-panel-toolbar"><strong>Changes</strong><span id="cxReviewSummary"></span><button type="button" id="cxOpenReview">Open in editor</button><button type="button" id="cxRefreshReview">↻</button></div>
+            <div class="cx-review-files" id="cxReviewFiles"></div>
+            <pre class="cx-diff-view" id="cxDiffView">Select an Agent task with file changes.</pre>
+          </section>
+          <section class="cx-right-content cx-terminal-panel" data-panel-content="terminal" hidden>
+            <div class="cx-panel-toolbar"><strong>Terminal</strong><span id="cxTerminalStatus">Not started</span><button type="button" id="cxNewTerminal">＋ New</button><button type="button" id="cxCloseTerminal">×</button></div>
+            <div class="cx-terminal-host" id="cxTerminalHost"></div>
+          </section>
+          <section class="cx-right-content cx-files-panel" data-panel-content="files" hidden>
+            <div class="cx-panel-toolbar"><strong id="cxFilesTitle">Files</strong><button type="button" id="cxOpenSelectedFile" disabled>Open in editor</button><button type="button" id="cxRefreshFiles">↻</button></div>
+            <div class="cx-files-layout"><div class="cx-files-tree" id="cxFilesTree"></div><pre class="cx-file-preview" id="cxFilePreview">Select a file to preview it.</pre></div>
+          </section>
         </aside>
       </section>
 
