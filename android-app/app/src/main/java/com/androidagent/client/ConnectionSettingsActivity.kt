@@ -32,10 +32,7 @@ class ConnectionSettingsActivity : AppCompatActivity() {
 
         binding.btnReconnect.setOnClickListener { reconnect() }
         binding.btnEditConnection.setOnClickListener {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .putExtra(DeepLink.EXTRA_EDIT_CONNECTION, true),
-            )
+            MainActivity.startLogin(this)
         }
         binding.btnDisconnect.setOnClickListener { confirmDisconnect() }
     }
@@ -81,9 +78,8 @@ class ConnectionSettingsActivity : AppCompatActivity() {
             .setTitle(R.string.disconnect_confirm_title)
             .setMessage(R.string.disconnect_confirm_message)
             .setPositiveButton(R.string.disconnect) { _, _ ->
-                prefs.apiToken = ""
-                prefs.userId = ""
-                MainNavActivity.start(this)
+                prefs.clearAuth()
+                MainNavActivity.start(this, DeepLink.TAB_CREATIVE)
             }
             .setNegativeButton(R.string.cancel, null)
             .show()

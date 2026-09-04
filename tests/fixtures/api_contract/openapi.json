@@ -405,6 +405,33 @@
         "title": "DeviceRequest",
         "type": "object"
       },
+      "EmailCodeLoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 12,
+            "minLength": 6,
+            "title": "Code",
+            "type": "string"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceRequest"
+          },
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "code",
+          "device"
+        ],
+        "title": "EmailCodeLoginRequest",
+        "type": "object"
+      },
       "EmailRequest": {
         "additionalProperties": false,
         "properties": {
@@ -419,6 +446,19 @@
           "email"
         ],
         "title": "EmailRequest",
+        "type": "object"
+      },
+      "GuestSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceRequest"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "GuestSessionRequest",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1006,6 +1046,88 @@
         "summary": "Change Account Password"
       }
     },
+    "/api/auth/email-code/login": {
+      "post": {
+        "operationId": "login_with_email_code_api_auth_email_code_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailCodeLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Login With Email Code Api Auth Email Code Login Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login With Email Code"
+      }
+    },
+    "/api/auth/email-code/request": {
+      "post": {
+        "operationId": "request_email_login_code_api_auth_email_code_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Request Email Login Code Api Auth Email Code Request Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Email Login Code"
+      }
+    },
     "/api/auth/forgot-password": {
       "post": {
         "operationId": "forgot_password_api_auth_forgot_password_post",
@@ -1046,6 +1168,46 @@
           }
         },
         "summary": "Forgot Password"
+      }
+    },
+    "/api/auth/guest": {
+      "post": {
+        "operationId": "create_guest_session_api_auth_guest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Guest Session Api Auth Guest Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Guest Session"
       }
     },
     "/api/auth/login": {
@@ -6259,7 +6421,10 @@
     "GET /api/account",
     "PATCH /api/account",
     "POST /api/account/change-password",
+    "POST /api/auth/email-code/login",
+    "POST /api/auth/email-code/request",
     "POST /api/auth/forgot-password",
+    "POST /api/auth/guest",
     "POST /api/auth/login",
     "POST /api/auth/logout",
     "POST /api/auth/register",

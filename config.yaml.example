@@ -25,9 +25,10 @@ auto_build_after_edit: false
 server_host: 127.0.0.1
 server_port: 8000
 
-# 推荐在服务端运行 `python3 -m agent register-user` 创建账号。
-# 如确需开放网络注册，必须同时配置独立注册密钥：
+# 新版客户端使用邮箱和密码。开放网络自助注册时建议同时开启邮箱验证；
+# registration_token 只用于兼容旧版 /api/pair，不参与 /api/auth/register：
 # registration_enabled: true
+# email_verification_required: true
 # registration_token: "请换成随机长字符串"
 # 也可通过环境变量 AGENT_REGISTRATION_TOKEN 提供注册密钥。
 registration_enabled: false

@@ -16,7 +16,7 @@ class AgentPrefs(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var serverUrl: String
-        get() = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL).orEmpty()
+        get() = prefs.getString(KEY_SERVER_URL, BuildConfig.AGENT_SERVER_URL).orEmpty()
         set(value) = prefs.edit().putString(KEY_SERVER_URL, value.trim()).apply()
 
     var apiToken: String
@@ -47,14 +47,26 @@ class AgentPrefs(context: Context) {
 
     fun saveAuth(account: AuthAccount) {
         account.token?.let { apiToken = it }
+        guestMode = false
         userId = account.account.userId
         displayName = account.account.displayName
         displayEmail = account.account.email
         lastSyncAt = System.currentTimeMillis()
     }
 
+    fun saveGuestAuth(account: AuthAccount) {
+        account.token?.let { apiToken = it }
+        guestMode = true
+        userId = account.account.userId
+        displayName = "游客"
+        displayEmail = ""
+        guestRemaining = account.account.guestRemaining ?: 3
+        lastSyncAt = System.currentTimeMillis()
+    }
+
     fun clearAuth() {
         apiToken = ""
+        guestMode = true
         userId = ""
         displayName = ""
         displayEmail = ""
@@ -62,6 +74,14 @@ class AgentPrefs(context: Context) {
         selectedConversationId = null
         selectedJobId = null
     }
+
+    var guestMode: Boolean
+        get() = prefs.getBoolean(KEY_GUEST_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_GUEST_MODE, value).apply()
+
+    var guestRemaining: Int
+        get() = prefs.getInt(KEY_GUEST_REMAINING, 3)
+        set(value) = prefs.edit().putInt(KEY_GUEST_REMAINING, value.coerceIn(0, 3)).apply()
 
     var selectedProjectId: String?
         get() = prefs.getString(KEY_SELECTED_PROJECT, null)
@@ -198,6 +218,8 @@ class AgentPrefs(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_API_TOKEN = "api_token"
         private const val KEY_USER_ID = "user_id"
+        private const val KEY_GUEST_MODE = "guest_mode"
+        private const val KEY_GUEST_REMAINING = "guest_remaining"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_SELECTED_PROJECT = "selected_project"
         private const val KEY_SELECTED_CONVERSATION = "selected_conversation"
@@ -215,7 +237,6 @@ class AgentPrefs(context: Context) {
         private const val KEY_EVENT_CURSOR = "event_cursor"
         private const val KEY_CONV_CURSOR = "conv_cursor"
         private const val KEY_SNIPPET = "snippet"
-        private const val DEFAULT_SERVER_URL = "https://192.168.1.100:8000"
         private const val DEFAULT_PROVIDER = "auto"
         private const val KEYSTORE_ALIAS = "android_agent_api_token"
     }

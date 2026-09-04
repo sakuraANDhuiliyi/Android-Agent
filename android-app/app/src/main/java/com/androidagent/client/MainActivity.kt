@@ -1,16 +1,18 @@
 package com.androidagent.client
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.View
+import android.os.CountDownTimer
 import android.view.WindowManager
-import android.widget.Toast
+import android.view.inputmethod.EditorInfo
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
@@ -18,15 +20,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 连接 gate：仅负责首次连接 / 注册 / 编辑凭据。
- * 连接成功后进入 MainNavActivity，本页不再承载项目、任务与日志流程。
+ * 入口页：负责邮箱密码登录、访客入口与注册。
+ * 登录或选择访客模式后进入 MainNavActivity，本页不再承载项目、任务与日志流程。
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: AgentPrefs
-
-    private var advancedOpen = false
+    private var codeLogin = false
+    private var codeTimer: CountDownTimer? = null
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -36,12 +38,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         prefs = AgentPrefs(this)
+        applyConfiguredServer()
         JobNotifier.ensureChannel(this)
 
-        if (!intent.getBooleanExtra(DeepLink.EXTRA_EDIT_CONNECTION, false) &&
-            prefs.apiToken.isNotBlank() &&
-            prefs.serverUrl.isNotBlank()
-        ) {
+        val loginRequired = intent.getBooleanExtra(DeepLink.EXTRA_LOGIN_REQUIRED, false)
+        val connected = prefs.apiToken.isNotBlank() && prefs.serverUrl.isNotBlank()
+        if (!loginRequired && (connected || prefs.guestMode)) {
             routeConnected()
             return
         }
@@ -49,99 +51,85 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.editServerUrl.setText(prefs.serverUrl)
-        binding.editApiToken.setText(prefs.apiToken)
-        binding.textStatus.text = getString(R.string.status_disconnected)
+        binding.textStatus.isVisible = false
 
-        binding.btnConnect.setOnClickListener { connectServer() }
-        binding.btnRegister.setOnClickListener { confirmRegisterUser() }
-        binding.btnToggleAdvanced.setOnClickListener { toggleAdvanced() }
-        binding.btnGoRegister.setOnClickListener {
-            prefs.serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty().ifBlank { prefs.serverUrl }
-            RegisterActivity.start(this)
-        }
+        binding.btnGoRegister.setOnClickListener { RegisterActivity.start(this) }
         binding.btnForgot.setOnClickListener { ForgotPasswordActivity.start(this) }
         binding.btnLoginCloud.setOnClickListener { loginAccount() }
-
-        if (intent.getBooleanExtra(DeepLink.EXTRA_EDIT_CONNECTION, false)) {
-            advancedOpen = true
-            binding.layoutAdvanced.visibility = android.view.View.VISIBLE
-            binding.btnToggleAdvanced.setText(R.string.collapse)
+        binding.btnContinueGuest.setOnClickListener { finish() }
+        binding.btnSendCode.setOnClickListener { requestLoginCode() }
+        binding.authMethodToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) switchAuthMethod(checkedId == R.id.btnCodeMode)
         }
-
-        if (binding.editApiToken.text.isNullOrBlank() && prefs.apiToken.isNotBlank()) {
-            binding.editApiToken.setText(prefs.apiToken)
-        }
-    }
-
-    private fun toggleAdvanced() {
-        advancedOpen = !advancedOpen
-        binding.layoutAdvanced.visibility = if (advancedOpen) View.VISIBLE else View.GONE
-        binding.btnToggleAdvanced.text = getString(
-            if (advancedOpen) R.string.collapse else R.string.custom_server_advanced,
-        )
-    }
-
-    private fun connectServer() {
-        binding.layoutServerUrl.error = null
-        binding.layoutApiToken.error = null
-        val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
-        if (serverUrl.isBlank()) {
-            binding.layoutServerUrl.error = getString(R.string.server_url_required)
-            return
-        }
-        val apiToken = binding.editApiToken.text?.toString()?.trim().orEmpty()
-        if (apiToken.isBlank()) {
-            binding.layoutApiToken.error = getString(R.string.api_token_required)
-            return
-        }
-
-        val api = AgentApi(serverUrl, apiToken)
-        binding.btnConnect.isEnabled = false
-        binding.textStatus.text = getString(R.string.connecting)
-        lifecycleScope.launch {
-            try {
-                val health = withContext(Dispatchers.IO) { api.health() }
-                prefs.serverUrl = serverUrl
-                prefs.apiToken = apiToken
-                if (health.userId.isNotBlank()) {
-                    prefs.userId = health.userId
-                }
-                prefs.lastSyncAt = System.currentTimeMillis()
-                maybeRequestNotificationPermission()
-                binding.textStatus.text = getString(R.string.status_connected)
-                MainNavActivity.start(this@MainActivity)
-                finish()
-            } catch (e: Exception) {
-                binding.layoutApiToken.error = e.message ?: getString(R.string.connect_failed)
-                binding.textStatus.text = getString(R.string.connect_failed_status, e.message ?: "")
-            } finally {
-                binding.btnConnect.isEnabled = true
+        binding.editPassword.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                loginAccount()
+                true
+            } else {
+                false
             }
         }
+        binding.editCode.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                loginAccount()
+                true
+            } else false
+        }
+        savedInstanceState?.let { state ->
+            binding.editEmail.setText(state.getString(STATE_EMAIL).orEmpty())
+            binding.editPassword.setText(state.getString(STATE_PASSWORD).orEmpty())
+            binding.editCode.setText(state.getString(STATE_CODE).orEmpty())
+            switchAuthMethod(state.getBoolean(STATE_CODE_MODE, false))
+        }
+    }
+
+    private fun applyConfiguredServer() {
+        val configuredUrl = BuildConfig.AGENT_SERVER_URL.trim().trimEnd('/')
+        val previousUrl = prefs.serverUrl.trim().trimEnd('/')
+        if (previousUrl != configuredUrl && prefs.apiToken.isNotBlank()) {
+            prefs.clearAuth()
+            prefs.guestMode = false
+        }
+        prefs.serverUrl = configuredUrl
     }
 
     private fun loginAccount() {
         binding.layoutEmail.error = null
         binding.layoutPassword.error = null
+        binding.layoutCode.error = null
+        binding.textStatus.isVisible = false
         val email = binding.editEmail.text?.toString()?.trim().orEmpty()
         val password = binding.editPassword.text?.toString().orEmpty()
+        val code = binding.editCode.text?.toString()?.trim().orEmpty()
         if (email.isBlank()) {
             binding.layoutEmail.error = getString(R.string.email_required)
             return
         }
-        if (password.isBlank()) {
+        if (!codeLogin && password.isBlank()) {
             binding.layoutPassword.error = getString(R.string.password_required)
             return
         }
-        val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
-            .ifBlank { prefs.serverUrl }
+        if (codeLogin && code.length < 6) {
+            binding.layoutCode.error = getString(R.string.code_required)
+            return
+        }
+        val serverUrl = prefs.serverUrl
         binding.btnLoginCloud.isEnabled = false
-        binding.textStatus.text = getString(R.string.connecting)
+        binding.btnLoginCloud.setText(R.string.logging_in)
+        binding.textStatus.text = getString(R.string.auth_connecting)
+        binding.textStatus.isVisible = true
         lifecycleScope.launch {
             try {
                 val auth = withContext(Dispatchers.IO) {
-                    AgentApi(serverUrl).login(email, password, currentDevice(this@MainActivity))
+                    if (codeLogin) {
+                        AgentApi(serverUrl).loginWithEmailCode(
+                            email,
+                            code,
+                            currentDevice(this@MainActivity),
+                        )
+                    } else {
+                        AgentApi(serverUrl).login(email, password, currentDevice(this@MainActivity))
+                    }
                 }
                 prefs.serverUrl = serverUrl
                 prefs.saveAuth(auth)
@@ -150,8 +138,18 @@ class MainActivity : AppCompatActivity() {
                 finish()
             } catch (e: ApiException) {
                 when (e.errorCode) {
-                    "account_not_found" -> binding.layoutEmail.error = e.detail
-                    "invalid_password" -> binding.layoutPassword.error = e.detail
+                    "account_not_found" -> {
+                        binding.textStatus.isVisible = false
+                        binding.layoutEmail.error = e.detail
+                    }
+                    "invalid_password" -> {
+                        binding.textStatus.isVisible = false
+                        binding.layoutPassword.error = e.detail
+                    }
+                    "invalid_code" -> {
+                        binding.textStatus.isVisible = false
+                        binding.layoutCode.error = e.detail
+                    }
                     "email_not_verified" -> VerifyEmailActivity.start(this@MainActivity, email)
                     else -> binding.textStatus.text = e.detail
                 }
@@ -159,58 +157,19 @@ class MainActivity : AppCompatActivity() {
                 binding.textStatus.text = getString(R.string.connect_failed_status, e.message ?: "")
             } finally {
                 binding.btnLoginCloud.isEnabled = true
+                binding.btnLoginCloud.setText(R.string.login)
             }
         }
     }
 
-    private fun confirmRegisterUser() {
-        val serverUrl = binding.editServerUrl.text?.toString()?.trim().orEmpty()
-        val registrationToken =
-            binding.editRegistrationToken.text?.toString()?.trim().orEmpty()
-        if (serverUrl.isBlank()) {
-            toast("请填写服务器地址")
-            return
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::binding.isInitialized) {
+            outState.putString(STATE_EMAIL, binding.editEmail.text?.toString().orEmpty())
+            outState.putString(STATE_PASSWORD, binding.editPassword.text?.toString().orEmpty())
+            outState.putString(STATE_CODE, binding.editCode.text?.toString().orEmpty())
+            outState.putBoolean(STATE_CODE_MODE, codeLogin)
         }
-        if (registrationToken.isBlank()) {
-            toast("请输入服务端配置的注册密钥")
-            return
-        }
-        if (prefs.apiToken.isBlank()) {
-            registerUser(serverUrl, registrationToken)
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.register_confirm_title)
-            .setMessage(R.string.register_confirm_message)
-            .setPositiveButton(R.string.register_user) { _, _ ->
-                registerUser(serverUrl, registrationToken)
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun registerUser(serverUrl: String, registrationToken: String) {
-        prefs.serverUrl = serverUrl
-        binding.btnRegister.isEnabled = false
-        lifecycleScope.launch {
-            try {
-                val account = withContext(Dispatchers.IO) {
-                    AgentApi(serverUrl).register(registrationToken)
-                }
-                prefs.userId = account.userId
-                prefs.apiToken = account.token
-                prefs.selectedProjectId = null
-                binding.editApiToken.setText(account.token)
-                binding.editRegistrationToken.text?.clear()
-                binding.textStatus.text = "注册成功，正在连接..."
-                connectServer()
-            } catch (e: Exception) {
-                binding.textStatus.text = "注册失败: ${e.message}"
-                toast("注册失败")
-            } finally {
-                binding.btnRegister.isEnabled = true
-            }
-        }
+        super.onSaveInstanceState(outState)
     }
 
     private fun maybeRequestNotificationPermission() {
@@ -225,7 +184,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun routeConnected() {
-        if (DeepLink.hasConversationTarget(intent)) {
+        val connected = prefs.apiToken.isNotBlank() && prefs.serverUrl.isNotBlank()
+        if (connected && DeepLink.hasConversationTarget(intent)) {
             startActivity(
                 DeepLink.conversationIntent(
                     this,
@@ -236,12 +196,87 @@ class MainActivity : AppCompatActivity() {
                 ),
             )
         } else {
-            startActivity(DeepLink.mainNavIntent(this, intent.getStringExtra(DeepLink.EXTRA_TAB)))
+            val requestedTab = intent.getStringExtra(DeepLink.EXTRA_TAB)
+            val tab = requestedTab ?: if (connected) null else DeepLink.TAB_CREATIVE
+            startActivity(DeepLink.mainNavIntent(this, tab))
         }
         finish()
     }
 
-    private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    private fun switchAuthMethod(useCode: Boolean) {
+        codeLogin = useCode
+        if (::binding.isInitialized) {
+            binding.layoutPassword.isVisible = !useCode
+            binding.btnForgot.isVisible = !useCode
+            binding.codeRow.isVisible = useCode
+            binding.authMethodToggle.check(if (useCode) R.id.btnCodeMode else R.id.btnPasswordMode)
+            binding.layoutPassword.error = null
+            binding.layoutCode.error = null
+        }
+    }
+
+    private fun requestLoginCode() {
+        val email = binding.editEmail.text?.toString()?.trim().orEmpty()
+        binding.layoutEmail.error = null
+        if (email.isBlank()) {
+            binding.layoutEmail.error = getString(R.string.email_required)
+            return
+        }
+        binding.btnSendCode.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    AgentApi(prefs.serverUrl).requestEmailLoginCode(email)
+                }
+                binding.textStatus.text = getString(R.string.code_sent_hint)
+                binding.textStatus.isVisible = true
+                startCodeCountdown()
+            } catch (e: ApiException) {
+                binding.btnSendCode.isEnabled = true
+                binding.textStatus.text = e.detail
+                binding.textStatus.isVisible = true
+            } catch (e: Exception) {
+                binding.btnSendCode.isEnabled = true
+                binding.textStatus.text = getString(R.string.connect_failed_status, e.message.orEmpty())
+                binding.textStatus.isVisible = true
+            }
+        }
+    }
+
+    private fun startCodeCountdown() {
+        codeTimer?.cancel()
+        codeTimer = object : CountDownTimer(60_000, 1_000) {
+            override fun onTick(millisUntilFinished: Long) {
+                if (::binding.isInitialized) {
+                    binding.btnSendCode.text = getString(R.string.resend_code_seconds, millisUntilFinished / 1000)
+                }
+            }
+
+            override fun onFinish() {
+                if (::binding.isInitialized) {
+                    binding.btnSendCode.isEnabled = true
+                    binding.btnSendCode.setText(R.string.send_code)
+                }
+            }
+        }.start()
+    }
+
+    override fun onDestroy() {
+        codeTimer?.cancel()
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val STATE_EMAIL = "login_email"
+        private const val STATE_PASSWORD = "login_password"
+        private const val STATE_CODE = "login_code"
+        private const val STATE_CODE_MODE = "login_code_mode"
+
+        fun startLogin(context: Context) {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .putExtra(DeepLink.EXTRA_LOGIN_REQUIRED, true),
+            )
+        }
     }
 }

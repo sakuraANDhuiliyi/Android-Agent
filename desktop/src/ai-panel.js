@@ -52,9 +52,7 @@
     accountEmail: document.getElementById("accountEmail"),
     accountPassword: document.getElementById("accountPassword"),
     apiToken: document.getElementById("apiToken"),
-    registrationToken: document.getElementById("registrationToken"),
     settingsHint: document.getElementById("settingsHint"),
-    btnPair: document.getElementById("btnPair"),
     btnAccountLogin: document.getElementById("btnAccountLogin"),
     btnOpenSettings: document.getElementById("btnOpenSettings"),
     btnActivitySettings: document.getElementById("btnActivitySettings"),
@@ -201,7 +199,6 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
-      if (data.serverUrl) els.serverUrl.value = data.serverUrl;
       if (data.autoFallback) els.autoFallback.checked = true;
       if (data.runMode && ["read_only", "workspace", "ask"].includes(data.runMode)) {
         state.runMode = data.runMode;
@@ -218,7 +215,6 @@
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        serverUrl: els.serverUrl.value.trim(),
         autoFallback: els.autoFallback.checked,
         runMode: state.runMode,
         projectId: state.selectedProjectId || "",
@@ -818,7 +814,7 @@
     if (!token) {
       state.connected = false;
       setConn("err", "需要 Token");
-      els.settingsHint.textContent = "请输入服务端生成的访问 Token";
+      els.settingsHint.textContent = "请使用邮箱和密码登录";
       if (!silent) els.settingsDialog.showModal();
       updateComposer();
       updateStatusDot();
@@ -878,21 +874,6 @@
       if (!silent) toast(`连接失败: ${err.message}`);
       throw err;
     }
-  }
-
-  async function pair() {
-    const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
-    const secret = els.registrationToken.value.trim();
-    if (!secret) {
-      toast("请输入服务端配对密钥");
-      return;
-    }
-    client.configure({ baseUrl, token: "" });
-    const account = await client.pair(secret);
-    els.apiToken.value = account.token;
-    els.registrationToken.value = "";
-    await connect();
-    toast(`配对成功: ${account.user_id}`);
   }
 
   function desktopDevice() {
@@ -1881,11 +1862,6 @@
     els.btnStartServer.addEventListener("click", () => startServer());
     els.btnStopServer.addEventListener("click", () => stopServer());
     els.btnCopyPhoneUrl.addEventListener("click", () => copyPhoneUrl());
-    els.btnPair?.addEventListener("click", () =>
-      pair()
-        .then(() => els.settingsDialog.close())
-        .catch((err) => toast(`配对失败: ${err.message}`)),
-    );
     els.phoneUrl.addEventListener("click", () => copyPhoneUrl());
     desktop.onAgentServerExit?.(async () => {
       state.serverManaged = false;
@@ -1955,19 +1931,15 @@
 
     els.settingsForm.addEventListener("submit", async (ev) => {
       const submitter = ev.submitter;
-      const value = submitter?.value || "connect";
+      const value = submitter?.value || "login";
       if (value === "cancel") return;
       ev.preventDefault();
       try {
-        await connect();
+        await loginAccount();
         els.settingsDialog.close();
       } catch (_) {
         /* keep open */
       }
-    });
-
-    els.btnAccountLogin?.addEventListener("click", () => {
-      loginAccount().catch(() => {});
     });
 
     els.createProjectForm.addEventListener("submit", async (ev) => {
@@ -2030,6 +2002,13 @@
     renderChips();
     updateComposer();
     updateStatusDot();
+    if (desktop?.getServiceUrl) {
+      try {
+        els.serverUrl.value = await desktop.getServiceUrl();
+      } catch (err) {
+        els.settingsHint.textContent = `服务配置错误: ${err.message}`;
+      }
+    }
     const initialServerStatus = await refreshServerStatus();
     if (desktop?.getCredential) {
       const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");

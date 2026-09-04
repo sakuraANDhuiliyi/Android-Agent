@@ -19,6 +19,8 @@ const AGENT_PORT = Number(process.env.AGENT_SMOKE_PORT || 8123);
 const STUB_PORT = Number(process.env.AGENT_SMOKE_STUB_PORT || 9477);
 const REG_TOKEN = "smoke-reg-token-123";
 const SERVER_URL = `http://127.0.0.1:${AGENT_PORT}`;
+const ACCOUNT_EMAIL = "desktop-smoke@example.com";
+const ACCOUNT_PASSWORD = "secure-smoke-123";
 
 const SMOKE_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "agent-smoke-data-"));
 const SMOKE_PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "agent-smoke-prof-"));
@@ -194,8 +196,19 @@ async function main() {
   await waitForTcp(AGENT_PORT, 30000);
 
   // 3) register a smoke user
-  const reg = await httpJson("POST", "/api/register", {
-    headers: { "X-Registration-Token": REG_TOKEN },
+  const reg = await httpJson("POST", "/api/auth/register", {
+    body: {
+      email: ACCOUNT_EMAIL,
+      password: ACCOUNT_PASSWORD,
+      display_name: "Desktop Smoke",
+      device: {
+        device_id: "smoke-bootstrap",
+        device_name: "Smoke Bootstrap",
+        device_type: "desktop",
+        platform: process.platform,
+        app_version: "0.1.0"
+      }
+    },
   });
   assert.strictEqual(reg.status, 201, `register failed: ${JSON.stringify(reg.json)}`);
   console.log("ok - registered smoke user", reg.json.user_id);
@@ -207,7 +220,11 @@ async function main() {
       // subprocesses; without these flags the app FATALs on startup.
       args: [".", "--no-sandbox", "--disable-gpu"],
       cwd: desktopDir,
-      env: { ...process.env, AGENT_DESKTOP_USER_DATA: SMOKE_PROFILE },
+      env: {
+        ...process.env,
+        AGENT_DESKTOP_USER_DATA: SMOKE_PROFILE,
+        ANDROID_AGENT_SERVER_URL: SERVER_URL,
+      },
     });
 
   let app = await launchApp();
@@ -224,20 +241,18 @@ async function main() {
   await page.waitForSelector("#promptInput", { timeout: 20000 });
   await page.waitForFunction(() => window.AiPanel?.openSettings, null, { timeout: 20000 });
 
-  // 5) pair against the smoke service (real register/connect flow)
+  // 5) log in using only email + password against the configured service
   await page.evaluate(() => window.AiPanel.openSettings());
-  await page.fill("#serverUrl", SERVER_URL);
-  await page.fill("#registrationToken", REG_TOKEN);
-  await page.click("#btnPair");
+  await page.fill("#accountEmail", ACCOUNT_EMAIL);
+  await page.fill("#accountPassword", ACCOUNT_PASSWORD);
+  await page.click("#btnAccountLogin");
   await waitUntil(
     () => page.evaluate(() => document.getElementById("connPill").dataset.state === "ok"),
     20000,
     "connection ok",
   );
-  // The desktop pairs via /api/pair, which registers its OWN user account —
-  // distinct from the user created by the /api/register probe above. All
-  // workspace assertions must use the account the desktop actually uses.
   const userId = await page.evaluate(() => window.AiPanel.getState().userId);
+  assert.strictEqual(userId, reg.json.account.user_id, "desktop logged into the registered account");
   assert.ok(/^usr_/.test(userId), `desktop reports user id: ${userId}`);
   const panelConnectionStatus = await page.evaluate(
     () => document.getElementById("aiStatusText").textContent.trim(),

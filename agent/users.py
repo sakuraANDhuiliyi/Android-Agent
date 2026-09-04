@@ -107,11 +107,16 @@ class UserStore:
             for name, definition in {
                 "email": "TEXT", "password_hash": "TEXT", "display_name": "TEXT NOT NULL DEFAULT ''",
                 "email_verified_at": "TEXT", "updated_at": "TEXT", "disabled_at": "TEXT",
-                "deleted_at": "TEXT",
+                "deleted_at": "TEXT", "account_type": "TEXT NOT NULL DEFAULT 'account'",
+                "guest_device_id": "TEXT", "guest_message_count": "INTEGER NOT NULL DEFAULT 0",
             }.items():
                 if name not in existing:
                     db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_guest_device "
+                "ON users(guest_device_id) WHERE guest_device_id IS NOT NULL"
+            )
             db.execute("""CREATE TABLE IF NOT EXISTS user_tokens (
                 token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)""")
@@ -158,12 +163,16 @@ class UserStore:
 
     @staticmethod
     def _account(row: sqlite3.Row) -> dict[str, Any]:
+        is_guest = str(row["account_type"] or "account") == "guest"
+        used = int(row["guest_message_count"] or 0)
         return {
             "user_id": str(row["user_id"]), "email": str(row["email"] or ""),
             "display_name": str(row["display_name"] or ""),
             "email_verified": bool(row["email_verified_at"]), "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"] or row["created_at"]),
             "disabled": bool(row["disabled_at"]),
+            "is_guest": is_guest,
+            "guest_remaining": max(0, 3 - used) if is_guest else None,
         }
 
     def _new_session(self, db: sqlite3.Connection, user_id: str, **device: str) -> tuple[str, str]:
@@ -222,6 +231,79 @@ class UserStore:
                 token, session_id = self._new_session(db, user_id, **(device or {}))
             account = self.get_account(user_id, db=db)
         return {"account": account, "token": token, "session_id": session_id}
+
+    def guest_session(self, *, device: dict[str, str]) -> dict[str, Any]:
+        """Return a stable, server-backed guest identity for one app installation."""
+        device_id = (device.get("device_id") or "").strip()[:128]
+        if not device_id:
+            raise UserStoreError("缺少设备标识", code="invalid_device")
+        created = _iso()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM users WHERE account_type='guest' AND guest_device_id=? "
+                "AND deleted_at IS NULL",
+                (device_id,),
+            ).fetchone()
+            if row is None:
+                user_id = validate_id(f"usr_{uuid.uuid4().hex}", kind="user_id")
+                bootstrap = secrets.token_urlsafe(32)
+                db.execute(
+                    """INSERT INTO users(
+                        user_id,token_hash,created_at,display_name,updated_at,
+                        account_type,guest_device_id,guest_message_count
+                    ) VALUES(?,?,?,?,?,'guest',?,0)""",
+                    (
+                        user_id,
+                        self._token_hash(bootstrap),
+                        created,
+                        "游客",
+                        created,
+                        device_id,
+                    ),
+                )
+            else:
+                user_id = str(row["user_id"])
+            token, session_id = self._new_session(db, user_id, **device)
+            account = self.get_account(user_id, db=db)
+        return {"account": account, "token": token, "session_id": session_id}
+
+    def consume_guest_message(self, user_id: str, *, limit: int = 3) -> int | None:
+        """Atomically reserve one guest turn and return the remaining allowance."""
+        user_id = validate_id(user_id, kind="user_id")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT account_type,guest_message_count FROM users "
+                "WHERE user_id=? AND deleted_at IS NULL",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                # Static/legacy API tokens resolve identities outside users.db.
+                # They are full accounts, never anonymous guest sessions.
+                return None
+            if str(row["account_type"] or "account") != "guest":
+                return None
+            used = int(row["guest_message_count"] or 0)
+            if used >= limit:
+                raise UserStoreError(
+                    "游客体验次数已用完，请登录后继续",
+                    code="guest_quota_exhausted",
+                )
+            used += 1
+            db.execute(
+                "UPDATE users SET guest_message_count=?,updated_at=? WHERE user_id=?",
+                (used, _iso(), user_id),
+            )
+            return max(0, limit - used)
+
+    def refund_guest_message(self, user_id: str) -> None:
+        user_id = validate_id(user_id, kind="user_id")
+        with self._connect() as db:
+            db.execute(
+                "UPDATE users SET guest_message_count=MAX(0,guest_message_count-1),updated_at=? "
+                "WHERE user_id=? AND account_type='guest'",
+                (_iso(), user_id),
+            )
 
     def issue_token(self, user_id: str, **device: str) -> str:
         user_id = validate_id(user_id, kind="user_id")
@@ -500,6 +582,13 @@ class UserStore:
 
     def verify_email_and_login(self, email: str, code: str, *, device: dict[str, str]) -> dict[str, Any]:
         user_id = self.verify_code(email, code, "verify_email")
+        with self._connect() as db:
+            token, session_id = self._new_session(db, user_id, **device)
+            account = self.get_account(user_id, db=db)
+        return {"account": account, "token": token, "session_id": session_id}
+
+    def login_with_email_code(self, email: str, code: str, *, device: dict[str, str]) -> dict[str, Any]:
+        user_id = self.verify_code(email, code, "login_email")
         with self._connect() as db:
             token, session_id = self._new_session(db, user_id, **device)
             account = self.get_account(user_id, db=db)

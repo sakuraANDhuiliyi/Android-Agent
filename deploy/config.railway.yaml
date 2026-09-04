@@ -1,0 +1,42 @@
+provider: deepseek
+model: deepseek-v4-pro
+model_fallbacks:
+  - deepseek-v4-flash
+
+max_turns: 15
+max_auto_continuations: 2
+auto_build_after_edit: false
+
+# Railway 的 PORT 由平台动态注入，容器启动命令会自动读取。
+server_host: 0.0.0.0
+server_port: 8000
+
+# 首次创建账号时通过 Railway Variables 临时覆盖为 true；完成后关闭。
+registration_enabled: false
+email_verification_required: false
+
+terminal_enabled: false
+debug_web_ui_enabled: false
+admin_ui_enabled: false
+
+ws_ticket_ttl_seconds: 30
+max_request_bytes: 2097152
+max_prompt_chars: 100000
+max_projects_per_user: 50
+max_conversations_per_project: 200
+max_active_tasks_per_user: 3
+max_events_per_conversation: 100000
+max_registration_per_hour: 10
+max_requests_per_minute: 600
+# Free/Trial Railway volumes are limited to 500 MB. This lower reserve is only
+# suitable for account/login and lightweight testing, not Android builds.
+minimum_free_disk_bytes: 268435456
+max_build_artifacts_per_project: 20
+
+# Electron 的 file:// 页面使用 null Origin；Android 原生请求不受 CORS 限制。
+cors_allowed_origins:
+  - "null"
+
+# Railway 首发使用一个服务、一个持久卷、一个副本。
+deployment_mode: sqlite
+artifact_backend: local

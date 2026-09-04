@@ -1,0 +1,32 @@
+.git
+.github
+.agents
+.codex
+.idea
+.venv
+__pycache__
+*.py[cod]
+*.log
+.DS_Store
+
+# Never copy local credentials or runtime state into the image.
+config.yaml
+.env
+.env.*
+data
+workspaces
+builds
+.artifacts
+
+# The Railway image runs the Python service and the small Android template.
+android-app
+desktop
+docs
+tests
+
+# Build output that may exist inside the template.
+template/.gradle
+template/.idea
+template/local.properties
+template/build
+template/app/build

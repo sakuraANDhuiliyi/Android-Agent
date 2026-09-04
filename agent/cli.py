@@ -193,6 +193,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     settings = load_settings()
     host = args.host or settings.server_host
     port = args.port or settings.server_port
+    settings.server_host = host
+    settings.server_port = port
     app = create_app(settings)
     start_worker(settings)
 

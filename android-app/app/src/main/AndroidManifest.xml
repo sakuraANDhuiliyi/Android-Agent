@@ -18,6 +18,11 @@
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity
             android:name=".MainActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".MainNavActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -25,11 +30,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".MainNavActivity"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".ConnectionSettingsActivity"

@@ -49,4 +49,25 @@
     <color name="diff_add_text">#FF81C995</color>
     <color name="diff_del_text">#FFF28B82</color>
     <color name="avatar_fill">#FF6B8CFF</color>
+
+    <!-- Authentication surfaces -->
+    <color name="auth_background_start">#FF111A2B</color>
+    <color name="auth_background_center">#FF0E141D</color>
+    <color name="auth_background_end">#FF171329</color>
+    <color name="auth_card_surface">#F21A222D</color>
+    <color name="auth_input_surface">#FF141C27</color>
+    <color name="auth_chip_surface">#331E6FFF</color>
+    <color name="auth_chip_text">#FFA9C1FF</color>
+    <color name="auth_orb_primary">#356B8CFF</color>
+    <color name="auth_orb_secondary">#298C5CF6</color>
+    <color name="auth_divider">#FF303A48</color>
+
+    <!-- Projects dashboard -->
+    <color name="projects_hero_start">#FF274EA7</color>
+    <color name="projects_hero_end">#FF6042AC</color>
+    <color name="projects_hero_muted">#D9FFFFFF</color>
+    <color name="projects_hero_stat">#24FFFFFF</color>
+    <color name="projects_card_surface">#FF171E28</color>
+    <color name="projects_icon_surface">#FF203966</color>
+    <color name="projects_page_surface">#FF0E141D</color>
 </resources>

@@ -1,0 +1,25 @@
+[Unit]
+Description=Android Agent API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=android-agent
+Group=android-agent
+WorkingDirectory=/opt/android-agent
+EnvironmentFile=/etc/android-agent/android-agent.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AGENT_DATA_DIR=/var/lib/android-agent/data
+ExecStart=/opt/android-agent/.venv/bin/python -m agent serve --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/android-agent/workspaces /opt/android-agent/builds /var/lib/android-agent
+
+[Install]
+WantedBy=multi-user.target

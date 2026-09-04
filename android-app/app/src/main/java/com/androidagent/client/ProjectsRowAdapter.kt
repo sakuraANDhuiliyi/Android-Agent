@@ -100,6 +100,10 @@ class ProjectsRowAdapter(
         fun bind(item: ProjectsRow.Project) = with(binding) {
             val context = root.context
             textProjectName.text = item.project.name
+            textProjectInitial.text = item.project.name.trim().firstOrNull()
+                ?.uppercaseChar()
+                ?.toString()
+                ?: "A"
             textProjectPackage.isVisible = item.project.packageName.isNotBlank()
             textProjectPackage.text = item.project.packageName
             textProjectApk.text = buildString {
@@ -115,9 +119,15 @@ class ProjectsRowAdapter(
             }
             textProjectApk.isVisible = textProjectApk.text.isNotBlank()
             textApkBadge.isVisible = item.project.hasApk
+            textProjectStatus.isVisible = item.lastStatus != null
             if (item.lastStatus != null) {
+                textProjectStatus.text = UiFormat.jobStatusLabel(context, item.lastStatus)
                 textProjectStatus.setTextColor(UiFormat.statusColor(context, item.lastStatus))
             }
+            root.contentDescription = context.getString(
+                R.string.project_open_description,
+                item.project.name,
+            )
             root.setOnClickListener { onProjectClick(item.project) }
             root.setOnLongClickListener {
                 onProjectLongClick(item.project)

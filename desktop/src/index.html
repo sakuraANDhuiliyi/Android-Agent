@@ -379,7 +379,7 @@
         </div>
 
         <div class="ai-menu" id="aiMoreMenu" hidden role="menu" aria-label="Agent 更多设置">
-          <div class="ai-menu-section">
+          <div class="ai-menu-section" hidden>
             <div class="ai-menu-title">任务</div>
             <select id="jobHistory" class="ai-select sm" disabled aria-label="历史任务"></select>
             <p class="ai-menu-hint">任务运行时，暂停、继续和停止会显示在面板状态栏。</p>
@@ -488,7 +488,7 @@
   <!-- Settings dialog -->
   <dialog id="settingsDialog">
     <form method="dialog" id="settingsForm">
-      <h3>设置</h3>
+      <h3>登录与设置</h3>
       <label>
         外观
         <select id="themeSelect">
@@ -497,11 +497,9 @@
           <option value="dark">深色</option>
         </select>
       </label>
-      <label>
-        服务地址
-        <input id="serverUrl" type="url" value="http://127.0.0.1:8000" autocomplete="off" />
-      </label>
-      <p class="settings-section-label">账号登录（跨设备同步）</p>
+      <input id="serverUrl" type="hidden" value="https://android-agent-production-c627.up.railway.app" />
+      <input id="apiToken" type="hidden" />
+      <p class="settings-section-label">账号登录</p>
       <label>
         邮箱
         <input id="accountEmail" type="email" autocomplete="username" />
@@ -510,21 +508,10 @@
         密码
         <input id="accountPassword" type="password" autocomplete="current-password" />
       </label>
-      <button type="button" class="ghost-btn" id="btnAccountLogin">登录账号</button>
-      <p class="settings-section-label">高级连接</p>
-      <label>
-        访问 Token
-        <input id="apiToken" type="password" placeholder="python3 -m agent register-user" autocomplete="off" />
-      </label>
-      <label>
-        配对密钥（仅首次配对）
-        <input id="registrationToken" type="password" autocomplete="off" />
-      </label>
-      <p class="dialog-hint" id="settingsHint">服务端 API 不接受匿名连接。</p>
+      <p class="dialog-hint" id="settingsHint">服务地址已由应用安全配置，只需输入邮箱和密码。</p>
       <div class="dialog-actions">
         <button type="submit" class="ghost-btn" value="cancel" formnovalidate>取消</button>
-        <button type="button" class="ghost-btn" id="btnPair">配对</button>
-        <button type="submit" class="primary-btn" value="connect" id="btnConnect">连接</button>
+        <button type="submit" class="primary-btn" value="login" id="btnAccountLogin">登录</button>
       </div>
     </form>
   </dialog>

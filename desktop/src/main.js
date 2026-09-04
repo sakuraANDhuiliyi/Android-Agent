@@ -33,6 +33,27 @@ let mainWindow = null;
 let agentProcess = null;
 let agentLogTail = "";
 const approvedRoots = new Set();
+const DEFAULT_SERVICE_URL = "https://android-agent-production-c627.up.railway.app";
+
+function configuredServiceUrl() {
+  let raw = String(process.env.ANDROID_AGENT_SERVER_URL || "").trim();
+  if (!raw) {
+    try {
+      const configPath = path.join(__dirname, "..", "app-config.json");
+      const config = JSON.parse(fssync.readFileSync(configPath, "utf8"));
+      raw = String(config.serviceUrl || "").trim();
+    } catch (_) {
+      raw = DEFAULT_SERVICE_URL;
+    }
+  }
+  const normalized = (raw || DEFAULT_SERVICE_URL).replace(/\/+$/, "");
+  const parsed = new URL(normalized);
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname.toLowerCase());
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+    throw new Error("远程服务地址必须使用 HTTPS");
+  }
+  return normalized;
+}
 
 function configureSecureUpdates() {
   const feedUrl = String(process.env.ANDROID_AGENT_UPDATE_URL || "").trim();
@@ -532,6 +553,7 @@ function flattenFiles(nodes, out = []) {
 
 function registerIpc() {
   ipcMain.handle("app:get-default-workspace", () => defaultWorkspace());
+  ipcMain.handle("app:get-service-url", () => configuredServiceUrl());
   ipcMain.handle("credentials:get", (_event, baseUrl) => getCredential(baseUrl));
   ipcMain.handle("credentials:set", (_event, baseUrl, token) =>
     setCredential(baseUrl, token));

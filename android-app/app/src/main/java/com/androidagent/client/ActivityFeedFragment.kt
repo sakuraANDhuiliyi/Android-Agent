@@ -10,6 +10,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.androidagent.client.databinding.FragmentFeedBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,7 +47,7 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
 
     override fun refreshContent() {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val (jobs, projects) = withContext(Dispatchers.IO) {
                     api.listJobs() to api.listProjects()
@@ -54,6 +55,8 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
                 val names = projects.associate { it.id to it.name }
                 val titles = withContext(Dispatchers.IO) { loadTitles(api, jobs) }
                 render(jobs, names, titles)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast(e.message ?: "加载失败")
             }
@@ -68,6 +71,8 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
                 api.listConversations(projectId).forEach { conv ->
                     titles[conv.id] = conv.title
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
             }
         }
@@ -118,7 +123,7 @@ class ActivityFeedFragment : Fragment(), MainNavActivity.Refreshable {
     }
 
     private fun toast(message: String) {
-        Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+        context?.let { Toast.makeText(it, message, Toast.LENGTH_SHORT).show() }
     }
 
     override fun onDestroyView() {

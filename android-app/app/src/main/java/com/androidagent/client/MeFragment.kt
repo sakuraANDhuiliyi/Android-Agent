@@ -8,6 +8,7 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.databinding.FragmentMeBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,7 +51,7 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
     override fun refreshContent() {
         renderProfile()
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val (health, jobs, account) = withContext(Dispatchers.IO) {
                     Triple(api.health(), api.listJobs(), runCatching { api.getAccount() }.getOrNull())
@@ -79,6 +80,8 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
                 )
                 binding.progressUsage.max = maxOf(usage.total, 1)
                 binding.progressUsage.progress = usage.total
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 binding.textApiStatus.text = getString(R.string.model_api_missing)
                 binding.textUsageSummary.setText(R.string.token_usage_unavailable)

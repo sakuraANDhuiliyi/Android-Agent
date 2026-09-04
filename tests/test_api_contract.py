@@ -95,6 +95,10 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(body["error"]["user_message"], expected["error"]["user_message"])
 
     def test_health_requires_auth_and_matches_contract(self) -> None:
+        deployment = self.client.get("/healthz")
+        self.assertEqual(deployment.status_code, 200)
+        self.assertEqual(deployment.json(), {"status": "ok"})
+
         unauthorized = self.client.get("/api/health")
         self.assertEqual(unauthorized.status_code, 401)
         payload = unauthorized.json()

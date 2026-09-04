@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
@@ -12,6 +13,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.androidagent.client.databinding.DialogCreateProjectBinding
 import com.androidagent.client.databinding.FragmentProjectsBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +64,8 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
             queryFilter = query?.toString().orEmpty()
             applyFilter()
         }
+        updateOverview(emptyList(), emptyList())
+        playEntranceAnimation()
     }
 
     override fun onResume() {
@@ -71,7 +75,7 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
 
     override fun refreshContent() {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val (projects, jobs, health) = withContext(Dispatchers.IO) {
                     Triple(api.listProjects(), api.listJobs(), runCatching { api.health() }.getOrNull())
@@ -80,6 +84,7 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
                 binding.bannerApi.isVisible = health?.apiKeyConfigured == false
                 cachedProjects = projects
                 cachedJobs = jobs
+                updateOverview(projects, jobs)
                 val usage = UsageStats.forJobs(jobs, periodDays = 31)
                 binding.textMonthUsage.text = getString(
                     R.string.usage_summary_format,
@@ -87,6 +92,8 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
                     usage.taskCount,
                 )
                 applyFilter()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 binding.bannerConnection.visibility = View.VISIBLE
             }
@@ -99,6 +106,33 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
             it.name.contains(q, ignoreCase = true) || it.packageName.contains(q, ignoreCase = true)
         }
         render(projects, cachedJobs)
+    }
+
+    private fun updateOverview(projects: List<ProjectInfo>, jobs: List<JobInfo>) {
+        binding.textProjectCount.text = getString(R.string.projects_count_value, projects.size)
+        binding.textActiveCount.text = getString(
+            R.string.projects_count_value,
+            jobs.count { UiFormat.isActive(it.status) },
+        )
+        binding.textApkCount.text = getString(
+            R.string.projects_count_value,
+            projects.count { it.hasApk },
+        )
+    }
+
+    private fun playEntranceAnimation() {
+        val offset = 14f * resources.displayMetrics.density
+        listOf(binding.cardProjectOverview, binding.layoutSearch).forEachIndexed { index, target ->
+            target.alpha = 0f
+            target.translationY = offset
+            target.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(340L)
+                .setStartDelay(index * 70L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
     }
 
     private fun render(projects: List<ProjectInfo>, jobs: List<JobInfo>) {
@@ -171,11 +205,13 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
 
     private fun createProject(name: String, packageName: String?) {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val project = withContext(Dispatchers.IO) { api.createProject(name, packageName) }
                 ProjectDetailActivity.start(requireContext(), project)
                 refreshContent()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast(e.message ?: "创建失败")
             }
@@ -193,11 +229,13 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
 
     private fun deleteProject(project: ProjectInfo) {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) { api.deleteProject(project.id) }
                 if (prefs.selectedProjectId == project.id) prefs.selectedProjectId = null
                 refreshContent()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast(e.message ?: "删除失败")
             }
@@ -205,7 +243,9 @@ class ProjectsFragment : Fragment(), MainNavActivity.Refreshable {
     }
 
     private fun toast(message: String) {
-        android.widget.Toast.makeText(requireContext(), message, android.widget.Toast.LENGTH_SHORT).show()
+        context?.let {
+            android.widget.Toast.makeText(it, message, android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onDestroyView() {

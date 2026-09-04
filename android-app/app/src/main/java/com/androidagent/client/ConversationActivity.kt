@@ -8,6 +8,7 @@ import android.view.LayoutInflater
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -377,6 +378,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun onSend() {
         val prompt = binding.editPrompt.text?.toString()?.trim().orEmpty()
         if (prompt.isBlank()) return
+        if (prefs.guestMode && prefs.guestRemaining <= 0) {
+            handleGuestQuota(
+                ApiException(
+                    403,
+                    getString(R.string.guest_quota_message),
+                    errorCode = "guest_quota_exhausted",
+                ),
+            )
+            return
+        }
         if (currentJob != null && currentJob?.status in ACTIVE_STATUSES) {
             sendMidTask(prompt)
         } else {
@@ -393,12 +404,13 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 val job = withContext(Dispatchers.IO) {
                     api.askConversation(conversationId, prompt, provider = prefs.selectedProviderId.takeUnless { it == "auto" })
                 }
+                if (prefs.guestMode) prefs.guestRemaining = prefs.guestRemaining - 1
                 // 服务端确认接收后才清空输入
                 binding.editPrompt.setText("")
                 attachJob(job.id, resume = false)
             } catch (e: Exception) {
                 store.removeItem(optimisticKey)
-                toast(getString(R.string.send_failed_retry))
+                if (!handleGuestQuota(e)) toast(getString(R.string.send_failed_retry))
             } finally {
                 binding.btnSend.isEnabled = true
                 renderNow()
@@ -414,12 +426,25 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 withContext(Dispatchers.IO) {
                     if (steer) api.steerJob(jobId, prompt) else api.followUpJob(jobId, prompt)
                 }
+                if (prefs.guestMode) prefs.guestRemaining = prefs.guestRemaining - 1
                 binding.editPrompt.setText("")
                 toast("已发送")
             } catch (e: Exception) {
-                toast(userMessage(e))
+                if (!handleGuestQuota(e)) toast(userMessage(e))
             }
         }
+    }
+
+    private fun handleGuestQuota(error: Exception): Boolean {
+        if (error !is ApiException || error.errorCode != "guest_quota_exhausted") return false
+        prefs.guestRemaining = 0
+        AlertDialog.Builder(this)
+            .setTitle(R.string.guest_quota_title)
+            .setMessage(R.string.guest_quota_message)
+            .setPositiveButton(R.string.login_or_register) { _, _ -> MainActivity.startLogin(this) }
+            .setNegativeButton(R.string.not_now, null)
+            .show()
+        return true
     }
 
     private fun controlJob(action: String) {

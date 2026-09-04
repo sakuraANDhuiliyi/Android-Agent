@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("agentDesktop", {
   setCredential: (baseUrl, token) =>
     ipcRenderer.invoke("credentials:set", baseUrl, token),
   getDefaultWorkspace: () => ipcRenderer.invoke("app:get-default-workspace"),
+  getServiceUrl: () => ipcRenderer.invoke("app:get-service-url"),
   openFolderDialog: () => ipcRenderer.invoke("dialog:open-folder"),
   openFileDialog: () => ipcRenderer.invoke("dialog:open-file"),
   saveFileDialog: (defaultPath) => ipcRenderer.invoke("dialog:save-file", defaultPath),

@@ -301,6 +301,16 @@ class AccountLoginRequest(StrictRequest):
     device: DeviceRequest
 
 
+class GuestSessionRequest(StrictRequest):
+    device: DeviceRequest
+
+
+class EmailCodeLoginRequest(StrictRequest):
+    email: str = Field(..., min_length=3, max_length=254)
+    code: str = Field(..., min_length=6, max_length=12)
+    device: DeviceRequest
+
+
 class VerifyEmailRequest(StrictRequest):
     email: str = Field(..., min_length=3, max_length=254)
     code: str = Field(..., min_length=6, max_length=12)
@@ -420,7 +430,11 @@ def _auth_payload(result: dict[str, Any]) -> dict[str, Any]:
 def _send_account_code(settings: Settings, email: str, code: str, purpose: str) -> None:
     if not settings.smtp_host or not settings.smtp_from:
         raise RuntimeError("服务端尚未配置邮箱发送服务")
-    subject = "验证你的 Android Agent 邮箱" if purpose == "verify_email" else "重置 Android Agent 密码"
+    subject = {
+        "verify_email": "验证你的 Android Agent 邮箱",
+        "login_email": "登录 Android Agent",
+        "reset_password": "重置 Android Agent 密码",
+    }.get(purpose, "Android Agent 验证码")
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings.smtp_from
@@ -654,6 +668,18 @@ def create_app(
             )
         ensure_write_budget()
 
+    def reserve_guest_turn(user_id: str) -> int | None:
+        try:
+            return app.state.user_store.consume_guest_message(user_id)
+        except UserStoreError as exc:
+            status = 403 if exc.code == "guest_quota_exhausted" else 400
+            raise account_error(exc, status) from exc
+
+    @app.get("/healthz", include_in_schema=False)
+    def deployment_health() -> dict[str, str]:
+        """Unauthenticated liveness probe for the hosting platform."""
+        return {"status": "ok"}
+
     @app.post("/api/pair", status_code=201)
     @app.post("/api/register", status_code=201)
     def register(
@@ -766,6 +792,48 @@ def create_app(
                 app.state.user_store.login(
                     body.email,
                     body.password,
+                    device=_device_dict(body.device),
+                )
+            )
+        except UserStoreError as exc:
+            raise account_error(exc, 401) from exc
+
+    @app.post("/api/auth/guest", status_code=201)
+    def create_guest_session(body: GuestSessionRequest) -> dict[str, Any]:
+        ensure_write_budget()
+        try:
+            result = app.state.user_store.guest_session(device=_device_dict(body.device))
+            user_id = result["account"]["user_id"]
+            user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
+            user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
+            return _auth_payload(result)
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+
+    @app.post("/api/auth/email-code/request", status_code=202)
+    def request_email_login_code(body: EmailRequest) -> dict[str, bool]:
+        if not settings.smtp_host or not settings.smtp_from:
+            raise HTTPException(status_code=503, detail="服务端尚未配置邮箱发送服务")
+        try:
+            account = app.state.user_store.account_for_email(body.email)
+        except UserStoreError as exc:
+            raise account_error(exc, 400) from exc
+        # 始终返回 accepted，避免通过接口枚举已注册邮箱。
+        if account and not account.get("is_guest"):
+            try:
+                code = app.state.user_store.create_code(account["user_id"], "login_email")
+                _send_account_code(settings, body.email, code, "login_email")
+            except (OSError, smtplib.SMTPException, RuntimeError):
+                pass
+        return {"accepted": True}
+
+    @app.post("/api/auth/email-code/login")
+    def login_with_email_code(body: EmailCodeLoginRequest) -> dict[str, Any]:
+        try:
+            return _auth_payload(
+                app.state.user_store.login_with_email_code(
+                    body.email,
+                    body.code,
                     device=_device_dict(body.device),
                 )
             )
@@ -1148,6 +1216,7 @@ def create_app(
         if not job_settings.api_key:
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
 
+        guest_remaining = reserve_guest_turn(user_id)
         try:
             job = start_ask_job(
                 user_id,
@@ -1160,8 +1229,10 @@ def create_app(
                 run_mode=body.run_mode,
             )
         except RuntimeError as e:
+            if guest_remaining is not None:
+                app.state.user_store.refund_guest_message(user_id)
             raise HTTPException(status_code=409, detail=str(e)) from e
-        return {"job": job_to_dict(job)}
+        return {"job": job_to_dict(job), "guest_remaining": guest_remaining}
 
     @app.get("/api/projects/{project_id}/conversations")
     def get_conversations(
@@ -1325,6 +1396,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not job_settings.api_key:
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
+        guest_remaining = reserve_guest_turn(user_id)
         try:
             job = start_ask_job(
                 user_id,
@@ -1337,8 +1409,14 @@ def create_app(
                 run_mode=body.run_mode,
             )
         except RuntimeError as e:
+            if guest_remaining is not None:
+                app.state.user_store.refund_guest_message(user_id)
             raise HTTPException(status_code=409, detail=str(e)) from e
-        return {"job": job_to_dict(job), "conversation_id": conversation_id}
+        return {
+            "job": job_to_dict(job),
+            "conversation_id": conversation_id,
+            "guest_remaining": guest_remaining,
+        }
 
     @app.get("/api/projects/{project_id}/session")
     def get_session(project_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
@@ -1424,6 +1502,11 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         if job["status"] in {"succeeded", "failed", "canceled"}:
             raise HTTPException(status_code=409, detail="任务已结束")
+        guest_remaining = (
+            reserve_guest_turn(user_id)
+            if body.type in {"steer", "follow_up"}
+            else None
+        )
         msg = add_job_message(
             job_id,
             user_id,
@@ -1432,10 +1515,13 @@ def create_app(
             payload=body.payload,
         )
         if not msg:
+            if guest_remaining is not None:
+                app.state.user_store.refund_guest_message(user_id)
             raise HTTPException(status_code=409, detail="无法添加消息")
         return {
             "job_id": job_id,
             "message": JobMessageResponse(**msg).model_dump(),
+            "guest_remaining": guest_remaining,
         }
 
     @app.get("/api/jobs/{job_id}/messages")

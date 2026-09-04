@@ -6,8 +6,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_DIR = ROOT / "template"
-WORKSPACES_DIR = ROOT / "workspaces"
-BUILDS_DIR = ROOT / "builds"
+WORKSPACES_DIR = Path(
+    os.environ.get("AGENT_WORKSPACES_DIR", ROOT / "workspaces")
+).expanduser()
+BUILDS_DIR = Path(
+    os.environ.get("AGENT_BUILDS_DIR", ROOT / "builds")
+).expanduser()
 DATA_DIR = Path(os.environ.get("AGENT_DATA_DIR", ROOT / "data")).expanduser()
 
 DEFAULT_PACKAGE = "com.example.template"

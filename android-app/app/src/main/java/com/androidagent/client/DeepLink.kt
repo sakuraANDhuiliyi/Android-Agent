@@ -11,7 +11,9 @@ object DeepLink {
     const val EXTRA_JOB_ID = "job_id"
     const val EXTRA_TAB = "tab"
     const val EXTRA_EDIT_CONNECTION = "edit_connection"
+    const val EXTRA_LOGIN_REQUIRED = "login_required"
     const val TAB_APPROVALS = "approvals"
+    const val TAB_CREATIVE = "creative"
 
     fun conversationIntent(
         context: Context,

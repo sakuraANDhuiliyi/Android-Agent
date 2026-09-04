@@ -1,27 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_projects_page">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:paddingTop="4dp">
+        android:orientation="vertical">
 
         <LinearLayout
             android:id="@+id/bannerConnection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_banner_warning"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/bg_dashboard_warning"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="@dimen/screen_margin"
-            android:paddingTop="10dp"
-            android:paddingEnd="@dimen/screen_margin"
-            android:paddingBottom="10dp"
-            android:visibility="gone">
+            android:paddingStart="14dp"
+            android:paddingTop="11dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="11dp"
+            android:visibility="gone"
+            tools:visibility="visible">
 
             <ImageView
                 android:layout_width="18dp"
@@ -34,7 +39,7 @@
                 android:id="@+id/textBanner"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="10dp"
                 android:layout_weight="1"
                 android:text="@string/connection_lost"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
@@ -45,8 +50,11 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="?attr/selectableItemBackground"
-                android:minWidth="@dimen/touch_target"
-                android:padding="8dp"
+                android:gravity="center"
+                android:minHeight="44dp"
+                android:minWidth="48dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="@string/settings"
                 android:textAppearance="?attr/textAppearanceLabelLarge"
                 android:textColor="@color/banner_warning_text" />
@@ -56,18 +64,30 @@
             android:id="@+id/bannerApi"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_banner_warning"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/bg_dashboard_warning"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="@dimen/screen_margin"
-            android:paddingTop="10dp"
-            android:paddingEnd="@dimen/screen_margin"
-            android:paddingBottom="10dp"
-            android:visibility="gone">
+            android:paddingStart="14dp"
+            android:paddingTop="11dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="11dp"
+            android:visibility="gone"
+            tools:visibility="gone">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_warning"
+                app:tint="@color/banner_warning_text" />
 
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
                 android:layout_weight="1"
                 android:text="@string/api_required_banner"
                 android:textAppearance="?attr/textAppearanceBodyMedium"
@@ -78,21 +98,184 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="?attr/selectableItemBackground"
-                android:padding="8dp"
+                android:gravity="center"
+                android:minHeight="44dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="@string/go_configure"
                 android:textAppearance="?attr/textAppearanceLabelLarge"
                 android:textColor="@color/banner_warning_text" />
         </LinearLayout>
 
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/layoutSearch"
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardProjectOverview"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="@dimen/screen_margin"
-            android:layout_marginTop="8dp"
-            android:layout_marginEnd="@dimen/screen_margin"
-            android:hint="@string/search_projects"
-            app:boxBackgroundMode="outline">
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginEnd="16dp"
+            app:cardBackgroundColor="@android:color/transparent"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="6dp"
+            app:strokeWidth="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_projects_hero"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.08"
+                    android:text="@string/projects_dashboard_eyebrow"
+                    android:textAllCaps="true"
+                    android:textColor="@color/projects_hero_muted"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/projects_dashboard_title"
+                    android:textColor="@android:color/white"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:lineSpacingExtra="1dp"
+                    android:text="@string/projects_dashboard_subtitle"
+                    android:textColor="@color/projects_hero_muted"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_projects_stat"
+                        android:orientation="vertical"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:id="@+id/textProjectCount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/projects_count_zero"
+                            android:textColor="@android:color/white"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            tools:text="6" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="1dp"
+                            android:text="@string/projects_stat_projects"
+                            android:textColor="@color/projects_hero_muted"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+
+                    <Space
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_projects_stat"
+                        android:orientation="vertical"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:id="@+id/textActiveCount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/projects_count_zero"
+                            android:textColor="@android:color/white"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            tools:text="2" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="1dp"
+                            android:text="@string/projects_stat_active"
+                            android:textColor="@color/projects_hero_muted"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+
+                    <Space
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_projects_stat"
+                        android:orientation="vertical"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:id="@+id/textApkCount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/projects_count_zero"
+                            android:textColor="@android:color/white"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            tools:text="3" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="1dp"
+                            android:text="@string/projects_stat_apk"
+                            android:textColor="@color/projects_hero_muted"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/textMonthUsage"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:drawableEnd="@drawable/ic_chevron_right"
+                    android:drawableTint="@android:color/white"
+                    android:gravity="center_vertical"
+                    android:minHeight="36dp"
+                    android:text="@string/month_usage_label"
+                    android:textAppearance="?attr/textAppearanceLabelMedium"
+                    android:textColor="@android:color/white" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/layoutSearch"
+            style="@style/Widget.AndroidAgent.SearchInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="14dp"
+            android:layout_marginEnd="16dp"
+            android:hint="@string/projects_search_hint"
+            app:startIconDrawable="@drawable/ic_search">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/editSearch"
@@ -101,20 +284,8 @@
                 android:imeOptions="actionSearch"
                 android:inputType="text"
                 android:maxLines="1"
-                android:minHeight="48dp" />
+                android:minHeight="52dp" />
         </com.google.android.material.textfield.TextInputLayout>
-
-        <TextView
-            android:id="@+id/textMonthUsage"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="?attr/selectableItemBackground"
-            android:paddingStart="@dimen/screen_margin"
-            android:paddingTop="8dp"
-            android:paddingEnd="@dimen/screen_margin"
-            android:paddingBottom="4dp"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="?attr/colorPrimary" />
 
         <FrameLayout
             android:layout_width="match_parent"
@@ -126,8 +297,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
-                android:paddingTop="4dp"
-                android:paddingBottom="96dp" />
+                android:paddingTop="2dp"
+                android:paddingBottom="104dp"
+                tools:listitem="@layout/item_project" />
 
             <LinearLayout
                 android:id="@+id/emptyProjects"
@@ -135,47 +307,53 @@
                 android:layout_height="match_parent"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:padding="@dimen/screen_margin"
-                android:visibility="gone">
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingBottom="40dp"
+                android:visibility="gone"
+                tools:visibility="gone">
 
                 <ImageView
-                    android:layout_width="128dp"
-                    android:layout_height="112dp"
+                    android:layout_width="116dp"
+                    android:layout_height="102dp"
                     android:contentDescription="@null"
                     android:src="@drawable/ic_empty_projects" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
+                    android:layout_marginTop="12dp"
                     android:gravity="center"
                     android:text="@string/projects_empty_title"
-                    android:textAppearance="?attr/textAppearanceTitleLarge" />
+                    android:textAppearance="?attr/textAppearanceTitleLarge"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textStyle="bold" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="7dp"
                     android:gravity="center"
+                    android:lineSpacingExtra="2dp"
                     android:text="@string/projects_empty_desc"
                     android:textAppearance="?attr/textAppearanceBodyMedium"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnEmptyCreate"
+                    style="@style/Widget.AndroidAgent.Auth.PrimaryButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="24dp"
-                    android:minHeight="@dimen/touch_target"
-                    android:text="@string/new_project" />
+                    android:layout_marginTop="20dp"
+                    android:text="@string/new_project"
+                    app:icon="@drawable/ic_add" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnEmptyApi"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.AndroidAgent.Auth.SecondaryButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:minHeight="@dimen/touch_target"
+                    android:layout_marginTop="10dp"
                     android:text="@string/configure_model_api_first" />
 
                 <TextView
@@ -195,7 +373,11 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_margin="@dimen/screen_margin"
+        android:layout_margin="16dp"
         android:text="@string/new_project"
-        app:icon="@drawable/ic_nav_projects" />
+        app:backgroundTint="?attr/colorPrimary"
+        app:icon="@drawable/ic_add"
+        app:iconTint="?attr/colorOnPrimary"
+        app:shapeAppearanceOverlay="@style/ShapeAppearanceOverlay.AndroidAgent.Fab"
+        android:textColor="?attr/colorOnPrimary" />
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

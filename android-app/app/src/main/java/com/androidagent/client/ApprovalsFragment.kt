@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.androidagent.client.databinding.FragmentApprovalsBinding
 import com.androidagent.client.databinding.ItemApprovalBinding
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,11 +72,13 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
 
     override fun refreshContent() {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val items = withContext(Dispatchers.IO) { loadPending(api) }
                 allItems = items
                 applyFilter()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 toast(e.message ?: "加载失败")
             }
@@ -91,6 +94,8 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
             if (!UiFormat.isActive(job.status)) continue
             val approvals = try {
                 api.listApprovals(job.id)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 continue
             }
@@ -100,6 +105,8 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
             if (job.projectId !in projectNames) {
                 projectNames[job.projectId] = try {
                     api.listProjects().firstOrNull { it.id == job.projectId }?.name ?: ""
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     ""
                 }
@@ -108,6 +115,8 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
             if (conversationId != null && conversationId !in conversationTitles) {
                 conversationTitles[conversationId] = try {
                     api.getConversation(conversationId).title
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     ""
                 }
@@ -218,12 +227,14 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
         }
         submitting.add(item.approval.id)
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     api.resolveApproval(item.jobId, item.approval.id, approved)
                 }
                 toast(getString(if (approved) R.string.approval_approved else R.string.approval_rejected))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val handled = e is ApiException && (e.isNotFound || e.isConflict || e.isForbidden)
                 if (handled) {
@@ -252,7 +263,7 @@ class ApprovalsFragment : Fragment(), MainNavActivity.Refreshable {
     private fun currentList(): List<InboxApproval> = adapter.currentList
 
     private fun toast(message: String) {
-        Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+        context?.let { Toast.makeText(it, message, Toast.LENGTH_SHORT).show() }
     }
 
     override fun onDestroyView() {

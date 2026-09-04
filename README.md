@@ -2,6 +2,19 @@
 
 Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 使用服务端签发的 Token 连接、创建隔离的 Android 项目，并通过 Agent 修改和构建项目。第一阶段的完整范围见 `MVP_SPEC.md`。
 
+## 创意广场（Android）
+
+Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。现有项目、对话和审批页面继续使用 View/XML；底部导航中的“创意”页面使用 Compose，提供可运行的 UI/动画 Recipe。
+
+- 点击卡片查看实时效果和完整 Compose 源码。
+- “复制代码”把核心 `@Composable` 写入系统剪贴板。
+- “应用到项目”选择已有项目后创建独立对话，把 Recipe 源码、兼容要求和构建验证要求发送给 Agent；Agent 会根据目标项目是 Compose 还是 XML/View 做适配。
+- Recipe 目录位于 `android-app/app/src/main/java/com/androidagent/client/creative/CreativeCatalog.kt`。新增条目时应提供唯一 ID、分类、预览类型、可复制源码和最低 SDK。
+
+Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有 Activity/Fragment。
+
+未登录用户可以在登录页选择“暂不登录，浏览创意广场”进入游客模式。游客状态会保留到下次启动；创意预览与源码复制离线可用，项目、任务、审批以及“应用到项目”会显示登录或服务连接引导。
+
 ## 第一阶段能力
 
 - SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
@@ -83,6 +96,10 @@ Android 客户端也支持邮箱密码账号。设置 `registration_enabled: tru
 `registration_enabled: true` 和随机长字符串 `registration_token`，并在手机端填写该注册密钥。注册密钥不会保存在手机偏好中。
 
 旧客户端继续调用 `POST /api/pair` 完成配对；`POST /api/register` 是兼容别名。账号客户端使用 `/api/auth/*`，已有配对 Token 无需迁移即可继续工作。浏览器 WebSocket 会先通过 Bearer Token 申请 5-120 秒、单次使用且绑定具体 Job/Terminal 的 ticket，长效 Token 不进入 URL。桌面 Token 使用系统 `safeStorage`，Android Token 使用 Keystore 加密，调试 Web 只使用当前标签页的 `sessionStorage`。
+
+新版 Android 与桌面端的普通登录界面只需要邮箱和密码；服务器 HTTPS 地址由发布包统一配置，不再要求用户填写地址、Token 或配对密钥。完整生产部署、客户端地址注入、SMTP 与备份步骤见 [云服务器部署指南](docs/CLOUD_DEPLOY.md)。
+
+优先使用 Railway 时，仓库根目录已提供包含 Python、JDK 17、Android SDK 36 的 Dockerfile，按 [Railway 部署指南](docs/RAILWAY_DEPLOY.md) 挂载 `/data` Volume、配置 `/healthz` 健康检查并生成 HTTPS 域名。
 
 ## 启动服务
 
@@ -291,4 +308,4 @@ Authorization: Bearer <token>
 
 ## 迁移到云服务器
 
-代码不依赖本机账号系统。迁移时复制项目代码，并持久化 `data/`、`workspaces/`、`builds/`。若以后需要多实例部署，可保持 API 不变，将 `UserStore` 的 SQLite 实现替换为云数据库。
+代码不依赖本机账号系统。迁移时复制项目代码，并持久化 `data/`、`workspaces/`、`builds/`。单机 systemd + Caddy、HTTPS、邮箱账号、客户端打包及多实例迁移说明见 [docs/CLOUD_DEPLOY.md](docs/CLOUD_DEPLOY.md)。

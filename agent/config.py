@@ -11,7 +11,7 @@ import yaml
 from agent.model_fallback import unique_models
 from agent.paths import DEFAULT_USER_ID, ROOT, validate_id
 
-CONFIG_PATH = ROOT / "config.yaml"
+CONFIG_PATH = Path(os.environ.get("AGENT_CONFIG_PATH", ROOT / "config.yaml")).expanduser()
 
 PROVIDER_DEFAULTS = {
     "anthropic": {
@@ -374,7 +374,7 @@ def load_settings() -> Settings:
 
     legacy_api_token = str(file_data.get("api_token", "") or "").strip()
     users = _load_users(file_data, legacy_api_token)
-    server_port = int(file_data.get("server_port", 8000))
+    server_port = int(os.environ.get("PORT") or file_data.get("server_port", 8000))
     raw_cors_origins = file_data.get("cors_allowed_origins")
     if isinstance(raw_cors_origins, str):
         cors_allowed_origins = [
@@ -406,7 +406,10 @@ def load_settings() -> Settings:
             min(int(file_data.get("max_output_tokens", 65_536)), 384_000),
         ),
         "auto_build_after_edit": bool(file_data.get("auto_build_after_edit", False)),
-        "server_host": str(file_data.get("server_host", "127.0.0.1")),
+        "server_host": str(
+            os.environ.get("AGENT_SERVER_HOST")
+            or file_data.get("server_host", "127.0.0.1")
+        ),
         "server_port": server_port,
         "api_token": legacy_api_token,
         "registration_enabled": _env_bool(

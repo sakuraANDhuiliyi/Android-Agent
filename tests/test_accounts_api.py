@@ -36,6 +36,60 @@ def settings() -> Settings:
 
 
 class AccountApiTests(unittest.TestCase):
+    def test_guest_session_is_stable_and_quota_is_server_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = UserStore(root / "users.db")
+            app = create_app(
+                settings(),
+                user_store=store,
+                task_store=TaskStore(root / "agent.db"),
+            )
+            payload = {
+                "device": {
+                    "device_id": "guest-phone",
+                    "device_name": "Guest Phone",
+                    "device_type": "android",
+                }
+            }
+            with (
+                patch("agent.api.user_workspaces_dir", side_effect=lambda user: root / "workspaces" / user),
+                patch("agent.api.user_builds_dir", side_effect=lambda user: root / "builds" / user),
+                TestClient(app) as client,
+            ):
+                first = client.post("/api/auth/guest", json=payload)
+                second = client.post("/api/auth/guest", json=payload)
+
+            self.assertEqual(first.status_code, 201, first.text)
+            self.assertEqual(second.status_code, 201, second.text)
+            self.assertEqual(first.json()["user_id"], second.json()["user_id"])
+            self.assertTrue(first.json()["account"]["is_guest"])
+            self.assertEqual(first.json()["account"]["guest_remaining"], 3)
+
+            user_id = first.json()["user_id"]
+            self.assertEqual(store.consume_guest_message(user_id), 2)
+            self.assertEqual(store.consume_guest_message(user_id), 1)
+            self.assertEqual(store.consume_guest_message(user_id), 0)
+            with self.assertRaisesRegex(Exception, "游客体验次数已用完"):
+                store.consume_guest_message(user_id)
+
+    def test_email_code_can_create_a_device_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UserStore(Path(tmp) / "users.db")
+            account = store.register_account(
+                "code@example.com",
+                "secure-123",
+                device={"device_id": "initial", "device_name": "Initial"},
+            )
+            code = store.create_code(account["account"]["user_id"], "login_email")
+            logged_in = store.login_with_email_code(
+                "code@example.com",
+                code,
+                device={"device_id": "email-code", "device_name": "Email Code"},
+            )
+            self.assertTrue(logged_in["token"])
+            self.assertEqual(logged_in["account"]["email"], "code@example.com")
+
     def test_register_login_profile_and_device_revocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,0 +1,8 @@
+agent.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:8000
+
+  # 管理后台建议再叠加 VPN、Cloudflare Access 或固定 IP 白名单。
+  @admin path /admin /admin/* /api/admin/*
+  header @admin Cache-Control "no-store"
+}

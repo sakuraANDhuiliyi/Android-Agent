@@ -4,8 +4,9 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:paddingStart="@dimen/screen_margin"
-    android:paddingTop="@dimen/space_regular"
+    android:paddingTop="20dp"
     android:paddingEnd="@dimen/screen_margin"
     android:paddingBottom="@dimen/space_small"
-    android:textAppearance="?attr/textAppearanceTitleSmall"
-    android:textColor="?attr/colorOnSurfaceVariant" />
+    android:textAppearance="?attr/textAppearanceTitleMedium"
+    android:textColor="?attr/colorOnSurface"
+    android:textStyle="bold" />

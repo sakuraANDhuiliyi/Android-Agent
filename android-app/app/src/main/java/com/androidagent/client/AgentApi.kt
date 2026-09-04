@@ -57,6 +57,8 @@ data class AccountInfo(
     val email: String,
     val displayName: String,
     val emailVerified: Boolean,
+    val isGuest: Boolean = false,
+    val guestRemaining: Int? = null,
 )
 
 data class DeviceDescriptor(
@@ -276,6 +278,25 @@ class AgentApi(
             postJson(
                 "/api/auth/login",
                 JSONObject().put("email", email).put("password", password).put("device", device.toJson()),
+            ),
+        )
+
+    fun createGuestSession(device: DeviceDescriptor): AuthAccount = parseAuthAccount(
+        postJson(
+            "/api/auth/guest",
+            JSONObject().put("device", device.toJson()),
+        ),
+    )
+
+    fun requestEmailLoginCode(email: String) {
+        postJson("/api/auth/email-code/request", JSONObject().put("email", email))
+    }
+
+    fun loginWithEmailCode(email: String, code: String, device: DeviceDescriptor): AuthAccount =
+        parseAuthAccount(
+            postJson(
+                "/api/auth/email-code/login",
+                JSONObject().put("email", email).put("code", code).put("device", device.toJson()),
             ),
         )
 
@@ -705,6 +726,8 @@ class AgentApi(
         email = json.optString("email"),
         displayName = json.optString("display_name"),
         emailVerified = json.optBoolean("email_verified"),
+        isGuest = json.optBoolean("is_guest"),
+        guestRemaining = if (json.isNull("guest_remaining")) null else json.optInt("guest_remaining"),
     )
 
     private fun parseAuthAccount(json: JSONObject): AuthAccount = AuthAccount(
@@ -976,11 +999,11 @@ class AgentApi(
             val accountError = envelope.code in setOf(
                 "account_not_found", "invalid_password", "email_not_verified",
                 "email_exists", "invalid_email", "weak_password", "invalid_code",
-                "invalid_display_name",
+                "invalid_display_name", "guest_quota_exhausted", "invalid_device",
             )
             val message = when (code) {
                 401 -> if (accountError) detail else "未授权，请重新登录"
-                403 -> "无权访问该资源"
+                403 -> if (envelope.code == "guest_quota_exhausted") detail else "无权访问该资源"
                 404 -> "资源不存在或无权访问"
                 409 -> detail.ifBlank { "操作冲突" }
                 else -> detail.ifBlank { "HTTP $code" }

@@ -1,32 +1,34 @@
 package com.androidagent.client
 
 import android.content.Context
-import android.content.Intent
+import android.graphics.Typeface
 import android.os.Bundle
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
+import android.widget.EditText
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.GravityCompat
+import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.databinding.ActivityMainNavBinding
-import com.google.android.material.badge.BadgeDrawable
-import com.google.android.material.navigation.NavigationBarView
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * 根导航容器：项目 / 活动 / 待处理。
- * 紧凑宽度使用底部导航，>=600dp 使用 Navigation Rail（见 layout-w600dp）。
- * Settings/Connection 通过 toolbar menu 进入，不占用高频导航位。
- */
+/** Chat-first root with a ChatGPT-style navigation drawer and account conversation history. */
 class MainNavActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainNavBinding
     private lateinit var prefs: AgentPrefs
-
-    private var navView: NavigationBarView? = null
-    private var pendingBadge: BadgeDrawable? = null
-    private var currentTab = R.id.nav_projects
+    private var creatingGuestSession = false
+    private var currentDestination = R.id.nav_chat
+    private var drawerConversations: List<ConversationInfo> = emptyList()
 
     interface Refreshable {
         fun refreshContent()
@@ -35,125 +37,232 @@ class MainNavActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = AgentPrefs(this)
-        if (prefs.apiToken.isBlank() || prefs.serverUrl.isBlank()) {
-            startActivity(Intent(this, MainActivity::class.java))
-            finish()
-            return
-        }
-
+        applyConfiguredServer()
         binding = ActivityMainNavBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.toolbar.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                R.id.action_settings -> {
-                    ConnectionSettingsActivity.start(this)
-                    true
-                }
-                R.id.action_refresh -> {
-                    (supportFragmentManager.findFragmentById(R.id.navContent) as? Refreshable)
-                        ?.refreshContent()
-                    refreshPendingBadge()
-                    true
-                }
-                R.id.action_theokit -> {
-                    TheokitShowcaseActivity.start(this)
-                    true
-                }
-                else -> false
-            }
+        binding.toolbar.setNavigationIcon(R.drawable.ic_menu)
+        binding.toolbar.setNavigationContentDescription(R.string.open_sidebar)
+        binding.toolbar.setNavigationOnClickListener {
+            binding.drawerLayout.openDrawer(GravityCompat.START)
         }
-
-        val bottom = binding.bottomNav
-        val rail = binding.railNav
-        navView = if (rail != null && rail.visibility == View.VISIBLE) rail else bottom
-        navView?.setOnItemSelectedListener { item ->
-            if (currentTab != item.itemId || supportFragmentManager.findFragmentById(R.id.navContent) !is ProjectsFragment) {
-                currentTab = item.itemId
-                switchTo(item.itemId)
-            }
-            true
+        binding.btnDrawerNewChat.setOnClickListener { selectChat() }
+        binding.btnDrawerProjects.setOnClickListener { switchTo(R.id.nav_projects) }
+        binding.btnDrawerCreative.setOnClickListener { switchTo(R.id.nav_creative) }
+        binding.btnDrawerActivity.setOnClickListener { switchTo(R.id.nav_activity) }
+        binding.btnDrawerPending.setOnClickListener { switchTo(R.id.nav_pending) }
+        binding.rowDrawerAccount.setOnClickListener {
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+            if (prefs.guestMode) MainActivity.startLogin(this) else switchTo(R.id.nav_me)
         }
+        binding.btnDrawerSearch.setOnClickListener { showConversationSearch() }
 
         if (savedInstanceState == null) {
-            val tab = when (intent.getStringExtra(DeepLink.EXTRA_TAB)) {
+            currentDestination = when (intent.getStringExtra(DeepLink.EXTRA_TAB)) {
                 DeepLink.TAB_APPROVALS -> R.id.nav_pending
-                else -> R.id.nav_projects
+                DeepLink.TAB_CREATIVE -> R.id.nav_creative
+                else -> R.id.nav_chat
             }
-            navView?.selectedItemId = tab
-            switchTo(tab)
+            switchTo(currentDestination)
+        }
+        renderAccount()
+        ensureSession()
+    }
+
+    private fun applyConfiguredServer() {
+        val configuredUrl = BuildConfig.AGENT_SERVER_URL.trim().trimEnd('/')
+        val previousUrl = prefs.serverUrl.trim().trimEnd('/')
+        if (previousUrl != configuredUrl && prefs.apiToken.isNotBlank()) prefs.clearAuth()
+        prefs.serverUrl = configuredUrl
+    }
+
+    fun ensureSession() {
+        if (prefs.apiToken.isNotBlank()) {
+            renderAccount()
+            refreshDrawerHistory()
+            return
+        }
+        if (creatingGuestSession || prefs.serverUrl.isBlank()) return
+        creatingGuestSession = true
+        lifecycleScope.launch {
+            try {
+                val auth = withContext(Dispatchers.IO) {
+                    AgentApi(prefs.serverUrl).createGuestSession(currentDevice(this@MainNavActivity))
+                }
+                prefs.saveGuestAuth(auth)
+                renderAccount()
+                (supportFragmentManager.findFragmentById(R.id.navContent) as? Refreshable)
+                    ?.refreshContent()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainNavActivity,
+                    getString(R.string.guest_session_failed),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                creatingGuestSession = false
+            }
         }
     }
 
     private fun switchTo(itemId: Int) {
-        val fragment = when (itemId) {
-            R.id.nav_activity -> ActivityFeedFragment()
-            R.id.nav_pending -> ApprovalsFragment()
-            R.id.nav_me -> MeFragment()
-            else -> ProjectsFragment()
+        currentDestination = itemId
+        val (title, fragment) = when (itemId) {
+            R.id.nav_projects -> R.string.nav_projects to ProjectsFragment()
+            R.id.nav_creative -> R.string.nav_creative to CreativeSquareFragment()
+            R.id.nav_activity -> R.string.nav_activity to ActivityFeedFragment()
+            R.id.nav_pending -> R.string.nav_pending to ApprovalsFragment()
+            R.id.nav_me -> R.string.nav_me to MeFragment()
+            else -> R.string.drawer_chat to ChatHomeFragment()
         }
-        binding.toolbar.setTitle(
-            when (itemId) {
-                R.id.nav_activity -> R.string.nav_activity
-                R.id.nav_pending -> R.string.nav_pending
-                R.id.nav_me -> R.string.nav_me
-                else -> R.string.nav_projects
-            },
-        )
+        binding.toolbar.setTitle(title)
         supportFragmentManager.beginTransaction()
-            .replace(R.id.navContent, fragment, "tab_$itemId")
+            .replace(R.id.navContent, fragment, "destination_$itemId")
             .commit()
+        binding.drawerLayout.closeDrawer(GravityCompat.START)
     }
+
+    fun selectChat() = switchTo(R.id.nav_chat)
+
+    fun selectCreative() = switchTo(R.id.nav_creative)
+
+    fun selectProjects() = switchTo(R.id.nav_projects)
 
     override fun onResume() {
         super.onResume()
-        if (prefs.apiToken.isBlank()) {
-            startActivity(Intent(this, MainActivity::class.java))
-            finish()
-            return
-        }
-        refreshPendingBadge()
+        renderAccount()
+        ensureSession()
+        if (!prefs.guestMode) refreshDrawerHistory()
     }
 
-    /** Approval Inbox 数量由 Fragment 刷新后回写；其他 tab 由 resume 时的轻量查询补足。 */
-    fun updatePendingBadge(count: Int) {
-        val view = navView ?: return
-        if (count <= 0) {
-            view.removeBadge(R.id.nav_pending)
-            pendingBadge = null
+    fun refreshDrawerHistory() {
+        renderAccount()
+        if (prefs.guestMode || prefs.apiToken.isBlank()) {
+            drawerConversations = emptyList()
+            renderHistory(emptyList())
             return
         }
-        val badge = view.getOrCreateBadge(R.id.nav_pending)
-        badge.isVisible = true
-        badge.number = count
-        pendingBadge = badge
-    }
-
-    private fun refreshPendingBadge() {
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
         lifecycleScope.launch {
             try {
-                val count = withContext(Dispatchers.IO) {
-                    val jobs = api.listJobs().filter { UiFormat.isActive(it.status) }
-                    var total = 0
-                    for (job in jobs) {
-                        total += api.listApprovals(job.id).count { it.status == "pending" }
-                    }
-                    total
+                val conversations = withContext(Dispatchers.IO) {
+                    api.listProjects()
+                        .flatMap { project -> api.listConversations(project.id) }
+                        .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0.0 }
+                        .take(50)
                 }
-                updatePendingBadge(count)
-            } catch (e: Exception) {
-                // 连接失败不打断导航，Projects 页 banner 会提示
+                drawerConversations = conversations
+                renderHistory(conversations)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Drawer history is secondary; the current page shows actionable connection errors.
             }
         }
     }
 
-    companion object {
-        fun start(context: Context) {
-            context.startActivity(
-                Intent(context, MainNavActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+    private fun renderAccount() {
+        if (!::binding.isInitialized) return
+        val guest = prefs.guestMode || prefs.userId.isBlank()
+        binding.textRecentTitle.isVisible = !guest
+        binding.drawerHistoryScroll.isVisible = !guest
+        binding.textGuestHistory.isVisible = guest
+        if (guest) {
+            binding.textAccountAvatar.text = "游"
+            binding.textAccountName.setText(R.string.guest_account)
+            binding.textAccountMeta.text = getString(R.string.guest_account_meta, prefs.guestRemaining)
+        } else {
+            val name = prefs.displayName.ifBlank { prefs.displayEmail.substringBefore('@').ifBlank { "我" } }
+            binding.textAccountAvatar.text = name.take(1).uppercase()
+            binding.textAccountName.text = name
+            binding.textAccountMeta.text = prefs.displayEmail
+        }
+    }
+
+    private fun renderHistory(items: List<ConversationInfo>) {
+        if (!::binding.isInitialized || prefs.guestMode) return
+        binding.drawerHistoryList.removeAllViews()
+        if (items.isEmpty()) {
+            binding.drawerHistoryList.addView(historyText(getString(R.string.no_conversations), null, muted = true))
+            return
+        }
+        items.forEach { conversation ->
+            binding.drawerHistoryList.addView(
+                historyText(conversation.title, conversation) {
+                    prefs.selectedProjectId = conversation.projectId
+                    prefs.selectedConversationId = conversation.id
+                    binding.drawerLayout.closeDrawer(GravityCompat.START)
+                    ConversationActivity.start(
+                        this,
+                        conversation.projectId,
+                        conversation.id,
+                        conversation.title,
+                    )
+                },
             )
+        }
+    }
+
+    private fun historyText(
+        label: String,
+        conversation: ConversationInfo?,
+        muted: Boolean = false,
+        onClick: (() -> Unit)? = null,
+    ): TextView = TextView(this).apply {
+        text = label
+        textSize = 15f
+        gravity = Gravity.CENTER_VERTICAL
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(dp(10), 0, dp(10), 0)
+        minHeight = dp(46)
+        if (muted) alpha = 0.6f else {
+            setTypeface(typeface, Typeface.NORMAL)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick?.invoke() }
+            contentDescription = conversation?.title
+        }
+    }
+
+    private fun showConversationSearch() {
+        if (prefs.guestMode) {
+            MainActivity.startLogin(this)
+            return
+        }
+        val input = EditText(this).apply {
+            hint = getString(R.string.search_conversations)
+            inputType = InputType.TYPE_CLASS_TEXT
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.search_conversations)
+            .setView(input)
+            .setPositiveButton(R.string.search) { _, _ ->
+                val query = input.text?.toString()?.trim().orEmpty()
+                renderHistory(
+                    if (query.isBlank()) drawerConversations
+                    else drawerConversations.filter { it.title.contains(query, ignoreCase = true) },
+                )
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    fun updatePendingBadge(count: Int) {
+        binding.btnDrawerPending.text = if (count > 0) {
+            getString(R.string.drawer_pending_count, count)
+        } else getString(R.string.nav_pending)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        fun start(context: Context, tab: String? = null) {
+            context.startActivity(DeepLink.mainNavIntent(context, tab))
         }
     }
 }

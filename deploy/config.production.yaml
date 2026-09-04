@@ -1,0 +1,44 @@
+provider: deepseek
+model: deepseek-v4-pro
+model_fallbacks:
+  - deepseek-v4-flash
+
+max_turns: 15
+max_auto_continuations: 2
+auto_build_after_edit: false
+
+# 仅监听回环地址，由 Caddy 提供公网 HTTPS。
+server_host: 127.0.0.1
+server_port: 8000
+
+registration_enabled: true
+email_verification_required: true
+smtp_host: smtp.example.com
+smtp_port: 587
+smtp_username: android-agent@example.com
+smtp_from: Android Agent <android-agent@example.com>
+smtp_starttls: true
+
+# 云端不要开放任意 PTY；调试 Web 页面也关闭。
+terminal_enabled: false
+debug_web_ui_enabled: false
+admin_ui_enabled: false
+
+ws_ticket_ttl_seconds: 30
+max_request_bytes: 2097152
+max_prompt_chars: 100000
+max_projects_per_user: 50
+max_conversations_per_project: 200
+max_active_tasks_per_user: 6
+max_events_per_conversation: 100000
+max_registration_per_hour: 20
+max_requests_per_minute: 600
+minimum_free_disk_bytes: 1073741824
+max_build_artifacts_per_project: 50
+
+# Electron 本地文件页面的 Origin 为 null；原生 Android 不受 CORS 限制。
+cors_allowed_origins:
+  - "null"
+
+deployment_mode: sqlite
+artifact_backend: local
