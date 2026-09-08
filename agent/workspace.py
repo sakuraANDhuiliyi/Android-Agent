@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 import subprocess
 import time
 import uuid
@@ -124,6 +125,7 @@ def _capture_manifest(workspace: Path, user_id: str) -> list[dict[str, Any]]:
                     "path": rel,
                     "sha256": sha256,
                     "size": len(data),
+                    "executable": bool(path.stat().st_mode & 0o111),
                 }
             )
     return sorted(entries, key=lambda e: e["path"])
@@ -200,6 +202,8 @@ class WorkspaceRepository:
         raw = _parse_git_status(self.repo_root)
         files = []
         for entry in raw:
+            if self._is_protected_path(entry["path"]):
+                continue
             kind = _classify_git_entry(entry)
             files.append(
                 {
@@ -243,10 +247,9 @@ class WorkspaceRepository:
             args.extend([from_revision, to_revision])
         elif from_revision:
             args.append(f"{from_revision}..HEAD")
-        if path:
-            args.append("--")
-            args.append(path)
-        args.extend(["--", "."])
+        elif not staged:
+            args.append("HEAD")
+        args.extend(["--", path or "."])
         proc = subprocess.run(
             args,
             cwd=str(self.repo_root),
@@ -264,6 +267,37 @@ class WorkspaceRepository:
             }
         diff_text = proc.stdout
         files = self._extract_diff_files(diff_text)
+        included = {entry["path"] for entry in files}
+        for status in self.git_status().get("files", []):
+            rel = status.get("path")
+            if (
+                status.get("status") != "untracked"
+                or not rel
+                or rel in included
+                or self._is_protected_path(rel)
+            ):
+                continue
+            try:
+                target = resolve_workspace_path(self.workspace, rel)
+                content = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeError, PermissionError):
+                content = ""
+            patch = "".join(
+                difflib.unified_diff([], content.splitlines(keepends=True), fromfile="/dev/null", tofile=f"b/{rel}")
+            )
+            files.append(
+                {
+                    "path": rel,
+                    "old_path": None,
+                    "change": "added",
+                    "additions": len(content.splitlines()),
+                    "deletions": 0,
+                    "patch": patch,
+                    "truncated": len(patch) > MAX_DIFF_CHARS,
+                }
+            )
+            diff_text += patch
+        files.sort(key=lambda entry: entry["path"])
         truncated = len(diff_text) > MAX_DIFF_CHARS
         return {
             "ok": True,
@@ -273,14 +307,110 @@ class WorkspaceRepository:
             "files": files,
         }
 
-    def _extract_diff_files(self, diff_text: str) -> list[str]:
-        files: set[str] = set()
-        for line in diff_text.splitlines():
-            if line.startswith("--- a/"):
-                files.add(line[6:].split("\t")[0])
-            elif line.startswith("+++ b/"):
-                files.add(line[6:].split("\t")[0])
-        return sorted(files)
+    def _extract_diff_files(self, diff_text: str) -> list[dict[str, Any]]:
+        """Split a git patch into review-ready per-file entries."""
+        sections: list[list[str]] = []
+        current: list[str] = []
+        for line in diff_text.splitlines(keepends=True):
+            if line.startswith("diff --git "):
+                if current:
+                    sections.append(current)
+                current = [line]
+            elif current:
+                current.append(line)
+        if current:
+            sections.append(current)
+
+        result: list[dict[str, Any]] = []
+        for lines in sections:
+            patch = "".join(lines)
+            old_path = None
+            path = None
+            change = "modified"
+            for line in lines:
+                if line.startswith("rename from "):
+                    old_path = line[len("rename from "):].strip()
+                    change = "renamed"
+                elif line.startswith("rename to "):
+                    path = line[len("rename to "):].strip()
+                elif line.startswith("new file mode "):
+                    change = "added"
+                elif line.startswith("deleted file mode "):
+                    change = "deleted"
+                elif line.startswith("--- a/"):
+                    old_path = line[6:].split("\t")[0].strip()
+                elif line.startswith("+++ b/"):
+                    path = line[6:].split("\t")[0].strip()
+            if path is None and change == "deleted":
+                path = old_path
+            if not path:
+                continue
+            additions = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+            deletions = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+            result.append(
+                {
+                    "path": path,
+                    "old_path": old_path if old_path != path else None,
+                    "change": change,
+                    "additions": additions,
+                    "deletions": deletions,
+                    "patch": patch,
+                    "truncated": False,
+                }
+            )
+        return sorted(result, key=lambda entry: entry["path"])
+
+    def revert_hunk(self, rel_path: str, hunk: str) -> dict[str, Any]:
+        """Reverse one unified-diff hunk only when its current lines still match."""
+        if self._is_protected_path(rel_path):
+            raise ValueError("protected workspace path")
+        try:
+            target = resolve_workspace_path(self.workspace, rel_path)
+        except PermissionError as exc:
+            raise ValueError("path escapes workspace") from exc
+        if target.exists() and not target.is_file():
+            raise ValueError("diff target is not a file")
+        lines = hunk.splitlines()
+        if not lines or not lines[0].startswith("@@"):
+            raise ValueError("invalid diff hunk")
+        match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", lines[0])
+        if not match:
+            raise ValueError("invalid diff hunk header")
+        old_segment: list[str] = []
+        new_segment: list[str] = []
+        for line in lines[1:]:
+            if not line or line.startswith("\\"):
+                continue
+            marker, content = line[0], line[1:]
+            if marker in {" ", "-"}:
+                old_segment.append(content)
+            if marker in {" ", "+"}:
+                new_segment.append(content)
+        if old_segment == new_segment:
+            raise ValueError("diff hunk contains no change")
+        raw = target.read_text(encoding="utf-8") if target.exists() else ""
+        current = raw.splitlines()
+        preferred = max(0, int(match.group(1)) - 1)
+        candidates = [
+            index
+            for index in range(0, len(current) - len(new_segment) + 1)
+            if current[index:index + len(new_segment)] == new_segment
+        ]
+        if not candidates:
+            return {"ok": False, "error": "hunk_conflict", "conflicts": [rel_path]}
+        index = min(candidates, key=lambda value: abs(value - preferred))
+        self.create_checkpoint("manual", idempotency_key=f"before:hunk:{uuid.uuid4().hex[:12]}")
+        updated = current[:index] + old_segment + current[index + len(new_segment):]
+        newline = "\r\n" if "\r\n" in raw else "\n"
+        output = newline.join(updated)
+        if raw.endswith(("\n", "\r")):
+            output += newline
+        if not updated and not old_segment:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(output, encoding="utf-8", newline="")
+        return {"ok": True, "restored": [rel_path], "line": index + 1}
 
     def git_log(self, max_count: int = 20) -> dict[str, Any]:
         if not self.is_git():
@@ -337,7 +467,7 @@ class WorkspaceRepository:
         )
         with self.store._connect() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO checkpoints
+                """INSERT OR IGNORE INTO checkpoints
                    (id, user_id, project_id, conversation_id, turn_id, task_id,
                     kind, base_revision, manifest_json, created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -354,12 +484,15 @@ class WorkspaceRepository:
                     created_at,
                 ),
             )
+        saved = self.get_checkpoint(checkpoint_id)
+        if not saved or saved["kind"] != kind or saved.get("turn_id") != turn_id:
+            raise ValueError("Checkpoint identity already belongs to another snapshot")
         return {
             "id": checkpoint_id,
-            "kind": kind,
-            "base_revision": base,
-            "file_count": len(manifest),
-            "created_at": created_at,
+            "kind": saved["kind"],
+            "base_revision": saved["base_revision"],
+            "file_count": len(saved["files"]),
+            "created_at": saved["created_at"],
         }
 
     def list_checkpoints(self) -> list[dict[str, Any]]:
@@ -557,6 +690,16 @@ class WorkspaceRepository:
                         additions += 1
                     elif line.startswith("-") and not line.startswith("---"):
                         deletions += 1
+            file_patch = ""
+            if kind != "renamed":
+                file_patch = "".join(
+                    difflib.unified_diff(
+                        old_lines,
+                        new_lines,
+                        fromfile=f"before_turn/{rel}",
+                        tofile=f"after_turn/{rel}",
+                    )
+                )
             files.append(
                 {
                     "path": rel,
@@ -567,17 +710,12 @@ class WorkspaceRepository:
                     "additions": additions,
                     "deletions": deletions,
                     "binary": _blob_is_binary(self.user_id, b_hash or a_hash),
+                    "patch": file_patch,
+                    "truncated": len(file_patch) > MAX_DIFF_CHARS,
                 }
             )
-            if kind != "renamed":
-                diff_parts.extend(
-                    difflib.unified_diff(
-                        old_lines,
-                        new_lines,
-                        fromfile=f"before_turn/{rel}",
-                        tofile=f"after_turn/{rel}",
-                    )
-                )
+            if file_patch:
+                diff_parts.append(file_patch)
         diff_text = "".join(diff_parts)
         truncated = len(diff_text) > MAX_DIFF_CHARS
         return {
@@ -676,7 +814,6 @@ class WorkspaceRepository:
             if a_hash == b_hash:
                 continue
             kind = "added" if rel not in a_hashes else "deleted" if rel not in b_hashes else "modified"
-            files.append({"path": rel, "change": kind})
             if kind == "added":
                 old_lines: list[str] = []
                 new_lines = _blob_lines(self.user_id, b_hash)
@@ -686,7 +823,7 @@ class WorkspaceRepository:
             else:
                 old_lines = _blob_lines(self.user_id, a_hash)
                 new_lines = _blob_lines(self.user_id, b_hash)
-            diff_parts.extend(
+            file_patch = "".join(
                 difflib.unified_diff(
                     old_lines,
                     new_lines,
@@ -694,6 +831,25 @@ class WorkspaceRepository:
                     tofile=f"{label_b}/{rel}",
                 )
             )
+            additions = sum(
+                1 for line in file_patch.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            )
+            deletions = sum(
+                1 for line in file_patch.splitlines()
+                if line.startswith("-") and not line.startswith("---")
+            )
+            files.append(
+                {
+                    "path": rel,
+                    "change": kind,
+                    "additions": additions,
+                    "deletions": deletions,
+                    "patch": file_patch,
+                    "truncated": len(file_patch) > MAX_DIFF_CHARS,
+                }
+            )
+            diff_parts.append(file_patch)
         diff_text = "".join(diff_parts)
         truncated = len(diff_text) > MAX_DIFF_CHARS
         return {

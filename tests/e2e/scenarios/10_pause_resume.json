@@ -1,0 +1,31 @@
+{
+  "id": "10_pause_resume",
+  "title": "暂停与恢复",
+  "description": "多步任务执行中暂停（步间边界生效），恢复后从断点继续直到完成",
+  "prompt": "依次运行三段耗时脚本",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "执行第一段。",
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(1.5); print('E2E-STEP-1')"]}}]
+    },
+    {
+      "type": "tool",
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(1.5); print('E2E-STEP-2')"]}}]
+    },
+    {
+      "type": "tool",
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(1.5); print('E2E-STEP-3')"]}}]
+    },
+    {"type": "final", "text": "三段脚本全部执行完成。"}
+  ],
+  "driver": "pause_resume",
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_command", "run_command", "run_command"],
+    "tool_result_contains": {"run_command": "E2E-STEP-3"},
+    "final_text_contains": "全部执行完成",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "assistant_message", "turn_completed"]
+  }
+}

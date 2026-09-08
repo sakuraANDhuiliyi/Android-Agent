@@ -7,24 +7,37 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.MenuItem
 import android.view.View
+import android.view.Gravity
+import android.widget.ArrayAdapter
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.PopupMenu
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnLayout
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import com.androidagent.client.ConversationTimelineBuilder.ExpansionPolicy
 import com.androidagent.client.ConversationTimelineBuilder.Row
+import com.androidagent.client.core.database.AppDatabase
 import com.androidagent.client.databinding.ActivityConversationBinding
 import com.androidagent.client.databinding.ItemApprovalBinding
 import com.androidagent.client.databinding.ViewJobDetailsBinding
+import com.androidagent.client.feature.conversation.ConversationRepository
+import com.androidagent.client.feature.conversation.ConversationSignal
+import com.androidagent.client.feature.conversation.ConversationViewModel
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.chip.Chip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,25 +48,21 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private lateinit var binding: ActivityConversationBinding
     private lateinit var prefs: AgentPrefs
     private lateinit var api: AgentApi
+    private lateinit var viewModel: ConversationViewModel
 
     private var projectId: String = ""
     private var conversationId: String = ""
     private var conversationTitle: String = ""
-    private var currentJobId: String? = null
-    private var currentJob: JobInfo? = null
-    private var watcher: JobWatcher? = null
 
-    private val store = TimelineStore()
     private val policy = ExpansionPolicy()
     private lateinit var adapter: ConversationTimelineAdapter
 
-    /** 历史分页游标（backward）。 */
-    private var historyMinSeq: Int? = null
-    private var historyHasMore = false
-    private var loadingEarlier = false
+    /** 历史分页滚动锚定：prepend 前记录首个可见行，恢复视觉位置。 */
+    private var pendingAnchorId: String? = null
+    private var pendingAnchorTop = 0
 
-    /** 会话切换令牌：过期响应直接丢弃。 */
-    private var loadToken = 0
+    /** onStart 二次进入只做增量同步。 */
+    private var resumedOnce = false
 
     /** 流式渲染批处理：80ms 合并一次。 */
     private val renderHandler = Handler(Looper.getMainLooper())
@@ -63,9 +72,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private var autoFollow = true
     private var pendingNewCount = 0
 
-    /** 审批提交中状态。 */
-    private val submittingApprovals = HashSet<String>()
-    private lateinit var allowlist: ApprovalAllowlist
+    private val contextAttachments = mutableListOf<ContextAttachment>()
+    private var mentionPickerOpen = false
+    private var lastMentionTrigger = ""
+    private var lastContextStatusJobId: String? = null
+    private var lastJobInstance: JobInfo? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,12 +84,10 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         setContentView(binding.root)
 
         prefs = AgentPrefs(this)
-        allowlist = ApprovalAllowlist(prefs.approvalAllowlist())
         projectId = intent.getStringExtra(DeepLink.EXTRA_PROJECT_ID).orEmpty()
         conversationId = intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_ID).orEmpty()
         conversationTitle = intent.getStringExtra(DeepLink.EXTRA_CONVERSATION_TITLE).orEmpty()
         intent.getStringExtra(DeepLink.EXTRA_JOB_ID)?.takeIf { it.isNotBlank() }?.let {
-            currentJobId = it
             prefs.selectedJobId = it
         }
         if (projectId.isBlank() || conversationId.isBlank() || prefs.apiToken.isBlank()) {
@@ -90,8 +99,22 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         prefs.selectedProjectId = projectId
         prefs.selectedConversationId = conversationId
 
+        val db = AppDatabase.get(applicationContext)
+        val repository = ConversationRepository(
+            api = api,
+            eventDao = db.conversationEventDao(),
+            conversationDao = db.conversationDao(),
+            jobDao = db.jobDao(),
+            approvalDao = db.approvalDao(),
+        )
+        viewModel = ViewModelProvider(
+            this,
+            ConversationViewModel.factory(api, repository, prefs, applicationContext),
+        )[ConversationViewModel::class.java]
+
         WindowCompat.setDecorFitsSystemWindows(window, false)
         applyWindowInsets()
+        constrainConversationChrome()
 
         binding.toolbar.title = conversationTitle.ifBlank { getString(R.string.new_conversation) }
         binding.toolbar.setNavigationIcon(R.drawable.ic_arrow_back)
@@ -103,11 +126,21 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val layoutManager = LinearLayoutManager(this)
         binding.recyclerTimeline.layoutManager = layoutManager
         binding.recyclerTimeline.adapter = adapter
+        // 性能：多 ViewType 时间线的回收池调优，回滚时减少重新 inflate
+        binding.recyclerTimeline.setItemViewCacheSize(24)
+        binding.recyclerTimeline.setRecycledViewPool(RecyclerView.RecycledViewPool().apply {
+            setMaxRecycledViews(ConversationTimelineAdapter.TYPE_WORK, 12)
+            setMaxRecycledViews(ConversationTimelineAdapter.TYPE_ASSISTANT, 10)
+            setMaxRecycledViews(ConversationTimelineAdapter.TYPE_USER, 8)
+        })
         (binding.recyclerTimeline.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
         binding.recyclerTimeline.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                if (dy == 0 && !recyclerView.canScrollVertically(-1) && !loadingEarlier && historyHasMore) {
-                    loadEarlierHistory()
+                if (dy == 0 && !recyclerView.canScrollVertically(-1) &&
+                    !viewModel.state.value.loadingEarlier && viewModel.state.value.historyHasMore
+                ) {
+                    captureScrollAnchor()
+                    viewModel.loadEarlier()
                 }
                 updateAutoFollow()
             }
@@ -121,7 +154,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
 
         binding.btnSend.setOnClickListener { onSend() }
-        binding.btnStop.setOnClickListener { controlJob("cancel") }
+        binding.btnAddContext.setOnClickListener { showContextMenu(it) }
+        binding.btnContextInspector.setOnClickListener { showContextInspector() }
+        binding.btnStop.setOnClickListener { viewModel.controlJob("cancel") }
         binding.btnDisconnectDetails.setOnClickListener { ConnectionSettingsActivity.start(this) }
         binding.btnClearDraft.setOnClickListener {
             binding.editPrompt.setText("")
@@ -135,9 +170,15 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             val value = text?.toString().orEmpty()
             prefs.setComposerDraft(conversationId, value)
             binding.rowDraft.isVisible = value.isNotBlank()
+            maybeShowMention(value)
         }
         if (savedInstanceState == null) {
-            val draft = prefs.composerDraft(conversationId)
+            @Suppress("DEPRECATION", "UNCHECKED_CAST")
+            val incomingContexts = intent.getSerializableExtra(DeepLink.EXTRA_CONTEXTS) as? ArrayList<ContextAttachment>
+            contextAttachments.addAll(incomingContexts.orEmpty().take(20))
+            val draft = intent.getStringExtra(DeepLink.EXTRA_DRAFT)
+                ?.takeIf { it.isNotBlank() }
+                ?: prefs.composerDraft(conversationId)
             if (draft.isNotBlank()) {
                 binding.editPrompt.setText(draft)
                 binding.rowDraft.isVisible = true
@@ -157,9 +198,55 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 policy.restore(it)
             }
             saved.getString(STATE_DRAFT)?.let { binding.editPrompt.setText(it) }
-            saved.getString(STATE_JOB)?.let { currentJobId = it }
+            @Suppress("DEPRECATION")
+            (saved.getSerializable(STATE_CONTEXTS) as? ArrayList<ContextAttachment>)?.let {
+                contextAttachments.clear()
+                contextAttachments.addAll(it)
+                renderContextChips()
+            }
         }
-        updateComposer(currentJob)
+        renderContextChips()
+        observeViewModel()
+        viewModel.start(projectId, conversationId)
+    }
+
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            viewModel.state.collect { st ->
+                binding.btnSend.isEnabled = !st.sending
+                binding.bannerDisconnect.isVisible = st.offline
+                if (st.job !== lastJobInstance) {
+                    lastJobInstance = st.job
+                    renderJobChrome(st.job)
+                }
+                scheduleRender()
+            }
+        }
+        lifecycleScope.launch {
+            viewModel.signals.collect { handleSignal(it) }
+        }
+    }
+
+    private fun handleSignal(signal: ConversationSignal) {
+        when (signal) {
+            is ConversationSignal.ToastText -> toast(signal.message)
+            is ConversationSignal.ToastRes -> toast(getString(signal.resId))
+            ConversationSignal.GuestQuotaExhausted -> showGuestQuotaDialog()
+            ConversationSignal.ComposerReset -> {
+                binding.editPrompt.setText("")
+                contextAttachments.clear()
+                renderContextChips()
+            }
+        }
+    }
+
+    private fun showGuestQuotaDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.guest_quota_title)
+            .setMessage(R.string.guest_quota_message)
+            .setPositiveButton(R.string.login_or_register) { _, _ -> MainActivity.startLogin(this) }
+            .setNegativeButton(R.string.not_now, null)
+            .show()
     }
 
     private fun applyWindowInsets() {
@@ -171,313 +258,62 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
     }
 
+    /** Keep the composer and approval surface aligned with the centered
+     * conversation reading width on tablets and desktop-sized windows. */
+    private fun constrainConversationChrome() {
+        binding.contentRoot.doOnLayout { root ->
+            val available = root.width - root.paddingLeft - root.paddingRight
+            val maxWidth = resources.getDimensionPixelSize(R.dimen.conversation_content_max_width)
+            val targetWidth = minOf(available, maxWidth)
+            for (view in listOf(binding.approvalBar, binding.composerBar)) {
+                val params = view.layoutParams as? LinearLayout.LayoutParams ?: continue
+                if (params.width != targetWidth || params.gravity != Gravity.CENTER_HORIZONTAL) {
+                    params.width = targetWidth
+                    params.gravity = Gravity.CENTER_HORIZONTAL
+                    view.layoutParams = params
+                }
+            }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         AppForeground.onActivityStarted()
-        restoreSession()
+        if (resumedOnce) viewModel.refresh() else resumedOnce = true
     }
 
     override fun onStop() {
         AppForeground.onActivityStopped()
         // 只落盘游标，不停止 watcher：任务在后台完成时要能触发本地通知
-        // （MVP §21）。回到前台时 restoreSession 会重新接管并复用游标去重。
-        currentJobId?.let { jobId ->
-            prefs.setEventCursor(jobId, watcher?.currentCursor() ?: prefs.eventCursor(jobId))
-        }
+        // （MVP §21）。回到前台时 refresh 会重新接管并复用游标去重。
+        viewModel.persistJobCursor()
         super.onStop()
-    }
-
-    override fun onDestroy() {
-        // lifecycleScope 取消只终结协程，不会关掉 OkHttp WebSocket；
-        // 不显式 stop 会让服务端持续为一个已销毁的页面推送事件。
-        watcher?.stop()
-        watcher = null
-        super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putSerializable(STATE_EXPANSION, HashMap(policy.snapshot()))
         outState.putString(STATE_DRAFT, binding.editPrompt.text?.toString().orEmpty())
-        outState.putString(STATE_JOB, currentJobId)
+        outState.putSerializable(STATE_CONTEXTS, ArrayList(contextAttachments))
     }
 
-    // ---------- 首屏加载与任务绑定 ----------
-
-    private fun restoreSession() {
-        val token = ++loadToken
-        lifecycleScope.launch {
-            try {
-                val page = withContext(Dispatchers.IO) {
-                    api.listConversationEvents(conversationId, beforeSeq = Int.MAX_VALUE, limit = HISTORY_PAGE_LIMIT)
-                }
-                if (token != loadToken) return@launch
-                binding.bannerDisconnect.isVisible = false
-                ingestConversationEvents(page.events)
-                historyMinSeq = page.events.firstOrNull()?.optInt("seq")
-                    ?: page.nextBeforeSeq
-                historyHasMore = page.hasMore
-                renderNow(scrollToEnd = false)
-
-                val jobs = withContext(Dispatchers.IO) { api.listJobs(projectId, conversationId) }
-                if (token != loadToken) return@launch
-                val preferred = prefs.selectedJobId
-                val active = jobs.firstOrNull { it.id == preferred && it.resolvedStatus() in ACTIVE_STATUSES }
-                    ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
-                    ?: jobs.firstOrNull()
-                if (active != null) {
-                    attachJob(active.id, resume = true)
-                } else {
-                    currentJobId = null
-                    currentJob = null
-                    updateToolbarStatus(null)
-                    updateComposer(null)
-                    renderNow()
-                }
-            } catch (e: Exception) {
-                binding.bannerDisconnect.isVisible = true
-                toast(userMessage(e))
-            }
-        }
-    }
-
-    private fun ingestConversationEvents(events: List<JSONObject>) {
-        val normalized = events.mapNotNull { ConversationEventNormalizer.fromConversationEvent(it) }
-        store.ingest(normalized)
-    }
-
-    private fun loadEarlierHistory() {
-        if (loadingEarlier || !historyHasMore) return
-        val before = historyMinSeq ?: return
-        val token = loadToken
-        loadingEarlier = true
-        renderNow()
-        lifecycleScope.launch {
-            try {
-                val page = withContext(Dispatchers.IO) {
-                    api.listConversationEvents(conversationId, beforeSeq = before, limit = HISTORY_PAGE_LIMIT)
-                }
-                if (token != loadToken) return@launch
-                // 锚定：记录首个可见行 id 与偏移，prepend 后恢复视觉位置
-                val layoutManager = binding.recyclerTimeline.layoutManager as LinearLayoutManager
-                val anchorPos = layoutManager.findFirstVisibleItemPosition()
-                val anchorId = adapter.currentList.getOrNull(anchorPos)?.id
-                val anchorTop = layoutManager.findViewByPosition(anchorPos)?.top ?: 0
-                ingestConversationEvents(page.events)
-                if (page.events.isNotEmpty()) historyMinSeq = page.events.first().optInt("seq")
-                historyHasMore = page.hasMore
-                val rows = buildRows()
-                adapter.submitList(rows)
-                binding.recyclerTimeline.post {
-                    val newIdx = rows.indexOfFirst { it.id == anchorId }
-                    if (newIdx >= 0) {
-                        layoutManager.scrollToPositionWithOffset(newIdx, anchorTop)
-                    }
-                }
-            } catch (e: Exception) {
-                toast(userMessage(e))
-            } finally {
-                loadingEarlier = false
-                renderNow(scrollToEnd = false)
-            }
-        }
-    }
-
-    private fun attachJob(jobId: String, resume: Boolean) {
-        currentJobId = jobId
-        prefs.selectedJobId = jobId
-        watcher?.stop()
-        val cursor = if (resume) prefs.eventCursor(jobId) else 0L
-        watcher = JobWatcher(
-            api = api,
-            scope = lifecycleScope,
-            onEvent = { event ->
-                val normalized = ConversationEventNormalizer.fromTaskEvent(event, fallbackJobId = jobId)
-                if (normalized != null && store.ingest(listOf(normalized))) {
-                    if (!autoFollow) pendingNewCount += 1
-                    scheduleRender()
-                }
-                if (normalized?.kind == ConversationEventNormalizer.Kind.APPROVAL_REQUIRED) {
-                    refreshApprovals(jobId)
-                    if (!AppForeground.isForeground) {
-                        JobNotifier.notifyApproval(
-                            this,
-                            jobId,
-                            projectId,
-                            conversationId,
-                            conversationTitle,
-                            UiFormat.approvalIntent(
-                                normalized.payload,
-                                normalized.payload.optString("kind"),
-                            ).ifBlank { getString(R.string.notification_approval_title) },
-                        )
-                    }
-                }
-            },
-            onJob = { job ->
-                runOnUiThread {
-                    renderJob(job)
-                }
-            },
-            onDone = { job ->
-                runOnUiThread {
-                    renderJob(job)
-                    if (!AppForeground.isForeground) {
-                        JobNotifier.notifyJobFinished(
-                            this,
-                            job.id,
-                            job.status,
-                            job.result ?: job.error,
-                            projectId,
-                            conversationId,
-                            conversationTitle,
-                        )
-                    }
-                    currentJobId?.let { id -> prefs.setEventCursor(id, watcher?.currentCursor() ?: prefs.eventCursor(id)) }
-                    syncFinalConversationEvents(job.id)
-                }
-            },
-            onError = { err ->
-                runOnUiThread { toast("同步中断: ${err.message}") }
-            },
-        ).also { it.start(jobId, cursor) }
-
-        lifecycleScope.launch {
-            try {
-                val job = withContext(Dispatchers.IO) { api.getJob(jobId) }
-                renderJob(job)
-                refreshApprovals(jobId)
-            } catch (e: Exception) {
-                toast(userMessage(e))
-            }
-        }
-    }
-
-    /** 任务终态后拉取 canonical 事件（权威裁决去重 live 流）。 */
-    private fun syncFinalConversationEvents(jobId: String) {
-        val token = loadToken
-        lifecycleScope.launch {
-            try {
-                val after = store.conversationSeqMax?.toInt()
-                val page = withContext(Dispatchers.IO) {
-                    api.listConversationEvents(conversationId, afterSeq = after, limit = HISTORY_PAGE_LIMIT)
-                }
-                if (token != loadToken) return@launch
-                if (page.events.isNotEmpty()) {
-                    ingestConversationEvents(page.events)
-                    renderNow()
-                }
-            } catch (_: Exception) {
-                /* 终态同步失败不影响主流程 */
-            }
-        }
-    }
-
-    // ---------- 发送与控制 ----------
+    // ---------- 发送 ----------
 
     private fun onSend() {
         val prompt = binding.editPrompt.text?.toString()?.trim().orEmpty()
         if (prompt.isBlank()) return
-        if (prefs.guestMode && prefs.guestRemaining <= 0) {
-            handleGuestQuota(
-                ApiException(
-                    403,
-                    getString(R.string.guest_quota_message),
-                    errorCode = "guest_quota_exhausted",
-                ),
-            )
-            return
-        }
-        if (currentJob != null && currentJob?.status in ACTIVE_STATUSES) {
-            sendMidTask(prompt)
-        } else {
-            sendAsk(prompt)
-        }
-    }
-
-    private fun sendAsk(prompt: String) {
-        val optimisticKey = store.addLocalUserMessage(prompt, null)
-        renderNow(scrollToEnd = true)
-        binding.btnSend.isEnabled = false
-        lifecycleScope.launch {
-            try {
-                val job = withContext(Dispatchers.IO) {
-                    api.askConversation(conversationId, prompt, provider = prefs.selectedProviderId.takeUnless { it == "auto" })
-                }
-                if (prefs.guestMode) prefs.guestRemaining = prefs.guestRemaining - 1
-                // 服务端确认接收后才清空输入
-                binding.editPrompt.setText("")
-                attachJob(job.id, resume = false)
-            } catch (e: Exception) {
-                store.removeItem(optimisticKey)
-                if (!handleGuestQuota(e)) toast(getString(R.string.send_failed_retry))
-            } finally {
-                binding.btnSend.isEnabled = true
-                renderNow()
-            }
-        }
-    }
-
-    private fun sendMidTask(prompt: String) {
-        val jobId = currentJobId ?: return
-        val steer = binding.chipModeSteer.isChecked
-        lifecycleScope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    if (steer) api.steerJob(jobId, prompt) else api.followUpJob(jobId, prompt)
-                }
-                if (prefs.guestMode) prefs.guestRemaining = prefs.guestRemaining - 1
-                binding.editPrompt.setText("")
-                toast("已发送")
-            } catch (e: Exception) {
-                if (!handleGuestQuota(e)) toast(userMessage(e))
-            }
-        }
-    }
-
-    private fun handleGuestQuota(error: Exception): Boolean {
-        if (error !is ApiException || error.errorCode != "guest_quota_exhausted") return false
-        prefs.guestRemaining = 0
-        AlertDialog.Builder(this)
-            .setTitle(R.string.guest_quota_title)
-            .setMessage(R.string.guest_quota_message)
-            .setPositiveButton(R.string.login_or_register) { _, _ -> MainActivity.startLogin(this) }
-            .setNegativeButton(R.string.not_now, null)
-            .show()
-        return true
-    }
-
-    private fun controlJob(action: String) {
-        val jobId = currentJobId ?: return
-        lifecycleScope.launch {
-            try {
-                val job = withContext(Dispatchers.IO) {
-                    when (action) {
-                        "pause" -> api.pauseJob(jobId)
-                        "resume" -> api.resumeJob(jobId)
-                        else -> api.cancelJob(jobId)
-                    }
-                }
-                renderJob(job)
-            } catch (e: Exception) {
-                toast(userMessage(e))
-            }
-        }
+        viewModel.send(prompt, binding.chipModeSteer.isChecked, contextAttachments.toList())
     }
 
     // ---------- 任务渲染 ----------
 
-    private fun renderJob(job: JobInfo) {
-        currentJob = job
-        currentJobId = job.id
+    private fun renderJobChrome(job: JobInfo?) {
         updateToolbarStatus(job)
         updateComposer(job)
         updateMenuVisibility(job)
-        if (job.resolvedStatus() == "awaiting_approval") {
-            refreshApprovals(job.id)
-        } else if (job.resolvedStatus() !in ACTIVE_STATUSES && store.expirePendingApprovals()) {
-            // 任务终态：服务端可能未回放 resolved 事件，清理残留的等待卡避免审批栏卡死
-            renderApprovalBar()
+        if (job != null && lastContextStatusJobId != job.id) {
+            lastContextStatusJobId = job.id
+            refreshContextStatus()
         }
     }
 
@@ -491,7 +327,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val statusText = job?.statusLabel
             ?: jobStatus?.let { ConversationTimelineBuilder.statusLabel(it) }
             ?: getString(R.string.no_task_selected)
-        binding.toolbar.subtitle = if (elapsed != null && jobStatus in ACTIVE_STATUSES) {
+        binding.toolbar.subtitle = if (elapsed != null && jobStatus in ConversationViewModel.ACTIVE_STATUSES) {
             val worked = ConversationTimelineBuilder.formatWorked(elapsed * 1000L)
             if (worked.isBlank()) statusText else "$statusText · $worked"
         } else {
@@ -500,7 +336,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     private fun updateComposer(job: JobInfo?) {
-        val running = job != null && job.resolvedStatus() in ACTIVE_STATUSES
+        val running = job != null && job.resolvedStatus() in ConversationViewModel.ACTIVE_STATUSES
         binding.btnSend.visibility = if (running) View.GONE else View.VISIBLE
         binding.btnStop.visibility = if (running) View.VISIBLE else View.GONE
         binding.scrollMode.visibility = if (running) View.VISIBLE else View.GONE
@@ -514,7 +350,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     private fun updateMenuVisibility(job: JobInfo?) {
         val menu = binding.toolbar.menu
-        val active = job != null && job.resolvedStatus() in ACTIVE_STATUSES
+        val active = job != null && job.resolvedStatus() in ConversationViewModel.ACTIVE_STATUSES
         menu.findItem(R.id.action_pause)?.isVisible = job?.resolvedStatus() == "running"
         menu.findItem(R.id.action_resume)?.isVisible = job?.resolvedStatus() == "paused"
         menu.findItem(R.id.action_stop)?.isVisible = active
@@ -526,33 +362,43 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         return when (item.itemId) {
             R.id.action_task_details -> { showTaskDetails(); true }
             R.id.action_build_log -> {
-                val jobId = currentJobId
+                val jobId = viewModel.state.value.jobId
                 if (jobId == null) toast(getString(R.string.no_task_selected))
                 else BuildLogActivity.start(this, jobId)
                 true
             }
             R.id.action_diff -> { openDiff(null); true }
-            R.id.action_apk -> {
-                ApkActivity.start(this, projectId, currentJobId, currentJob?.hasApk == true)
+            R.id.action_usage -> {
+                UsageInspectorActivity.start(this, projectId, conversationId)
                 true
             }
-            R.id.action_pause -> { controlJob("pause"); true }
-            R.id.action_resume -> { controlJob("resume"); true }
-            R.id.action_stop -> { controlJob("cancel"); true }
+            R.id.action_apk -> {
+                ApkActivity.start(
+                    this,
+                    projectId,
+                    viewModel.state.value.jobId,
+                    viewModel.state.value.job?.hasApk == true,
+                )
+                true
+            }
+            R.id.action_pause -> { viewModel.controlJob("pause"); true }
+            R.id.action_resume -> { viewModel.controlJob("resume"); true }
+            R.id.action_stop -> { viewModel.controlJob("cancel"); true }
             else -> false
         }
     }
 
-    private fun openDiff(@Suppress("UNUSED_PARAMETER") turnKey: String?) {
+    private fun openDiff(turnKey: String?) {
         try {
-            DiffActivity.start(this, projectId)
+            val turn = ConversationTimelineBuilder.buildTurns(viewModel.store).firstOrNull { it.key == turnKey }
+            DiffActivity.start(this, projectId, turn?.turnId)
         } catch (e: Exception) {
             toast("无法打开改动: ${e.message}")
         }
     }
 
     private fun showTaskDetails() {
-        val job = currentJob ?: run { toast(getString(R.string.no_task_selected)); return }
+        val job = viewModel.state.value.job ?: run { toast(getString(R.string.no_task_selected)); return }
         val dialog = BottomSheetDialog(this)
         val view = LayoutInflater.from(this).inflate(R.layout.view_job_details, null)
         val details = ViewJobDetailsBinding.bind(view)
@@ -575,81 +421,13 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     // ---------- 审批 ----------
 
-    private fun refreshApprovals(jobId: String) {
-        val token = loadToken
-        lifecycleScope.launch {
-            try {
-                val approvals = withContext(Dispatchers.IO) { api.listApprovals(jobId) }
-                if (token != loadToken) return@launch
-                for (approval in approvals) {
-                    if (approval.status != "pending") continue
-                    if (allowlist.allows(approval.kind, approval.payload) &&
-                        ApprovalAllowlist.canRemember(approval.risk, approval.kind)
-                    ) {
-                        try {
-                            withContext(Dispatchers.IO) {
-                                api.resolveApproval(jobId, approval.id, true)
-                            }
-                            store.setApprovalDecision(approval.id, "approved")
-                            continue
-                        } catch (_: Exception) {
-                            /* fall through to show the card */
-                        }
-                    }
-                    val ev = JSONObject()
-                        .put("event_type", "approval_required")
-                        .put("task_id", jobId)
-                        .put("payload", JSONObject()
-                            .put("approval_id", approval.id)
-                            .put("kind", approval.kind)
-                            .put("risk", approval.risk ?: JSONObject.NULL)
-                            .put("request", approval.payload))
-                    ConversationEventNormalizer.fromConversationEvent(ev)?.let { store.ingest(listOf(it)) }
-                }
-                renderNow()
-            } catch (_: Exception) {
-                /* 轮询失败静默 */
-            }
-        }
-    }
-
-    private fun decideApproval(model: ApprovalCardBinder.Model, approved: Boolean, always: Boolean = false) {
-        val jobId = model.jobId ?: currentJobId ?: return
-        if (always && approved) {
-            if (!ApprovalAllowlist.canRemember(model.risk, model.kind)) {
-                toast(getString(R.string.approval_always_blocked))
-                return
-            }
-            allowlist.remember(model.kind, model.payload)
-            prefs.setApprovalAllowlist(allowlist.snapshot())
-        }
-        submittingApprovals.add(model.approvalId)
-        renderApprovalBar()
-        lifecycleScope.launch {
-            try {
-                withContext(Dispatchers.IO) { api.resolveApproval(jobId, model.approvalId, approved) }
-                store.setApprovalDecision(model.approvalId, if (approved) "approved" else "rejected")
-            } catch (e: Exception) {
-                if (e is ApiException && (e.isNotFound || e.isConflict)) {
-                    store.setApprovalDecision(model.approvalId, "resolved_elsewhere")
-                    toast(getString(R.string.approval_resolved_elsewhere))
-                } else {
-                    toast(userMessage(e))
-                }
-            } finally {
-                submittingApprovals.remove(model.approvalId)
-                renderNow()
-            }
-        }
-    }
-
     // ---------- 时间线渲染 ----------
 
     private fun buildRows(): List<Row> =
         ConversationTimelineBuilder.buildRows(
-            ConversationTimelineBuilder.buildTurns(store),
+            ConversationTimelineBuilder.buildTurns(viewModel.store),
             policy,
-            hasEarlierHistory = historyHasMore,
+            hasEarlierHistory = viewModel.state.value.historyHasMore,
         )
 
     private fun scheduleRender() {
@@ -661,16 +439,33 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }, RENDER_BATCH_MS)
     }
 
-    private fun renderNow(scrollToEnd: Boolean = false) {
+    private fun renderNow() {
         val rows = buildRows()
         adapter.submitList(rows) {
+            restoreScrollAnchor()
             // 流式生成时跟随底部；用户上滚离开底部后 autoFollow 关闭，不再强制滚动
-            if (scrollToEnd || autoFollow) scrollToBottom()
+            if (autoFollow) scrollToBottom()
         }
         val empty = rows.none { it !is Row.LoadingHistory }
         binding.textEmpty.visibility = View.GONE
         binding.emptyConversation.isVisible = empty
         renderApprovalBar()
+    }
+
+    private fun captureScrollAnchor() {
+        val layoutManager = binding.recyclerTimeline.layoutManager as LinearLayoutManager
+        val anchorPos = layoutManager.findFirstVisibleItemPosition()
+        pendingAnchorId = adapter.currentList.getOrNull(anchorPos)?.id
+        pendingAnchorTop = layoutManager.findViewByPosition(anchorPos)?.top ?: 0
+    }
+
+    private fun restoreScrollAnchor() {
+        val anchorId = pendingAnchorId ?: return
+        pendingAnchorId = null
+        val layoutManager = binding.recyclerTimeline.layoutManager as? LinearLayoutManager ?: return
+        val rows = adapter.currentList
+        val newIdx = rows.indexOfFirst { it.id == anchorId }
+        if (newIdx >= 0) layoutManager.scrollToPositionWithOffset(newIdx, pendingAnchorTop)
     }
 
     private fun scrollToBottom() {
@@ -706,7 +501,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     private fun renderApprovalBar() {
-        val pending = store.pendingApprovals()
+        val pending = viewModel.pendingApprovals()
         binding.approvalBar.visibility = if (pending.isEmpty()) View.GONE else View.VISIBLE
         if (pending.isEmpty()) return
         // 键盘开/关都只保留一行 compact warning bar，完整卡片进 bottom sheet
@@ -716,9 +511,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         binding.approvalBar.setOnClickListener { showApprovalSheet() }
     }
 
-    /** 审批 Bottom Sheet：完整命令/域名/路径 + 技术详情。 */
+    /** 审批 Bottom Sheet：完整命令/域名/路径 + 技术细节。 */
     private fun showApprovalSheet() {
-        val pending = store.pendingApprovals()
+        val pending = viewModel.pendingApprovals()
         if (pending.isEmpty()) return
         val sheet = BottomSheetDialog(this)
         val scroll = android.widget.ScrollView(this)
@@ -732,12 +527,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             val childBinding = ItemApprovalBinding.inflate(layoutInflater, container, false)
             val model = ApprovalCardBinder.Model(
                 approvalId = approvalId,
-                jobId = item.jobId ?: currentJobId,
+                jobId = item.jobId ?: viewModel.state.value.jobId,
                 kind = item.content.optString("kind").ifBlank { item.content.optString("approval_kind") },
                 risk = item.content.optString("risk").takeIf { it.isNotBlank() },
                 payload = item.content,
-                status = if (approvalId in submittingApprovals) "pending" else item.status,
-                submitting = approvalId in submittingApprovals,
+                status = if (viewModel.isSubmitting(approvalId)) "pending" else item.status,
+                submitting = viewModel.isSubmitting(approvalId),
             )
             fun bind() {
                 ApprovalCardBinder.bind(
@@ -764,7 +559,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
         scroll.addView(
             container,
-            android.widget.FrameLayout.LayoutParams(
+            android.view.ViewGroup.LayoutParams(
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
@@ -773,12 +568,258 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         sheet.show()
     }
 
+    private fun decideApproval(model: ApprovalCardBinder.Model, approved: Boolean, always: Boolean = false) {
+        viewModel.decideApproval(model, approved, always)
+    }
+
     // ---------- Adapter 回调 ----------
 
     private fun fillSuggestion(text: String) {
         binding.editPrompt.setText(text)
         binding.editPrompt.setSelection(text.length)
     }
+
+    // ---------- Composer Context ----------
+
+    private fun showContextMenu(anchor: View) {
+        PopupMenu(this, anchor).apply {
+            menu.add(0, 1, 0, R.string.context_file)
+            menu.add(0, 2, 1, R.string.context_folder)
+            menu.add(0, 3, 2, R.string.context_selection)
+            menu.add(0, 4, 3, R.string.context_diff)
+            menu.add(0, 5, 4, R.string.context_build_log)
+            menu.add(0, 6, 5, R.string.context_terminal)
+            menu.add(0, 7, 6, R.string.context_error)
+            menu.add(0, 8, 7, R.string.context_screenshot)
+            menu.add(0, 9, 8, R.string.context_conversation)
+            menu.add(0, 10, 9, R.string.context_symbol)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    1 -> showMentionPicker("", "file")
+                    2 -> showMentionPicker("", "folder")
+                    3 -> showTextContext("selection", getString(R.string.context_selection))
+                    4 -> addContext(ContextAttachment("diff", getString(R.string.current_changes)))
+                    5 -> addLatestBuildLog()
+                    6 -> showTextContext("terminal", getString(R.string.context_terminal))
+                    7 -> showTextContext("error", getString(R.string.context_error))
+                    8 -> showTextContext("screenshot", getString(R.string.context_screenshot_description))
+                    9 -> addContext(ContextAttachment("conversation", conversationTitle.ifBlank { getString(R.string.conversation) }, refId = conversationId))
+                    10 -> showMentionPicker("", "symbol")
+                }
+                true
+            }
+            show()
+        }
+    }
+
+    private fun maybeShowMention(value: String) {
+        val match = Regex("(?:^|\\s)@([\\p{L}\\p{N}_./-]*)$").find(value) ?: run {
+            lastMentionTrigger = ""
+            return
+        }
+        val trigger = match.value.trim()
+        if (mentionPickerOpen || trigger == lastMentionTrigger) return
+        lastMentionTrigger = trigger
+        showMentionPicker(match.groupValues[1])
+    }
+
+    private fun showMentionPicker(query: String, kindFilter: String? = null) {
+        mentionPickerOpen = true
+        lifecycleScope.launch {
+            try {
+                val suggestions = withContext(Dispatchers.IO) { api.contextSuggestions(projectId, query) }
+                    .filter { kindFilter == null || it.kind == kindFilter }
+                if (suggestions.isEmpty()) {
+                    mentionPickerOpen = false
+                    toast(getString(R.string.no_context_matches))
+                    return@launch
+                }
+                val rows = mutableListOf<Pair<String, ContextSuggestion?>>()
+                listOf("file", "symbol", "folder").forEach { kind ->
+                    val group = suggestions.filter { it.kind == kind }.take(10)
+                    if (group.isEmpty()) return@forEach
+                    val title = when (kind) {
+                        "symbol" -> getString(R.string.context_symbols_header)
+                        "folder" -> getString(R.string.context_folders_header)
+                        else -> getString(R.string.context_files_header)
+                    }
+                    if (kindFilter == null) rows += "── $title ──" to null
+                    group.forEach { rows += it.label to it }
+                }
+                val labels = rows.map { it.first }.toTypedArray()
+                val adapter = object : ArrayAdapter<String>(
+                    this@ConversationActivity,
+                    android.R.layout.simple_list_item_1,
+                    labels,
+                ) {
+                    override fun isEnabled(position: Int): Boolean = rows[position].second != null
+                }
+                AlertDialog.Builder(this@ConversationActivity)
+                    .setTitle(if (query.isBlank()) R.string.add_context else R.string.mention_results)
+                    .setAdapter(adapter) { _, index ->
+                        rows[index].second?.let { selectSuggestion(it, kindFilter == null) }
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .setOnDismissListener {
+                        mentionPickerOpen = false
+                        lastMentionTrigger = ""
+                    }
+                    .show()
+            } catch (e: Exception) {
+                mentionPickerOpen = false
+                toast(userMessage(e))
+            }
+        }
+    }
+
+    private fun selectSuggestion(suggestion: ContextSuggestion, fromMention: Boolean) {
+        if (fromMention) {
+            val value = binding.editPrompt.text?.toString().orEmpty()
+            val match = Regex("(?:^|\\s)@[\\p{L}\\p{N}_./-]*$").find(value)
+            if (match != null) {
+                val replacement = if (match.value.startsWith(" ")) " " else ""
+                val updated = value.replaceRange(match.range, replacement)
+                binding.editPrompt.setText(updated)
+                binding.editPrompt.setSelection(updated.length)
+            }
+        }
+        addContext(
+            ContextAttachment(
+                kind = suggestion.kind,
+                label = suggestion.label,
+                path = suggestion.path,
+                symbol = suggestion.symbol,
+                lineStart = suggestion.line,
+            ),
+        )
+        lastMentionTrigger = ""
+    }
+
+    private fun showTextContext(kind: String, title: String) {
+        val input = EditText(this).apply {
+            minLines = 3
+            maxLines = 8
+            hint = getString(R.string.paste_context_hint)
+            setPadding(48, 24, 48, 24)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input)
+            .setPositiveButton(R.string.add) { _, _ ->
+                val text = input.text?.toString()?.trim().orEmpty()
+                if (text.isNotBlank()) addContext(ContextAttachment(kind, title, text = text))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun addLatestBuildLog() {
+        lifecycleScope.launch {
+            try {
+                val job = withContext(Dispatchers.IO) {
+                    api.listJobs(projectId).filter { it.hasBuildLog }.maxByOrNull { it.createdAt ?: 0.0 }
+                }
+                if (job == null) toast(getString(R.string.no_build_log))
+                else addContext(ContextAttachment("build_log", getString(R.string.context_build_log), refId = job.id))
+            } catch (e: Exception) {
+                toast(userMessage(e))
+            }
+        }
+    }
+
+    private fun addContext(item: ContextAttachment) {
+        if (contextAttachments.any { it.kind == item.kind && it.label == item.label && it.path == item.path }) return
+        if (contextAttachments.size >= 20) {
+            toast(getString(R.string.context_limit))
+            return
+        }
+        contextAttachments += item
+        renderContextChips()
+    }
+
+    private fun renderContextChips() {
+        if (!::binding.isInitialized) return
+        binding.chipContexts.removeAllViews()
+        contextAttachments.forEach { item ->
+            binding.chipContexts.addView(Chip(this).apply {
+                text = "${if (item.kind in setOf("file", "folder", "symbol")) "@" else "#"} ${item.label}"
+                isCloseIconVisible = true
+                setOnCloseIconClickListener {
+                    contextAttachments.remove(item)
+                    renderContextChips()
+                }
+            })
+        }
+        binding.scrollContexts.isVisible = contextAttachments.isNotEmpty()
+        binding.btnContextInspector.text = if (contextAttachments.isEmpty()) {
+            getString(R.string.context_empty_status)
+        } else {
+            getString(R.string.context_item_status, contextAttachments.size)
+        }
+    }
+
+    private fun showContextInspector() {
+        lifecycleScope.launch {
+            binding.btnContextInspector.isEnabled = false
+            try {
+                val summary = withContext(Dispatchers.IO) {
+                    if (contextAttachments.isEmpty()) {
+                        api.conversationContext(conversationId)
+                    } else {
+                        api.previewContext(
+                            projectId,
+                            binding.editPrompt.text?.toString().orEmpty(),
+                            contextAttachments,
+                        )
+                    }
+                }
+                updateContextHeader(summary)
+                val message = buildString {
+                    append(getString(R.string.context_explicit)).append('\n')
+                    if (summary.explicit.isEmpty()) append(getString(R.string.none))
+                    else summary.explicit.forEach { append("• ${it.label}　${it.tokens} tokens\n") }
+                    append("\n").append(getString(R.string.context_automatic)).append('\n')
+                    if (summary.automatic.isEmpty()) append(getString(R.string.none))
+                    else summary.automatic.forEach { append("• ${it.label}　${it.tokens} tokens\n") }
+                    append("\n").append(getString(R.string.context_memory)).append("\n• ${summary.memoryCount} memories")
+                    append("\n\n").append(getString(R.string.context_repository)).append("\n• ${summary.symbolCount} symbols")
+                    append("\n\n").append(getString(R.string.context_total)).append("\n${summary.totalTokens} / ${summary.budgetTokens} tokens")
+                }
+                AlertDialog.Builder(this@ConversationActivity)
+                    .setTitle(R.string.context_inspector)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
+            } catch (e: Exception) {
+                toast(userMessage(e))
+            } finally {
+                binding.btnContextInspector.isEnabled = true
+            }
+        }
+    }
+
+    private fun refreshContextStatus() {
+        lifecycleScope.launch {
+            try {
+                val summary = withContext(Dispatchers.IO) { api.conversationContext(conversationId) }
+                if (contextAttachments.isEmpty()) updateContextHeader(summary)
+            } catch (_: Exception) {
+                // Context 状态是辅助信息，主时间线仍可继续使用。
+            }
+        }
+    }
+
+    private fun updateContextHeader(summary: ContextSummary) {
+        binding.btnContextInspector.text = getString(
+            R.string.context_token_status,
+            compactTokens(summary.totalTokens),
+            compactTokens(summary.budgetTokens),
+        )
+    }
+
+    private fun compactTokens(value: Int): String = if (value >= 1000) {
+        "%.1fk".format(value / 1000.0)
+    } else value.toString()
 
     override fun onToggleWork(turnKey: String, expanded: Boolean) {
         policy.userToggle(turnKey, expanded)
@@ -798,14 +839,35 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         openDiff(turnKey)
     }
 
+    override fun onRevertTurn(turnKey: String) {
+        val turn = ConversationTimelineBuilder.buildTurns(viewModel.store).firstOrNull { it.key == turnKey }
+        val id = turn?.turnId ?: return toast("本轮快照尚未就绪")
+        ProjectHistoryActivity.start(this, projectId, id)
+    }
+
+    override fun onViewAgents(turnKey: String) {
+        val turn = ConversationTimelineBuilder.buildTurns(viewModel.store).firstOrNull { it.key == turnKey }
+        turn?.jobId?.let { AgentsActivity.start(this, projectId, it) }
+    }
+
     override fun onViewErrorDetails() {
-        val jobId = currentJobId
+        val jobId = viewModel.state.value.jobId
         if (jobId.isNullOrBlank()) toast(getString(R.string.no_task_selected))
         else BuildLogActivity.start(this, jobId)
     }
 
+    override fun onOpenApk(jobId: String?) {
+        ApkActivity.start(
+            this,
+            projectId,
+            jobId ?: viewModel.state.value.jobId,
+            hasApk = true,
+        )
+    }
+
     override fun onLoadEarlier() {
-        loadEarlierHistory()
+        captureScrollAnchor()
+        viewModel.loadEarlier()
     }
 
     // ---------- 其他 ----------
@@ -820,14 +882,21 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     companion object {
         private const val STATE_EXPANSION = "expansion_state"
         private const val STATE_DRAFT = "draft"
-        private const val STATE_JOB = "job_id"
-        private const val HISTORY_PAGE_LIMIT = 120
+        private const val STATE_CONTEXTS = "context_attachments"
         private const val RENDER_BATCH_MS = 80L
-        private val ACTIVE_STATUSES = setOf("queued", "running", "paused", "awaiting_approval", "cancel_requested")
 
-        fun start(context: Context, projectId: String, conversationId: String, title: String, jobId: String? = null) {
+        fun start(
+            context: Context,
+            projectId: String,
+            conversationId: String,
+            title: String,
+            jobId: String? = null,
+            draft: String? = null,
+            contexts: List<ContextAttachment> = emptyList(),
+        ) {
             context.startActivity(
-                DeepLink.conversationIntent(context, projectId, conversationId, title, jobId),
+                DeepLink.conversationIntent(context, projectId, conversationId, title, jobId, draft)
+                    .putExtra(DeepLink.EXTRA_CONTEXTS, ArrayList(contexts)),
             )
         }
     }

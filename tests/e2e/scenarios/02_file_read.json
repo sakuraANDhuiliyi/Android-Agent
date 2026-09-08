@@ -1,0 +1,23 @@
+{
+  "id": "02_file_read",
+  "title": "读取单个文件",
+  "description": "Agent 调用 read_file 读取 AndroidManifest.xml 并汇报内容",
+  "prompt": "读一下 AndroidManifest.xml 告诉我配置了什么",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我先读取清单文件。",
+      "calls": [{"name": "read_file", "arguments": {"path": "app/src/main/AndroidManifest.xml"}}]
+    },
+    {"type": "final", "text": "清单已读取：包含 `allowBackup` 与 `app_name` 引用，入口为 MainActivity。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["read_file"],
+    "tool_result_contains": {"read_file": "allowBackup"},
+    "final_text_contains": "清单",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

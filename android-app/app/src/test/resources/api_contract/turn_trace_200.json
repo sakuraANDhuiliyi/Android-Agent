@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "conversation_id": "conv-001",
+  "turn_id": "turn-001",
+  "task_id": "job-001",
+  "job_id": "job-001",
+  "trace_id": "trace-001",
+  "status": "succeeded",
+  "provider": "deepseek",
+  "model": "fake-model",
+  "created_at": 1000.0,
+  "started_at": 1000.5,
+  "finished_at": 1024.0,
+  "queue_ms": 500,
+  "total_ms": 24000,
+  "steps": [
+    {
+      "seq": 1,
+      "at": 1000.0,
+      "type": "user_message",
+      "label": "用户消息",
+      "detail": "Add dark mode toggle",
+      "event_id": "evt-001",
+      "tool_call_id": null,
+      "approval_id": null,
+      "duration_ms": 0
+    },
+    {
+      "seq": 2,
+      "at": 1000.5,
+      "type": "turn_started",
+      "label": "Worker 启动",
+      "detail": "",
+      "event_id": "evt-002",
+      "tool_call_id": null,
+      "approval_id": null,
+      "duration_ms": 500
+    },
+    {
+      "seq": 3,
+      "at": 1001.5,
+      "type": "tool_call",
+      "label": "工具调用",
+      "detail": "run_gradle",
+      "event_id": "evt-003",
+      "tool_call_id": "call-gradle-001",
+      "approval_id": null,
+      "duration_ms": 1000
+    },
+    {
+      "seq": 4,
+      "at": 1010.9,
+      "type": "tool_result",
+      "label": "工具结果",
+      "detail": "run_gradle FAIL · 9300ms",
+      "event_id": "evt-004",
+      "tool_call_id": "call-gradle-001",
+      "approval_id": null,
+      "duration_ms": 9400
+    },
+    {
+      "seq": 5,
+      "at": 1011.0,
+      "type": "test_summary",
+      "label": "测试摘要",
+      "detail": "testDebugUnitTest 失败 · 9300ms · 10/12 通过",
+      "event_id": "evt-005",
+      "tool_call_id": "call-gradle-001",
+      "approval_id": null,
+      "duration_ms": 100
+    },
+    {
+      "seq": 8,
+      "at": 1024.0,
+      "type": "turn_completed",
+      "label": "Turn 完成",
+      "detail": "",
+      "event_id": "evt-008",
+      "tool_call_id": null,
+      "approval_id": null,
+      "duration_ms": 500
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "14_large_output",
+  "title": "超大输出",
+  "description": "工具输出约 2MB：tool_result 截断落盘任务日志，日志 API 分页可读",
+  "prompt": "运行一个输出两兆字节的命令",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "开始执行大输出命令。",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {"argv": ["python3", "-c", "print('E2E-LARGE-' + 'X' * 2000000)"]}
+        }
+      ]
+    },
+    {"type": "final", "text": "大输出命令已完成，完整日志已落盘。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_command"],
+    "tool_result_contains": {"run_command": "E2E-LARGE-"},
+    "has_build_log": true,
+    "log_page_size_chars": 131072,
+    "final_text_contains": "已完成",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "assistant_message", "turn_completed"]
+  }
+}

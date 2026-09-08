@@ -6,6 +6,30 @@ package com.androidagent.client
  */
 object ConversationTimelineBuilder {
 
+    /**
+     * Canonical presentation entries shared by every Android renderer. Tool
+     * clustering lives here instead of in a ViewHolder so the projection is
+     * deterministic and can be fixture-tested independently of the UI.
+     */
+    sealed class WorkEntry {
+        abstract val id: String
+        abstract val version: Int
+
+        data class Item(val item: TimelineStore.TimelineItem) : WorkEntry() {
+            override val id: String = item.key
+            override val version: Int = item.version
+        }
+
+        data class ToolCluster(
+            override val id: String,
+            override val version: Int,
+            val category: String,
+            val items: List<TimelineStore.TimelineItem>,
+            val status: String,
+            val durationMs: Long?,
+        ) : WorkEntry()
+    }
+
     class TurnGroup(
         val key: String,
         val turnId: String?,
@@ -52,7 +76,7 @@ object ConversationTimelineBuilder {
             val title: String,
             val summary: String,
             val expanded: Boolean,
-            val steps: List<TimelineStore.TimelineItem>,
+            val steps: List<WorkEntry>,
         ) : Row()
 
         data class Assistant(
@@ -71,17 +95,16 @@ object ConversationTimelineBuilder {
             val added: Int,
             val modified: Int,
             val deleted: Int,
+            /** 服务端 ChangesSummary 的行级统计，缺失时为 null。 */
+            val additions: Int? = null,
+            val deletions: Int? = null,
         ) : Row()
 
-        /** Turn 终态结果卡：状态、耗时、构建、APK 与操作入口。 */
-        data class Result(
+        data class Agents(
             override val id: String,
             override val version: Int,
             val turnKey: String,
-            val status: String,
-            val durationMs: Long?,
-            val provider: String?,
-            val model: String?,
+            val summary: String,
         ) : Row()
 
         data class Error(
@@ -130,8 +153,10 @@ object ConversationTimelineBuilder {
 
     private fun isStreamingAssistant(item: TimelineStore.TimelineItem): Boolean = item.streaming
 
-    private fun isFinalAssistant(item: TimelineStore.TimelineItem): Boolean =
-        item.type == TimelineStore.ItemType.ASSISTANT && !item.streaming || item.isFinal
+    // Assistant nodes always stay in the answer lane. A streaming node is
+    // patched in place and never migrates from WorkGroup to FinalAnswer.
+    private fun isAssistant(item: TimelineStore.TimelineItem): Boolean =
+        item.type == TimelineStore.ItemType.ASSISTANT
 
     fun buildTurns(store: TimelineStore): List<TurnGroup> {
         val items = store.sortedItems()
@@ -187,9 +212,8 @@ object ConversationTimelineBuilder {
                 }
                 item.type == TimelineStore.ItemType.CHANGES -> {
                     turn.changes = item
-                    turn.workItems.add(item)
                 }
-                isFinalAssistant(item) -> turn.finalMessages.add(item)
+                isAssistant(item) -> turn.finalMessages.add(item)
                 !isNoiseItem(item) -> turn.workItems.add(item)
             }
         }
@@ -203,6 +227,7 @@ object ConversationTimelineBuilder {
                     (it.type == TimelineStore.ItemType.TOOL && (it.status == "running" || it.status == "waiting_approval")) ||
                         isStreamingAssistant(it)
                 } -> "running"
+                mt.finalMessages.any(::isStreamingAssistant) -> "running"
                 life == "turn_started" -> "running"
                 mt.finalMessages.isNotEmpty() || mt.workItems.isNotEmpty() -> life ?: "succeeded"
                 else -> "unknown"
@@ -260,8 +285,14 @@ object ConversationTimelineBuilder {
                         name in WRITE_TOOLS -> writes++
                         name in COMMAND_TOOLS -> {
                             commands++
-                            val summary = toolSummary(item)
-                            if (Regex("""\btest\b|pytest|connectedAndroidTest|unitTest""", RegexOption.IGNORE_CASE).containsMatchIn(summary)) tests++
+                            // Domain Core：测试判定优先读服务端结构化摘要，旧事件回退命令文本匹配
+                            val structured = item.content.optJSONObject("summary")
+                            val isTest = structured?.optString("kind") == "test"
+                                || (structured == null && Regex(
+                                    """\btest\b|pytest|connectedAndroidTest|unitTest""",
+                                    RegexOption.IGNORE_CASE,
+                                ).containsMatchIn(toolSummary(item)))
+                            if (isTest) tests++
                             if (item.status == "failed") {
                                 if (name == "run_gradle") gradleFailed = true else commandFailed = true
                             }
@@ -311,6 +342,68 @@ object ConversationTimelineBuilder {
         return item.content.optString("name")
     }
 
+    private fun toolGroupOf(item: TimelineStore.TimelineItem): String? {
+        if (item.type != TimelineStore.ItemType.TOOL) return null
+        val name = item.content.optString("name")
+        return when {
+            name in READ_TOOLS -> "read"
+            name in SEARCH_TOOLS -> "search"
+            name in WRITE_TOOLS -> "write"
+            name in COMMAND_TOOLS -> "command"
+            else -> null
+        }
+    }
+
+    /** Consecutive tools of the same semantic category form one compact row. */
+    fun groupedWorkItems(items: List<TimelineStore.TimelineItem>): List<WorkEntry> {
+        val out = ArrayList<WorkEntry>()
+        var runCategory: String? = null
+        val run = ArrayList<TimelineStore.TimelineItem>()
+
+        fun flush() {
+            if (run.isEmpty()) return
+            if (run.size == 1) {
+                out.add(WorkEntry.Item(run.first()))
+            } else {
+                val status = when {
+                    run.any { it.status == "failed" } -> "failed"
+                    run.any { it.status == "running" || it.status == "waiting_approval" } -> "running"
+                    else -> "done"
+                }
+                val duration = run.sumOf { it.content.optLong("duration_ms", 0L).coerceAtLeast(0L) }
+                    .takeIf { it > 0L }
+                out.add(
+                    WorkEntry.ToolCluster(
+                        id = "cluster:${runCategory}:${run.first().key}",
+                        version = run.fold(7) { acc, item -> acc * 31 + item.version },
+                        category = runCategory.orEmpty(),
+                        items = run.toList(),
+                        status = status,
+                        durationMs = duration,
+                    ),
+                )
+            }
+            run.clear()
+            runCategory = null
+        }
+
+        for (item in items) {
+            val category = toolGroupOf(item)
+            if (category != null && (runCategory == null || runCategory == category)) {
+                runCategory = category
+                run.add(item)
+            } else {
+                flush()
+                if (category == null) out.add(WorkEntry.Item(item)) else {
+                    runCategory = category
+                    run.add(item)
+                }
+            }
+        }
+        flush()
+        return out
+    }
+
     /** 人性化耗时："2 分 18 秒"。 */
     fun formatWorked(ms: Long?): String {
         if (ms == null || ms < 0) return ""
@@ -346,6 +439,19 @@ object ConversationTimelineBuilder {
     fun statusLabel(context: android.content.Context, status: String): String =
         UiFormat.jobStatusLabel(context, if (status == "canceling") "cancel_requested" else status)
 
+    private fun workTitle(turn: TurnGroup): String {
+        val duration = formatWorked(turn.durationMs)
+        return when (turn.status) {
+            "running", "queued" -> if (duration.isBlank()) "工作中…" else "已工作 $duration"
+            "awaiting_approval" -> "等待审批" + if (duration.isBlank()) "" else " · $duration"
+            "paused" -> "已暂停" + if (duration.isBlank()) "" else " · $duration"
+            "failed" -> if (duration.isBlank()) "任务失败" else "$duration 后失败"
+            "canceled" -> if (duration.isBlank()) "任务已停止" else "$duration 后停止"
+            "interrupted" -> if (duration.isBlank()) "任务已中断" else "$duration 后中断"
+            else -> if (duration.isBlank()) "已完成" else "工作了 $duration"
+        }
+    }
+
     // ---------- 行生成 ----------
 
     /**
@@ -372,20 +478,26 @@ object ConversationTimelineBuilder {
                     ),
                 )
             }
-            if (turn.workItems.isNotEmpty() || turn.status == "running") {
-                val title = if (turn.durationMs != null || turn.isCurrent) {
-                    if (turn.isCurrent && turn.durationMs == null) "工作中…" else "工作了 ${formatWorked(turn.durationMs)}"
-                } else "已结束"
+            if (turn.workItems.isNotEmpty() || turn.lifecycle != null || turn.status in ACTIVE_STATUSES) {
+                val agents = turn.workItems.filter { it.content.optString("child_task_id").isNotBlank() }
+                if (agents.isNotEmpty()) {
+                    rows.add(Row.Agents("agents:${turn.key}", agents.sumOf { it.version }, turn.key,
+                        "${agents.size} agents worked\n" + agents.joinToString("\n") {
+                            val completed = it.content.optString("agent_event") == "subagent_completed"
+                            "${if (completed) "✓" else "○"} ${it.content.optString("role").ifBlank { "Subagent" }} · ${if (completed) "完成" else "已启动 · 详情查看当前状态"}"
+                        }))
+                }
+                val grouped = groupedWorkItems(turn.workItems.filterNot { it in agents })
                 rows.add(
                     Row.WorkGroup(
                         id = "work:${turn.key}",
-                        version = turn.workItems.sumOf { it.version } + turn.status.hashCode() % 1000 + if (expanded) 100_000 else 0,
+                        version = grouped.sumOf { it.version } + turn.status.hashCode() % 1000 + if (expanded) 100_000 else 0,
                         turnKey = turn.key,
                         status = turn.status,
-                        title = title,
+                        title = workTitle(turn),
                         summary = turn.summary,
                         expanded = expanded,
-                        steps = turn.workItems,
+                        steps = grouped,
                     ),
                 )
             }
@@ -411,7 +523,13 @@ object ConversationTimelineBuilder {
             turn.changes?.let { changes ->
                 val files = ArrayList<String>()
                 val arr = changes.content.optJSONArray("files")
-                if (arr != null) for (i in 0 until arr.length()) files.add(arr.optString(i))
+                // 新格式为 {path, change} 条目，旧格式为纯路径字符串
+                if (arr != null) for (i in 0 until arr.length()) {
+                    val entry = arr.opt(i)
+                    files.add(
+                        if (entry is org.json.JSONObject) entry.optString("path") else entry?.toString().orEmpty(),
+                    )
+                }
                 if (files.isNotEmpty()) {
                     val counts = changes.content.optJSONObject("counts")
                     rows.add(
@@ -423,22 +541,11 @@ object ConversationTimelineBuilder {
                             added = counts?.optInt("added", 0) ?: 0,
                             modified = counts?.optInt("modified", 0) ?: files.size,
                             deleted = counts?.optInt("deleted", 0) ?: 0,
+                            additions = changes.content.takeIf { it.has("additions") }?.optInt("additions"),
+                            deletions = changes.content.takeIf { it.has("deletions") }?.optInt("deletions"),
                         ),
                     )
                 }
-            }
-            if (turn.status in TERMINAL_STATUSES || turn.status == "awaiting_approval") {
-                rows.add(
-                    Row.Result(
-                        id = "result:${turn.key}",
-                        version = turn.lifecycle?.version ?: 1,
-                        turnKey = turn.key,
-                        status = turn.status,
-                        durationMs = turn.durationMs,
-                        provider = turn.lifecycle?.content?.optString("provider")?.takeIf { it.isNotBlank() },
-                        model = turn.lifecycle?.content?.optString("model")?.takeIf { it.isNotBlank() },
-                    ),
-                )
             }
             // 错误条目（非终态轮内联错误）
             turn.workItems.filter { it.type == TimelineStore.ItemType.ERROR }.forEach { err ->

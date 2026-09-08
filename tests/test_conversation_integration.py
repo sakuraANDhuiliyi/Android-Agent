@@ -479,6 +479,14 @@ class JobCanonicalIntegrationTests(unittest.TestCase):
     def test_complete_chain_task_events_and_success_status(self) -> None:
         def fake_agent(*_args, **kwargs):
             on_event = kwargs["on_event"]
+            on_event("subagent_spawned", {
+                "child_task_id": "child-review", "role": "reviewer",
+                "message": "spawned",
+            })
+            on_event("subagent_completed", {
+                "child_task_id": "child-review", "message": "completed",
+                "summary": {"text": "review complete"},
+            })
             on_event(
                 "usage",
                 {
@@ -572,6 +580,17 @@ class JobCanonicalIntegrationTests(unittest.TestCase):
             self.assertIn("tool_result", canonical_types)
             self.assertIn("changes", canonical_types)
             self.assertEqual(canonical_types[-1], "turn_completed")
+            agent_events = [
+                item for item in canonical
+                if item["payload"].get("child_task_id") == "child-review"
+            ]
+            self.assertEqual(
+                [item["payload"]["agent_event"] for item in agent_events],
+                ["subagent_spawned", "subagent_completed"],
+            )
+            self.assertTrue(all(item["event_type"] == "system_note" for item in agent_events))
+            self.assertTrue(all(not item["context_visible"] for item in agent_events))
+            self.assertEqual(agent_events[0]["payload"]["role"], "reviewer")
             task_event_types = [item["type"] for item in task["events"]]
             self.assertIn("tool_call", task_event_types)
             self.assertIn("tool_result", task_event_types)

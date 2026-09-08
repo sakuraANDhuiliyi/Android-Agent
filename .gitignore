@@ -20,6 +20,8 @@ android-app/.idea/
 android-app/local.properties
 android-app/build/
 android-app/app/build/
+android-app/hs_err_pid*.log
+android-app/replay_pid*.log
 
 # 桌面端 Electron
 desktop/node_modules/

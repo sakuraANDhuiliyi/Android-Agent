@@ -23,16 +23,16 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnModeChat"
-            style="@style/Widget.Material3.Button.TonalButton"
+            style="@style/Widget.AndroidAgent.Button.Tonal"
             android:layout_width="110dp"
-            android:layout_height="44dp"
+            android:layout_height="wrap_content"
             android:text="@string/drawer_chat" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnModeWork"
-            style="@style/Widget.Material3.Button.TonalButton"
+            style="@style/Widget.AndroidAgent.Button.Tonal"
             android:layout_width="110dp"
-            android:layout_height="44dp"
+            android:layout_height="wrap_content"
             android:text="@string/chat_mode_work" />
     </com.google.android.material.button.MaterialButtonToggleGroup>
 

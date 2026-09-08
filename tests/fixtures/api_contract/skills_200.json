@@ -1,0 +1,35 @@
+{
+  "user_id": "user-alice",
+  "project_id": "demo-app",
+  "query": null,
+  "focus_paths": [],
+  "skills": [
+    {
+      "name": "android-build",
+      "description": "Android 构建与产物说明",
+      "version": "1",
+      "allowed_tools": [],
+      "required_permissions": [],
+      "globs": [],
+      "manual_only": false,
+      "path": ".android-agent/skills/android-build/SKILL.md",
+      "scope": "project",
+      "frontmatter_errors": [],
+      "enabled": true
+    },
+    {
+      "name": "release-apk",
+      "description": "发布 APK 流程（已停用）",
+      "version": "1",
+      "allowed_tools": [],
+      "required_permissions": [],
+      "globs": [],
+      "manual_only": false,
+      "path": ".android-agent/skills/release-apk/SKILL.md",
+      "scope": "project",
+      "frontmatter_errors": [],
+      "enabled": false
+    }
+  ],
+  "note": "Metadata only; full bodies require load_skill / skills/{name}."
+}

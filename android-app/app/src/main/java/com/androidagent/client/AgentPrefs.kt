@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.androidagent.client.core.agent.ConversationSessionPrefs
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -11,7 +12,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import java.util.UUID
 
-class AgentPrefs(context: Context) {
+class AgentPrefs(context: Context) : ConversationSessionPrefs {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -75,11 +76,11 @@ class AgentPrefs(context: Context) {
         selectedJobId = null
     }
 
-    var guestMode: Boolean
+    override var guestMode: Boolean
         get() = prefs.getBoolean(KEY_GUEST_MODE, false)
         set(value) = prefs.edit().putBoolean(KEY_GUEST_MODE, value).apply()
 
-    var guestRemaining: Int
+    override var guestRemaining: Int
         get() = prefs.getInt(KEY_GUEST_REMAINING, 3)
         set(value) = prefs.edit().putInt(KEY_GUEST_REMAINING, value.coerceIn(0, 3)).apply()
 
@@ -91,11 +92,11 @@ class AgentPrefs(context: Context) {
         get() = prefs.getString(KEY_SELECTED_CONVERSATION, null)
         set(value) = prefs.edit().putString(KEY_SELECTED_CONVERSATION, value).apply()
 
-    var selectedJobId: String?
+    override var selectedJobId: String?
         get() = prefs.getString(KEY_SELECTED_JOB, null)
         set(value) = prefs.edit().putString(KEY_SELECTED_JOB, value).apply()
 
-    var selectedProviderId: String
+    override var selectedProviderId: String
         get() = prefs.getString(KEY_SELECTED_PROVIDER, DEFAULT_PROVIDER).orEmpty()
         set(value) = prefs.edit().putString(KEY_SELECTED_PROVIDER, value).apply()
 
@@ -143,10 +144,10 @@ class AgentPrefs(context: Context) {
         prefs.edit().putStringSet(KEY_APPROVAL_ALLOW, values).apply()
     }
 
-    fun eventCursor(jobId: String): Long =
+    override fun eventCursor(jobId: String): Long =
         prefs.getLong("$KEY_EVENT_CURSOR:$jobId", 0L)
 
-    fun setEventCursor(jobId: String, cursor: Long) {
+    override fun setEventCursor(jobId: String, cursor: Long) {
         prefs.edit().putLong("$KEY_EVENT_CURSOR:$jobId", cursor).apply()
     }
 

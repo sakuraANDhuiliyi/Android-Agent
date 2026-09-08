@@ -1,0 +1,31 @@
+{
+  "id": "12_app_restart",
+  "title": "客户端重启恢复",
+  "description": "任务执行中模拟客户端重启：丢弃全部本地状态，从服务端全量重放事件与任务状态后一致",
+  "prompt": "写一个文件标记 E2E-APP-RESTART",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我来写入文件。",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "content": "<resources>\n    <string name=\"app_name\">E2E-APP-RESTART</string>\n</resources>\n"
+          }
+        }
+      ]
+    },
+    {"type": "final", "text": "文件已写入，标记 E2E-APP-RESTART。"}
+  ],
+  "driver": "app_restart",
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["write_file"],
+    "file_contains": {"app/src/main/res/values/strings.xml": "E2E-APP-RESTART"},
+    "final_text_contains": "E2E-APP-RESTART",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "assistant_message", "turn_completed"]
+  }
+}

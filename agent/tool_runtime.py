@@ -331,6 +331,7 @@ def execute_tool(
     tool_call_id: str | None = None,
     set_status: StatusCallback | None = None,
     run_mode: RunMode = "workspace",
+    permission_profile: str | None = None,
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
 ) -> Any:
@@ -387,6 +388,7 @@ def execute_tool(
         run_mode,
         recovery_mode=recovery_mode,
         is_replay=replay is not None,
+        profile=permission_profile,
     )
     decision = combine_with_permission(decision, pre)
 

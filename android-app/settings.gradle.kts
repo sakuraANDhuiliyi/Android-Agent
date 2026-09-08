@@ -11,6 +11,9 @@ pluginManagement {
                 "org.jetbrains.kotlin.plugin.compose" -> useModule(
                     "org.jetbrains.kotlin:compose-compiler-gradle-plugin:${requested.version}",
                 )
+                "com.google.devtools.ksp" -> useModule(
+                    "com.google.devtools.ksp:symbol-processing-gradle-plugin:${requested.version}",
+                )
             }
         }
     }

@@ -600,6 +600,7 @@ class MemoryStore:
         *,
         memory_id: str | None = None,
         project_id: str | None = None,
+        task_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         clauses = ["user_id=?"]
@@ -610,6 +611,9 @@ class MemoryStore:
         if project_id:
             clauses.append("project_id=?")
             params.append(project_id)
+        if task_id:
+            clauses.append("task_id=?")
+            params.append(task_id)
         sql = (
             f"SELECT * FROM memory_usage WHERE {' AND '.join(clauses)} "
             f"ORDER BY created_at DESC LIMIT ?"

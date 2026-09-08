@@ -1,0 +1,39 @@
+{
+  "id": "07_fix_build_failure",
+  "title": "修复构建失败",
+  "description": "复用 06 的工作区与会话：先修复文件，再重建成功（状态化假 gradlew 第二次必成）",
+  "prompt": "修复构建错误后再跑一次",
+  "auto_approve": true,
+  "reuse_project": "06_build_failure",
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我先修复 strings.xml，再重新构建。",
+      "calls": [
+        {
+          "name": "str_replace",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "old_string": "<string name=\"hello_world\">Hello World!</string>",
+            "new_string": "<string name=\"hello_world\">Hello E2E Fixed!</string>"
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [{"name": "run_gradle", "arguments": {"task": "assembleDebug"}}]
+    },
+    {"type": "final", "text": "构建失败已修复：strings.xml 更新后重建成功。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["str_replace", "run_gradle"],
+    "files_changed": ["app/src/main/res/values/strings.xml"],
+    "file_contains": {"app/src/main/res/values/strings.xml": "Hello E2E Fixed!"},
+    "build_summary_success": true,
+    "final_text_contains": "修复",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "build_summary", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

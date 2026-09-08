@@ -505,13 +505,32 @@ def load_rules_for_turn(
     user_preferences: str | None = None,
     builtin_prompt: str = "",
 ) -> RulesBundle:
+    from agent.project_settings import load_project_settings
+
     candidates = discover_rules(workspace, user_id, focus_paths=focus_paths)
-    bundle = select_rules(
-        candidates,
-        focus_paths=focus_paths,
-        budget=budget,
-        user_preferences=user_preferences,
-    )
+    disabled = set(load_project_settings(workspace).get("disabled_rules") or [])
+    if disabled:
+        enabled: list[RuleDocument] = []
+        for rule in candidates:
+            if rule.id in disabled:
+                continue
+            enabled.append(rule)
+        bundle = select_rules(
+            enabled,
+            focus_paths=focus_paths,
+            budget=budget,
+            user_preferences=user_preferences,
+        )
+        for rule in candidates:
+            if rule.id in disabled:
+                bundle.skipped.append({**rule.to_dict(), "reason": "disabled_by_user"})
+    else:
+        bundle = select_rules(
+            candidates,
+            focus_paths=focus_paths,
+            budget=budget,
+            user_preferences=user_preferences,
+        )
     bundle.builtin_prompt = builtin_prompt
     return bundle
 
@@ -541,3 +560,115 @@ def diagnose_rules(
             "and approval hard rules cannot be overridden."
         ),
     }
+
+
+# Managed CRUD only touches files under .android-agent/rules/.
+RULE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\.md$")
+
+
+def _serialize_rule_file(meta: dict[str, Any], body: str) -> str:
+    front = yaml.safe_dump(
+        meta, allow_unicode=True, sort_keys=False, default_flow_style=False
+    ).strip()
+    if front:
+        return f"---\n{front}\n---\n\n{body.strip()}\n"
+    return body.strip() + "\n"
+
+
+def _rule_filename_from_id(rule_id: str) -> str:
+    text = str(rule_id or "").strip()
+    if not text.startswith("rules:"):
+        raise ValueError(
+            f"仅支持管理 .android-agent/rules/ 下的项目规则: {rule_id!r}"
+        )
+    filename = text[len("rules:"):]
+    if not RULE_FILENAME_RE.fullmatch(filename):
+        raise ValueError(f"无效的规则 ID: {rule_id!r}")
+    return filename
+
+
+def _rule_path_from_id(workspace: Path, rule_id: str) -> Path:
+    filename = _rule_filename_from_id(rule_id)
+    path = project_rules_dir(workspace) / filename
+    if not _is_inside(workspace, path):
+        raise ValueError(f"规则路径越界: {rule_id!r}")
+    return path
+
+
+def create_project_rule(
+    workspace: Path,
+    name: str,
+    *,
+    description: str = "",
+    body: str = "",
+    always: bool = True,
+    globs: list[str] | None = None,
+) -> RuleDocument:
+    filename = (name or "").strip()
+    if filename.endswith(".md"):
+        filename = filename[:-3]
+    if not filename or not RULE_FILENAME_RE.fullmatch(filename + ".md"):
+        raise ValueError(f"无效的规则名: {name!r}（仅字母数字、点、下划线、连字符）")
+    path = project_rules_dir(workspace) / (filename + ".md")
+    if not _is_inside(workspace, path):
+        raise ValueError("规则路径越界")
+    if path.is_file():
+        raise FileExistsError(f"规则已存在: rules:{filename}.md")
+    meta: dict[str, Any] = {"description": (description or "").strip()}
+    meta["always"] = bool(always)
+    if globs:
+        meta["globs"] = [str(g).strip() for g in globs if str(g).strip()]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_serialize_rule_file(meta, body), encoding="utf-8")
+    doc = _read_rule_file(
+        path,
+        workspace=workspace,
+        source=RULE_SOURCE_DOT_RULES,
+        rule_id=f"rules:{filename}.md",
+    )
+    if doc is None:
+        raise ValueError("规则写入失败（内容为空）")
+    return doc
+
+
+def update_project_rule(
+    workspace: Path,
+    rule_id: str,
+    *,
+    description: str | None = None,
+    body: str | None = None,
+    always: bool | None = None,
+    globs: list[str] | None = None,
+) -> RuleDocument:
+    path = _rule_path_from_id(workspace, rule_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"规则不存在: {rule_id}")
+    meta, old_body, _errors = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if description is not None:
+        meta["description"] = description.strip()
+    if always is not None:
+        meta["always"] = bool(always)
+    if globs is not None:
+        if globs:
+            meta["globs"] = [str(g).strip() for g in globs if str(g).strip()]
+        else:
+            meta.pop("globs", None)
+    new_body = old_body if body is None else body
+    path.write_text(_serialize_rule_file(meta, new_body), encoding="utf-8")
+    doc = _read_rule_file(
+        path,
+        workspace=workspace,
+        source=RULE_SOURCE_DOT_RULES,
+        rule_id=rule_id,
+    )
+    if doc is None:
+        raise ValueError("规则更新失败（内容为空）")
+    return doc
+
+
+def delete_project_rule(workspace: Path, rule_id: str) -> str:
+    path = _rule_path_from_id(workspace, rule_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"规则不存在: {rule_id}")
+    path.unlink()
+    return path.name

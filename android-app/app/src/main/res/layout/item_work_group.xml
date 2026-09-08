@@ -32,17 +32,6 @@
             android:textColor="?attr/colorOnSurfaceVariant"
             tools:text="工作了 2 分 18 秒" />
 
-        <TextView
-            android:id="@+id/textWorkSummary"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="@dimen/space_tiny"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?attr/colorOnSurfaceVariant"
-            tools:text="查看 3 个文件 · 执行 2 条命令" />
-
         <ImageView
             android:id="@+id/iconExpand"
             android:layout_width="@dimen/touch_target"
@@ -55,10 +44,24 @@
     </LinearLayout>
 
     <TextView
+        android:id="@+id/textWorkSummary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="@dimen/touch_target"
+        android:layout_marginBottom="@dimen/space_tiny"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        tools:text="查看 3 个文件 · 执行 2 条命令" />
+
+    <TextView
         android:id="@+id/textWorkSummaryFull"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/space_small"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="@dimen/space_small"
         android:layout_marginBottom="@dimen/space_tiny"
         android:textAppearance="?attr/textAppearanceBodySmall"
         android:textColor="?attr/colorOnSurfaceVariant"

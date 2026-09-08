@@ -50,6 +50,10 @@ class ConversationEventType:
     APPROVAL_RESOLVED = "approval_resolved"
     MALFORMED_TOOL_CALL = "malformed_tool_call"
     LIFECYCLE_RECONCILED = "lifecycle_reconciled"
+    # —— Domain Core v1：结构化摘要事件，客户端不再自行 parse 日志 ——
+    BUILD_SUMMARY = "build_summary"
+    TEST_SUMMARY = "test_summary"
+    ARTIFACT = "artifact"
 
 
 CONTEXT_EVENT_TYPES = frozenset(
@@ -202,6 +206,7 @@ class ConversationEventStore:
         provider: str | None = None,
         model: str | None = None,
         turn_id: str | None = None,
+        trace_id: str | None = None,
         created_at: float | None = None,
         started_at: float | None = None,
         finished_at: float | None = None,
@@ -210,6 +215,7 @@ class ConversationEventStore:
     ) -> dict[str, Any]:
         self._validate_status(status)
         turn_id = turn_id or uuid.uuid4().hex
+        trace_id = trace_id or uuid.uuid4().hex
         created_at = time.time() if created_at is None else created_at
         with self._store._connect() as conn:
             conversation = conn.execute(
@@ -224,9 +230,9 @@ class ConversationEventStore:
             conn.execute(
                 """INSERT INTO conversation_turns
                    (id, conversation_id, task_id, user_id, project_id, status,
-                    provider, model, created_at, started_at, finished_at,
+                    provider, model, trace_id, created_at, started_at, finished_at,
                     error_message, schema_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     turn_id,
                     conversation_id,
@@ -236,6 +242,7 @@ class ConversationEventStore:
                     status,
                     provider,
                     model,
+                    trace_id,
                     created_at,
                     started_at,
                     finished_at,
@@ -277,6 +284,60 @@ class ConversationEventStore:
         with self._store._connect() as conn:
             row = conn.execute(query, params).fetchone()
         return dict(row) if row else None
+
+    def list_turns(
+        self,
+        conversation_id: str,
+        *,
+        user_id: str,
+    ) -> list[dict[str, Any]] | None:
+        """Turn index for the debug/trace UI: newest first, with a user
+        message preview and per-turn event counts."""
+        with self._store._connect() as conn:
+            conversation = conn.execute(
+                """SELECT 1 FROM conversations
+                   WHERE id=? AND user_id=? LIMIT 1""",
+                (conversation_id, user_id),
+            ).fetchone()
+            if not conversation:
+                return None
+            turns = conn.execute(
+                """SELECT id, task_id, status, provider, model, trace_id,
+                          created_at, started_at, finished_at, error_message
+                   FROM conversation_turns
+                   WHERE conversation_id=?
+                   ORDER BY created_at DESC, rowid DESC""",
+                (conversation_id,),
+            ).fetchall()
+            events = conn.execute(
+                """SELECT turn_id, event_type, payload_json, COUNT(*) AS total
+                   FROM conversation_events
+                   WHERE conversation_id=?
+                   GROUP BY turn_id, event_type""",
+                (conversation_id,),
+            ).fetchall()
+
+        stats: dict[str, dict[str, int]] = {}
+        user_text: dict[str, str] = {}
+        for row in events:
+            turn_id = row["turn_id"]
+            if row["event_type"] == "user_message":
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                except (ValueError, TypeError):
+                    payload = {}
+                text = " ".join(self._user_message_text(payload).split())
+                user_text[turn_id] = text[:120]
+            bucket = stats.setdefault(turn_id, {})
+            bucket[row["event_type"]] = row["total"]
+
+        items: list[dict[str, Any]] = []
+        for row in turns:
+            turn = dict(row)
+            turn["user_preview"] = user_text.get(turn["id"], "")
+            turn["event_counts"] = stats.get(turn["id"], {})
+            items.append(turn)
+        return items
 
     def has_conversation(self, conversation_id: str, user_id: str) -> bool:
         with self._store._connect() as conn:
@@ -345,7 +406,6 @@ class ConversationEventStore:
             raise InvalidTurnStatusError(
                 f"lifecycle finalization requires terminal status, got {status!r}"
             )
-        payload_json = self._serialize_payload(event_payload)
         safe_task_payload = redact_sensitive_value(task_event_payload or {})
         task_payload_json = json.dumps(
             safe_task_payload,
@@ -361,6 +421,12 @@ class ConversationEventStore:
                    WHERE id=? AND conversation_id=? AND task_id=? AND user_id=?""",
                 (turn_id, conversation_id, task_id, user_id),
             ).fetchone()
+            if turn and turn["trace_id"]:
+                event_payload = {
+                    **dict(event_payload),
+                    "trace_id": turn["trace_id"],
+                }
+            payload_json = self._serialize_payload(event_payload)
             task = conn.execute(
                 "SELECT id FROM tasks WHERE id=? AND user_id=?",
                 (task_id, user_id),
@@ -464,15 +530,17 @@ class ConversationEventStore:
             "provider": provider,
             "model": model,
         }
-        payload_json = self._serialize_payload(payload)
         event_key = f"turn:{turn_id}:started"
         with self._store._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             turn = conn.execute(
-                """SELECT id FROM conversation_turns
+                """SELECT id, trace_id FROM conversation_turns
                    WHERE id=? AND conversation_id=? AND task_id=? AND user_id=?""",
                 (turn_id, conversation_id, task_id, user_id),
             ).fetchone()
+            if turn and turn["trace_id"]:
+                payload.setdefault("trace_id", turn["trace_id"])
+            payload_json = self._serialize_payload(payload)
             task = conn.execute(
                 "SELECT id FROM tasks WHERE id=? AND user_id=?",
                 (task_id, user_id),

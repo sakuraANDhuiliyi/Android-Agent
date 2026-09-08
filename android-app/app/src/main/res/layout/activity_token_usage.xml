@@ -103,7 +103,7 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <LinearLayout
+            <com.androidagent.client.AdaptiveActionLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
@@ -111,7 +111,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnDetails"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.AndroidAgent.Button.Outlined"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginEnd="8dp"
@@ -120,12 +120,12 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnManageApi"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.AndroidAgent.Button.Outlined"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="@string/manage_api" />
-            </LinearLayout>
+            </com.androidagent.client.AdaptiveActionLayout>
 
             <TextView
                 android:layout_width="match_parent"

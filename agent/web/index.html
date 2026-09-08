@@ -139,6 +139,7 @@
           <button type="button" class="tab active" data-tab="summary">摘要</button>
           <button type="button" class="tab" data-tab="changes">改动</button>
           <button type="button" class="tab" data-tab="log">构建日志</button>
+          <button type="button" class="tab" data-tab="trace">追踪</button>
         </div>
         <div class="tab-panels">
           <div class="tab-panel active" id="tabSummary">
@@ -153,6 +154,20 @@
               <button type="button" class="btn sm" id="btnLoadLog" disabled>加载完整日志</button>
             </div>
             <pre class="mono block log-block" id="logText">—</pre>
+          </div>
+          <div class="tab-panel" id="tabTrace">
+            <div class="trace-toolbar">
+              <select id="traceConversation" aria-label="选择对话" disabled>
+                <option value="">选择对话</option>
+              </select>
+              <button type="button" class="btn sm" id="btnTraceRefresh" disabled>刷新</button>
+            </div>
+            <ul class="trace-turn-list" id="traceTurnList"></ul>
+            <div class="trace-detail" id="traceDetail" hidden>
+              <div class="trace-meta" id="traceMeta"></div>
+              <ol class="trace-steps" id="traceSteps"></ol>
+            </div>
+            <p class="empty" id="traceEmpty">选择对话后查看 Turn 执行追踪。</p>
           </div>
         </div>
       </aside>

@@ -213,6 +213,7 @@ class TaskStore:
                     status TEXT NOT NULL,
                     provider TEXT,
                     model TEXT,
+                    trace_id TEXT,
                     created_at REAL NOT NULL,
                     started_at REAL,
                     finished_at REAL,
@@ -327,7 +328,19 @@ class TaskStore:
             if "role" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN role TEXT")
             if "write_lock_key" not in cols:
-                conn.execute("ALTER TABLE tasks ADD COLUMN write_lock_key TEXT")
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN write_lock_key TEXT"
+                )
+            turn_cols = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(conversation_turns)"
+                ).fetchall()
+            }
+            if turn_cols and "trace_id" not in turn_cols:
+                conn.execute(
+                    "ALTER TABLE conversation_turns ADD COLUMN trace_id TEXT"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, created_at DESC)"
             )
@@ -1493,7 +1506,8 @@ class TaskStore:
             )
             running = conn.execute(
                 """UPDATE tasks SET pause_requested=1
-                   WHERE id=? AND user_id=? AND status='running'""",
+                   WHERE id=? AND user_id=?
+                   AND status IN ('running', 'awaiting_approval')""",
                 (task_id, user_id),
             )
             already = conn.execute(

@@ -23,7 +23,11 @@
         <item name="android:statusBarColor">@color/signal_surface</item>
         <item name="android:navigationBarColor">@color/signal_navigation</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">@color/signal_surface</item>
+        <item name="materialButtonStyle">@style/Widget.AndroidAgent.Button</item>
+        <item name="materialButtonOutlinedStyle">@style/Widget.AndroidAgent.Button.Outlined</item>
+        <item name="materialCardViewStyle">@style/Widget.AndroidAgent.Card</item>
+        <item name="toolbarStyle">@style/Widget.AndroidAgent.Toolbar</item>
     </style>
 </resources>

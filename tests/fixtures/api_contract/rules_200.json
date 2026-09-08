@@ -1,0 +1,65 @@
+{
+  "user_id": "user-alice",
+  "project_id": "demo-app",
+  "focus_paths": [],
+  "candidates": [
+    {
+      "id": "rules:kotlin-style.md",
+      "source": "dot_android_agent_rules",
+      "path": ".android-agent/rules/kotlin-style.md",
+      "description": "Kotlin 约定",
+      "always": true,
+      "globs": [],
+      "exclude_globs": [],
+      "max_chars": 8000,
+      "body_chars": 27,
+      "priority": 4,
+      "frontmatter_errors": [],
+      "security_stripped": false,
+      "enabled": true
+    },
+    {
+      "id": "rules:legacy-java.md",
+      "source": "dot_android_agent_rules",
+      "path": ".android-agent/rules/legacy-java.md",
+      "description": "遗留 Java 规范（已停用）",
+      "always": true,
+      "globs": [],
+      "exclude_globs": [],
+      "max_chars": 8000,
+      "body_chars": 41,
+      "priority": 4,
+      "frontmatter_errors": [],
+      "security_stripped": false,
+      "enabled": false
+    }
+  ],
+  "loaded": [
+    {
+      "id": "rules:kotlin-style.md",
+      "source": "dot_android_agent_rules",
+      "path": ".android-agent/rules/kotlin-style.md",
+      "description": "Kotlin 约定",
+      "always": true,
+      "globs": [],
+      "exclude_globs": [],
+      "max_chars": 8000,
+      "body_chars": 27,
+      "priority": 4,
+      "frontmatter_errors": [],
+      "security_stripped": false,
+      "reason": "always",
+      "chars_used": 27,
+      "truncated": false
+    }
+  ],
+  "skipped": [
+    {
+      "id": "rules:legacy-java.md",
+      "reason": "disabled_by_user"
+    }
+  ],
+  "total_chars": 27,
+  "budget": 24000,
+  "audit_text": "Rules loaded (1), skipped (1), chars=27/24000"
+}

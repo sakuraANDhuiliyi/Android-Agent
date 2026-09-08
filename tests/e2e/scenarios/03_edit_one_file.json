@@ -1,0 +1,32 @@
+{
+  "id": "03_edit_one_file",
+  "title": "编辑单个文件",
+  "description": "Agent 用 write_file 修改 strings.xml 并在 changes 事件中汇报改动",
+  "prompt": "把 app_name 改成 E2E-EDITED",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我来修改 strings.xml。",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "content": "<resources>\n    <string name=\"app_name\">E2E-EDITED</string>\n    <string name=\"hello_world\">Hello World!</string>\n</resources>\n"
+          }
+        }
+      ]
+    },
+    {"type": "final", "text": "修改完成：app_name 已更新为 E2E-EDITED。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["write_file"],
+    "files_changed": ["app/src/main/res/values/strings.xml"],
+    "file_contains": {"app/src/main/res/values/strings.xml": "E2E-EDITED"},
+    "final_text_contains": "E2E-EDITED",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

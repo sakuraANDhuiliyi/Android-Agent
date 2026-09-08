@@ -69,6 +69,16 @@
                 android:textSize="12sp"
                 android:visibility="gone" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnLoadMore"
+                style="@style/Widget.AndroidAgent.Button.Text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
+                android:text="@string/load_more_log"
+                android:visibility="gone" />
+
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -127,7 +137,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnCopyPath"
-                    style="@style/Widget.Material3.Button.TextButton"
+                    style="@style/Widget.AndroidAgent.Button.Text"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/copy_path" />

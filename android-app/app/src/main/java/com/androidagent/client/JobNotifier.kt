@@ -68,6 +68,7 @@ object JobNotifier {
         projectId: String = "",
         conversationId: String = "",
         conversationTitle: String = "",
+        turnId: String? = null,
     ) {
         val prefs = AgentPrefs(context)
         if ((status == "succeeded" || status == "completed") && !prefs.notifyDone) return
@@ -95,6 +96,9 @@ object JobNotifier {
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text.take(800)))
             .setContentIntent(contentIntent)
+            .addAction(0, "Review", PendingIntent.getActivity(context, (jobId + ":review").hashCode(),
+                Intent(context, DiffActivity::class.java).putExtra("project_id", projectId).putExtra("turn_id", turnId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(jobId, jobId.hashCode(), notification)
@@ -108,27 +112,40 @@ object JobNotifier {
         conversationId: String,
         conversationTitle: String,
         summary: String,
+        approvalId: String = "",
+        scope: String = "",
     ) {
         if (!AgentPrefs(context).notifyApproval) return
         if (!canNotify(context)) return
         ensureChannel(context)
         val contentIntent = pendingConversation(
             context,
-            (jobId + ":approval").hashCode(),
+            (jobId + ":approval:" + approvalId).hashCode(),
             projectId,
             conversationId,
             conversationTitle,
             jobId,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle(context.getString(R.string.notification_approval_title))
             .setContentText(summary.take(120))
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
-            .build()
+        if (approvalId.isNotBlank()) {
+            for (allow in listOf(false, true)) {
+                val action = Intent(context, ApprovalActionReceiver::class.java)
+                    .setAction("$scope:$approvalId:$allow")
+                    .putExtra("job", jobId).putExtra("approval", approvalId)
+                    .putExtra("scope", scope).putExtra("allow", allow)
+                builder.addAction(NotificationCompat.Action.Builder(0, if (allow) "Allow" else "Deny", PendingIntent.getBroadcast(context,
+                    action.action.hashCode(), action, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                    .setAuthenticationRequired(allow).build())
+            }
+        }
+        val notification = builder.build()
         NotificationManagerCompat.from(context)
-            .notify("$jobId-approval", (jobId + ":approval").hashCode(), notification)
+            .notify("$jobId-approval:$approvalId", (jobId + ":approval:" + approvalId).hashCode(), notification)
     }
 
     private fun canNotify(context: Context): Boolean {

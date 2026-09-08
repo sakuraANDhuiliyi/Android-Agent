@@ -53,6 +53,24 @@ class AgentApiTest {
     }
 
     @Test
+    fun buildLogPageSendsOffsetLimitAndParsesEnvelope() {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"job_id":"j1","content":"cdef","offset":2,"limit":4,"total_size":10,"has_more":true}""",
+            ),
+        )
+        val page = api.getTaskBuildLogPage("j1", offset = 2, limit = 4)
+        assertEquals("cdef", page.content)
+        assertEquals(2, page.offset)
+        assertEquals(10L, page.totalSize)
+        assertTrue(page.hasMore)
+        val path = server.takeRequest().path.orEmpty()
+        assertTrue(path.startsWith("/api/jobs/j1/log"))
+        assertTrue(path.contains("offset=2"))
+        assertTrue(path.contains("limit=4"))
+    }
+
+    @Test
     fun accountAndDeviceSessionFlowUsesCloudEndpoints() {
         server.enqueue(MockResponse().setBody(
             """{"account":{"user_id":"u1","email":"linchu@example.com","display_name":"林初","email_verified":true},"token":"new-token","session_id":"ses_phone","requires_verification":false}""",

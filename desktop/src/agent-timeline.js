@@ -496,24 +496,25 @@
     for (const r of roots) container.appendChild(buildList(r));
   }
 
-  function renderMarkdown(container, text, callbacks, opts = {}) {
-    container.textContent = "";
-    const capped = truncateText(
-      text,
-      MAX_MARKDOWN_CHARS,
-      `\n\n…Markdown 过长已截断（原 ${String(text || "").length} 字符）`,
-    );
-    const lines = String(capped.text || "").replace(/\r\n/g, "\n").split("\n");
+  /** Split markdown into top-level blocks for streaming prefix reuse. */
+  function splitMarkdownBlocks(lines) {
+    const blocks = [];
     let i = 0;
     let paragraph = [];
 
     const flushParagraph = () => {
       if (!paragraph.length) return;
-      const p = el("p", "md-p");
-      // Soft breaks: a single newline inside a paragraph stays a break
-      // (CSS white-space: pre-line renders it) without breaking inline markup.
-      parseInline(paragraph.join("\n"), p, callbacks, opts);
-      container.appendChild(p);
+      const ptext = paragraph.join("\n");
+      blocks.push({
+        key: `p\x00${ptext}`,
+        render: (container, callbacks, opts) => {
+          const p = el("p", "md-p");
+          // Soft breaks: a single newline inside a paragraph stays a break
+          // (CSS white-space: pre-line renders it) without breaking inline markup.
+          parseInline(ptext, p, callbacks, opts);
+          container.appendChild(p);
+        },
+      });
       paragraph = [];
     };
 
@@ -535,7 +536,10 @@
           i += 1;
         }
         i += 1; // skip closing fence (or run past EOF while streaming)
-        renderCodeBlock(container, lang, body, callbacks);
+        blocks.push({
+          key: `code\x00${lang}\x00${body.join("\n")}`,
+          render: (container, callbacks) => renderCodeBlock(container, lang, body, callbacks),
+        });
         continue;
       }
 
@@ -544,9 +548,15 @@
       if (heading) {
         flushParagraph();
         const level = Math.min(Math.max(heading[1].length, 1), 4);
-        const h = el(`h${level}`, `md-h md-h${level}`);
-        parseInline(heading[2].replace(/\s+#+\s*$/, ""), h, callbacks, opts);
-        container.appendChild(h);
+        const htext = heading[2].replace(/\s+#+\s*$/, "");
+        blocks.push({
+          key: `h\x00${level}\x00${htext}`,
+          render: (container, callbacks, opts) => {
+            const h = el(`h${level}`, `md-h md-h${level}`);
+            parseInline(htext, h, callbacks, opts);
+            container.appendChild(h);
+          },
+        });
         i += 1;
         continue;
       }
@@ -559,9 +569,15 @@
           quote.push(lines[i].replace(/^ {0,3}>\s?/, ""));
           i += 1;
         }
-        const q = el("blockquote", "md-quote");
-        renderMarkdown(q, quote.join("\n"), callbacks, opts);
-        container.appendChild(q);
+        const qtext = quote.join("\n");
+        blocks.push({
+          key: `q\x00${qtext}`,
+          render: (container, callbacks, opts) => {
+            const q = el("blockquote", "md-quote");
+            renderMarkdown(q, qtext, callbacks, opts);
+            container.appendChild(q);
+          },
+        });
         continue;
       }
 
@@ -585,7 +601,10 @@
           body.push(splitTableRow(lines[i]));
           i += 1;
         }
-        renderTable(container, { header, align, body });
+        blocks.push({
+          key: `t\x00${JSON.stringify({ header, align, body })}`,
+          render: (container) => renderTable(container, { header, align, body }),
+        });
         continue;
       }
 
@@ -606,14 +625,20 @@
             break;
           }
         }
-        renderListBlock(container, listLines, callbacks, opts);
+        blocks.push({
+          key: `l\x00${listLines.join("\n")}`,
+          render: (container, callbacks, opts) => renderListBlock(container, listLines, callbacks, opts),
+        });
         continue;
       }
 
       // Horizontal rule.
       if (/^ {0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
         flushParagraph();
-        container.appendChild(el("hr", "md-hr"));
+        blocks.push({
+          key: "hr\x00",
+          render: (container) => container.appendChild(el("hr", "md-hr")),
+        });
         i += 1;
         continue;
       }
@@ -627,6 +652,44 @@
       i += 1;
     }
     flushParagraph();
+    return blocks;
+  }
+
+  function renderMarkdown(container, text, callbacks, opts = {}) {
+    const capped = truncateText(
+      text,
+      MAX_MARKDOWN_CHARS,
+      `\n\n…Markdown 过长已截断（原 ${String(text || "").length} 字符）`,
+    );
+    const lines = String(capped.text || "").replace(/\r\n/g, "\n").split("\n");
+    const blocks = splitMarkdownBlocks(lines);
+
+    // Streaming prefix reuse: keep DOM nodes (and their listeners) of blocks
+    // whose content did not change; only re-render from the first divergence.
+    const prev = container.__tlBlocks;
+    let stableBlocks = 0;
+    let stableChildren = 0;
+    if (prev) {
+      const limit = Math.min(prev.length, blocks.length);
+      for (let i = 0; i < limit; i += 1) {
+        if (prev[i].key !== blocks[i].key) break;
+        stableBlocks = i + 1;
+        stableChildren += prev[i].count;
+      }
+    } else {
+      container.textContent = "";
+    }
+    while (container.children.length > stableChildren) {
+      container.removeChild(container.children[stableChildren]);
+    }
+    const counts = [];
+    for (let i = stableBlocks; i < blocks.length; i += 1) {
+      const before = container.children.length;
+      blocks[i].render(container, callbacks, opts);
+      counts.push({ key: blocks[i].key, count: container.children.length - before });
+    }
+    container.__tlBlocks = blocks.slice(0, stableBlocks).map((b, idx) => ({ key: b.key, count: prev[idx].count }))
+      .concat(counts);
   }
 
   // ————————————————————————————————————————————————
@@ -1392,7 +1455,6 @@
         if (TERMINAL_TURN_STATUSES.has(item.status) && ms != null) turn.finishedAt = ms;
       } else if (item.type === "changes") {
         turn.changes = item;
-        turn.workItems.push(item);
         if (item.metadata.diffStatus) turn.diffStatus = item.metadata.diffStatus;
         if (item.metadata.diffReason) turn.diffReason = item.metadata.diffReason;
       } else if (isFinalAssistant(item)) {
@@ -1731,17 +1793,19 @@
       head.setAttribute("aria-controls", bodyId);
       head.appendChild(el("span", "tl-work-status"));
       head.appendChild(el("span", "tl-work-label"));
-      head.appendChild(el("span", "tl-work-summary"));
       const chevron = el("span", "tl-chevron");
       chevron.setAttribute("aria-hidden", "true");
       head.appendChild(chevron);
+      const summary = el("div", "tl-work-summary");
       const body = el("div", "tl-work-body");
       body.id = bodyId;
       work.appendChild(head);
+      work.appendChild(summary);
       work.appendChild(body);
       node.appendChild(work);
 
       node.appendChild(el("div", "tl-turn-final"));
+      node.appendChild(el("div", "tl-turn-outcome"));
 
       head.addEventListener("click", () => {
         const next = body.hidden;
@@ -1766,13 +1830,13 @@
     function patchTurnWork(node, turn, expanded, seq) {
       const work = node.querySelector(":scope > .tl-work");
       if (!work) return;
+      node.className = `tl-turn is-${turn.status}`;
       const hasWork = turn.workItems.length > 0;
       work.hidden = !hasWork;
       if (!hasWork) return;
       const head = work.querySelector(".tl-work-head");
       const body = work.querySelector(".tl-work-body");
 
-      node.className = `tl-turn is-${turn.status}`;
       const statusEl = head.querySelector(".tl-work-status");
       statusEl.className = `tl-work-status is-${turn.status}`;
       statusEl.textContent = TURN_STATUS_LABEL[turn.status] || turn.status;
@@ -1787,7 +1851,7 @@
         label.textContent = "工作过程";
       }
 
-      const summary = head.querySelector(".tl-work-summary");
+      const summary = work.querySelector(":scope > .tl-work-summary");
       summary.textContent = turn.summary || "";
       summary.hidden = !turn.summary;
 
@@ -1807,6 +1871,18 @@
       if (turn.finalMessages.length) {
         area.hidden = false;
         reconcileSequence(area, turn.finalMessages, turn);
+      } else {
+        area.hidden = true;
+        area.textContent = "";
+      }
+    }
+
+    function patchTurnOutcome(node, turn) {
+      const area = node.querySelector(":scope > .tl-turn-outcome");
+      if (!area) return;
+      if (turn.changes) {
+        area.hidden = false;
+        reconcileSequence(area, [turn.changes], turn);
       } else {
         area.hidden = true;
         area.textContent = "";
@@ -1867,6 +1943,7 @@
         for (const entry of seq) liveItemKeys.add(entry.key);
         if (turn.userMessage) liveItemKeys.add(turn.userMessage.key);
         for (const i of turn.finalMessages) liveItemKeys.add(i.key);
+        if (turn.changes) liveItemKeys.add(turn.changes.key);
 
         let node = turnNodeByKey.get(turn.key);
         if (!node) {
@@ -1879,6 +1956,7 @@
         patchTurnUser(node, turn);
         patchTurnWork(node, turn, expanded, seq);
         patchTurnFinal(node, turn);
+        patchTurnOutcome(node, turn);
 
         const expectedPrev = prevNode;
         if (node.parentNode !== container || node.previousSibling !== expectedPrev) {

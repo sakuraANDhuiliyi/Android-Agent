@@ -27,7 +27,7 @@
             android:textIsSelectable="true"
             tools:text="具体错误信息..." />
 
-    <LinearLayout
+    <com.androidagent.client.AdaptiveActionLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
@@ -35,7 +35,7 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnViewError"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            style="@style/Widget.AndroidAgent.Button.Outlined"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/view_error_details" />
@@ -46,5 +46,5 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:text="@string/let_agent_fix" />
-    </LinearLayout>
+    </com.androidagent.client.AdaptiveActionLayout>
 </LinearLayout>

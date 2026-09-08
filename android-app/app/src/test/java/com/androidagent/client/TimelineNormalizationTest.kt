@@ -556,4 +556,208 @@ class TimelineNormalizationTest {
         // 幂等：无残留时返回 false
         assertFalse(store.expirePendingApprovals())
     }
+
+    // ---------- Conversation Timeline V2 ----------
+
+    @Test
+    fun `22 streaming answer keeps row identity and answer lane when finalized`() {
+        val store = TimelineStore()
+        ingestOne(store, jobEvent(70, "text_delta", "turn_id" to "t1", "message_id" to "m-stable", "delta" to "正在处理"))
+
+        val streamingItem = assistantItems(store).single()
+        val streamingKey = streamingItem.key
+        val streamingTurn = ConversationTimelineBuilder.buildTurns(store).single()
+        assertEquals(0, streamingTurn.workItems.count { it.type == TimelineStore.ItemType.ASSISTANT })
+        assertEquals(1, streamingTurn.finalMessages.size)
+        assertTrue(streamingTurn.finalMessages.single().streaming)
+
+        ingestOne(
+            store,
+            convEvent(
+                "id-stable-final", "assistant_message", seq = 71,
+                payload = JSONObject().put("message_id", "m-stable").put("text", "已完成").put("is_final", true),
+            ),
+        )
+
+        val finalItem = assistantItems(store).single()
+        assertEquals(streamingKey, finalItem.key)
+        assertEquals(1, ConversationTimelineBuilder.buildTurns(store).single().finalMessages.size)
+        assertFalse(finalItem.streaming)
+    }
+
+    @Test
+    fun `23 consecutive same-category tools become one semantic cluster`() {
+        val store = TimelineStore()
+        ingestOne(store, convEvent("read-a", "tool_call", seq = 80, payload = JSONObject()
+            .put("tool_call_id", "read-a").put("name", "read_file").put("input", JSONObject().put("path", "a.kt"))))
+        ingestOne(store, convEvent("read-b", "tool_call", seq = 81, payload = JSONObject()
+            .put("tool_call_id", "read-b").put("name", "read_file").put("input", JSONObject().put("path", "b.kt"))))
+        ingestOne(store, convEvent("search-a", "tool_call", seq = 82, payload = JSONObject()
+            .put("tool_call_id", "search-a").put("name", "search_code").put("input", JSONObject().put("pattern", "Foo"))))
+
+        val grouped = ConversationTimelineBuilder.groupedWorkItems(
+            ConversationTimelineBuilder.buildTurns(store).single().workItems,
+        )
+        assertEquals(2, grouped.size)
+        val cluster = grouped.first() as ConversationTimelineBuilder.WorkEntry.ToolCluster
+        assertEquals("read", cluster.category)
+        assertEquals(2, cluster.items.size)
+        assertTrue(grouped.last() is ConversationTimelineBuilder.WorkEntry.Item)
+    }
+
+    // ---------- Domain Core：结构化摘要消费 ----------
+
+    @Test
+    fun `24 build and test summaries merge into their tool items with artifact attached`() {
+        val store = TimelineStore()
+        // 构建：assembleDebug 成功出包
+        ingestOne(store, convEvent("id-bc", "tool_call", seq = 90, payload = JSONObject()
+            .put("tool_call_id", "call-build").put("name", "run_gradle")
+            .put("input", JSONObject().put("task", "assembleDebug"))))
+        ingestOne(store, convEvent("id-br", "tool_result", seq = 91, payload = JSONObject()
+            .put("tool_call_id", "call-build").put("ok", true).put("duration_ms", 12300)))
+        ingestOne(store, convEvent("id-bs", "build_summary", seq = 92, payload = JSONObject()
+            .put("kind", "build").put("task", "assembleDebug").put("tool_call_id", "call-build")
+            .put("success", true).put("duration_ms", 12300)
+            .put("apk_size_bytes", 2048).put("errors", JSONArray())))
+        // 测试：失败且带错误行
+        ingestOne(store, convEvent("id-tr", "tool_result", seq = 93, payload = JSONObject()
+            .put("tool_call_id", "call-test").put("name", "run_gradle")
+            .put("ok", false).put("duration_ms", 9300)))
+        ingestOne(store, jobEvent(94, "test_summary",
+            "turn_id" to "t1", "tool_call_id" to "call-test", "kind" to "test",
+            "success" to false, "duration_ms" to 9300,
+            "tests" to JSONObject().put("passed", 10).put("failed", 2),
+            "errors" to JSONArray().put("MathUtilsTest.testAdd expected:<3> but was:<4>")))
+        // 产物事件附到同 turn 带构建摘要的工具条目
+        ingestOne(store, convEvent("id-art", "artifact", seq = 95, payload = JSONObject()
+            .put("kind", "apk").put("size_bytes", 2048).put("url", "/api/jobs/j1/apk")))
+
+        val tools = toolItems(store)
+        assertEquals(2, tools.size)
+        val build = tools.first { it.toolCallId == "call-build" }
+        val test = tools.first { it.toolCallId == "call-test" }
+        assertEquals("build", build.content.optJSONObject("summary")?.optString("kind"))
+        assertEquals(2048L, build.content.optJSONObject("summary")?.optLong("apk_size_bytes"))
+        assertEquals("apk", build.content.optJSONObject("artifact")?.optString("kind"))
+        assertNull(test.content.optJSONObject("artifact"))
+        assertEquals("test", test.content.optJSONObject("summary")?.optString("kind"))
+        assertEquals(2, test.content.optJSONObject("summary")?.optJSONObject("tests")?.optInt("failed"))
+
+        // 结构化状态文案（渲染层不再解析日志）
+        assertEquals("成功 · APK 2KB · 12.3s", ConversationTimelineAdapter.stepStatusText(build))
+        assertEquals("未通过 · 10 通过 · 2 失败 · 9.3s", ConversationTimelineAdapter.stepStatusText(test))
+    }
+
+    @Test
+    fun `25 summary arriving before its tool item is attached on tool arrival`() {
+        val store = TimelineStore()
+        // 分页边界：摘要先到，工具条目后到
+        ingestOne(store, convEvent("id-bs2", "build_summary", seq = 100, payload = JSONObject()
+            .put("kind", "build").put("tool_call_id", "call-late")
+            .put("success", false).put("error_count", 3)
+            .put("errors", JSONArray().put("e: MainActivity.kt: (10, 2): error"))))
+        assertTrue(toolItems(store).isEmpty())
+
+        ingestOne(store, convEvent("id-lc", "tool_call", seq = 101, payload = JSONObject()
+            .put("tool_call_id", "call-late").put("name", "run_gradle")
+            .put("input", JSONObject().put("task", "assembleDebug"))))
+        val tool = toolItems(store).single()
+        assertEquals("build", tool.content.optJSONObject("summary")?.optString("kind"))
+        // 摘要是权威终态：挂载即裁决，不必等 tool_result
+        assertEquals("failed", tool.status)
+        ingestOne(store, convEvent("id-lr", "tool_result", seq = 102, payload = JSONObject()
+            .put("tool_call_id", "call-late").put("name", "run_gradle")))
+        assertEquals("failed", toolItems(store).single().status)
+        assertEquals("失败 · 3 处错误", ConversationTimelineAdapter.stepStatusText(toolItems(store).single()))
+    }
+
+    @Test
+    fun `26 structured summary drives turn summary test counts`() {
+        val store = TimelineStore()
+        // 命令文本不含 test 关键字，但结构化摘要声明为测试 → 计入测试次数
+        ingestOne(store, convEvent("id-tc", "tool_call", seq = 110, payload = JSONObject()
+            .put("tool_call_id", "call-st").put("name", "run_gradle")
+            .put("input", JSONObject().put("task", "checkFlavor"))))
+        ingestOne(store, convEvent("id-ts", "test_summary", seq = 111, payload = JSONObject()
+            .put("kind", "test").put("tool_call_id", "call-st")
+            .put("success", true).put("tests", JSONObject().put("passed", 8).put("failed", 0))))
+        var turn = ConversationTimelineBuilder.buildTurns(store).single()
+        assertTrue(turn.summary.contains("运行测试 1 次"))
+
+        // 旧事件（无摘要）：回退命令文本匹配
+        val legacy = TimelineStore()
+        ingestOne(legacy, convEvent("id-ltc", "tool_call", seq = 112, payload = JSONObject()
+            .put("tool_call_id", "call-lt").put("name", "run_gradle")
+            .put("input", JSONObject().put("task", "testDebugUnitTest"))))
+        turn = ConversationTimelineBuilder.buildTurns(legacy).single()
+        assertTrue(turn.summary.contains("运行测试 1 次"))
+    }
+
+    @Test
+    fun `27 build log extracts structured errors from job events`() {
+        val flatJobEvents = listOf(
+            JSONObject().put("id", 1).put("type", "tool_result").put("name", "run_gradle"),
+            JSONObject().put("id", 2).put("type", "build_summary").put("kind", "build")
+                .put("success", false)
+                .put("log_path", "builds/demo/build-001.log")
+                .put("errors", JSONArray()
+                    .put("e: file:///app/build.gradle.kts:12 error: unresolved reference")),
+            JSONObject().put("id", 3).put("type", "test_summary").put("kind", "test")
+                .put("success", false)
+                .put("errors", JSONArray().put("MathUtilsTest.testAdd expected:<3> but was:<4>")),
+        )
+        val summaries = BuildLogActivity.structuredSummaries(flatJobEvents)
+        assertEquals(2, summaries.size)
+        val build = summaries.first { it.kind == "build" }
+        val test = summaries.first { it.kind == "test" }
+        assertFalse(build.success)
+        assertEquals(1, build.errors.size)
+        assertEquals("builds/demo/build-001.log", build.logPath)
+        assertEquals(1, test.errors.size)
+        // 合计错误用于关键错误列表
+        assertEquals(2, build.errors.size + test.errors.size)
+
+        // 旧任务（无摘要事件）→ 空列表，由调用方回退日志解析
+        assertTrue(BuildLogActivity.structuredSummaries(listOf(flatJobEvents[0])).isEmpty())
+    }
+
+    @Test
+    fun `28 changes summary line stats flow into the changes card row`() {
+        val store = TimelineStore()
+        ingestOne(store, convEvent("id-ch", "changes", seq = 120, payload = JSONObject()
+            .put("files", JSONArray()
+                .put(JSONObject().put("path", "app/src/Main.kt").put("change", "modified"))
+                .put(JSONObject().put("path", "app/src/New.kt").put("change", "added")))
+            .put("additions", 42)
+            .put("deletions", 7)))
+        // 后到的 live 事件不带行统计：已记录的统计不得丢失
+        ingestOne(store, jobEvent(121, "changes",
+            "turn_id" to "t1",
+            "files" to JSONArray().put(JSONObject().put("path", "app/src/Main.kt").put("change", "modified"))))
+
+        val changesItem = store.sortedItems().single { it.type == TimelineStore.ItemType.CHANGES }
+        assertEquals(42, changesItem.content.optInt("additions"))
+        assertEquals(7, changesItem.content.optInt("deletions"))
+
+        val rows = ConversationTimelineBuilder.buildRows(
+            ConversationTimelineBuilder.buildTurns(store),
+            ConversationTimelineBuilder.ExpansionPolicy(),
+        )
+        val row = rows.filterIsInstance<ConversationTimelineBuilder.Row.Changes>().single()
+        assertEquals(2, row.files.size)
+        assertEquals(1, row.added)
+        assertEquals(42, row.additions)
+        assertEquals(7, row.deletions)
+    }
+
+    @Test
+    fun `29 artifact url yields owning job id for apk entry`() {
+        assertEquals(
+            "job-77",
+            artifactJobId(JSONObject().put("url", "/api/jobs/job-77/apk")),
+        )
+        assertNull(artifactJobId(JSONObject().put("url", "/api/projects/p1/apk")))
+        assertNull(artifactJobId(JSONObject()))
+    }
 }

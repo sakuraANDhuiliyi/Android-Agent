@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".AgentApplication"
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -16,6 +17,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AndroidAgentClient"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <receiver android:name=".ApprovalActionReceiver" android:exported="false" />
+        <activity android:name=".ProjectHistoryActivity" android:exported="false" />
+        <activity android:name=".RemoteTerminalActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".AgentsActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="false"
@@ -70,10 +75,17 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".FileDiffActivity"
+            android:exported="false"
+            android:parentActivityName=".DiffActivity" />
+
+        <activity
             android:name=".BuildLogActivity"
             android:exported="false"
             android:parentActivityName=".ConversationActivity"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity android:name=".FeedbackActivity" android:exported="false" android:parentActivityName=".ProjectDetailActivity" />
 
         <activity
             android:name=".ApkActivity"
@@ -91,6 +103,41 @@
             android:exported="false"
             android:parentActivityName=".ProjectDetailActivity"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ProjectConfigActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectDetailActivity" />
+
+        <activity
+            android:name=".RulesActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
+
+        <activity
+            android:name=".MemoryActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
+
+        <activity
+            android:name=".SkillsActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
+
+        <activity
+            android:name=".McpServersActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
+
+        <activity
+            android:name=".PermissionProfileActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
+
+        <activity
+            android:name=".UsageInspectorActivity"
+            android:exported="false"
+            android:parentActivityName=".ProjectConfigActivity" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

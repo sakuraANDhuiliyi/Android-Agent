@@ -4,6 +4,7 @@
     <!-- Debug builds only: allow adb/e2e tests to open the component gallery
          directly. Release builds keep the activity non-exported. -->
     <application>
+        <activity android:name=".WorkbenchPreviewActivity" android:exported="true" android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".TheokitShowcaseActivity"
             android:exported="true"

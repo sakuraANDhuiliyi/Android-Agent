@@ -630,8 +630,7 @@ async function run() {
   }));
   assert.strictEqual(lightTheme.attr, "light");
   assert.strictEqual(lightTheme.stored, "light");
-  // TheoKit light theme: --background is pure white, serialized as oklch().
-  assert.ok(lightTheme.background.includes("oklch(1 0 0)"), "light theme tokens applied");
+  assert.strictEqual(lightTheme.background, "rgb(251, 252, 255)", "shared light surface applied");
   await page.screenshot({ path: path.join(__dirname, "screenshot-settings-light-1440x900.png"), fullPage: false });
   await page.selectOption("#themeSelect", "dark");
   await page.evaluate(() => document.getElementById("settingsDialog").close("test"));
@@ -1159,6 +1158,46 @@ async function run() {
     };
   });
 
+  // Shared UI regression matrix: both workspaces, both themes, short/narrow windows.
+  for (const theme of ["light", "dark"]) {
+    for (const width of [1440, 1024, 700]) {
+      await page.setViewportSize({ width, height: 720 });
+      await page.waitForTimeout(350);
+      await page.evaluate(() => document.querySelector('.focus-switch-btn[data-mode="agent-windows"]').click());
+      await page.evaluate((theme) => {
+        window.ThemeManager.setMode(theme);
+        document.body.dataset.focusMode = "agent-windows";
+        window.CodexiaAgentView.init();
+        Object.assign(window.CodexiaAgentView._internal.getState(), {
+          selectedProjectId: "ui-demo", selectedConversationId: null,
+          selectedId: "ui-task", activeOnly: false, pinnedOnly: false, searchQuery: "",
+        });
+        window.CodexiaAgentView._internal.setDebugData({
+          projects: [{ id: "ui-demo", name: "Android Workspace", workspace: "/workspace/android-app" }],
+          jobs: [{ id: "ui-task", project_id: "ui-demo", prompt: "完善登录页面与深色模式 · Review changes", status: "succeeded", result: "已完成界面调整。请检查改动并运行构建。", created_at: 1767225600 }],
+        });
+        document.getElementById("codexiaAgentView").hidden = false;
+      }, theme);
+      await page.waitForTimeout(150);
+      const layout = await page.evaluate(() => {
+        const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const shell = rect(".cx-shell"), composer = rect(".cx-agent-composer"), scene = rect(".cx-scene");
+        return { inViewport: shell.width > 0 && composer.width > 0 && shell.right <= innerWidth + 1 && composer.right <= innerWidth + 1 && composer.bottom <= innerHeight + 1,
+          noOverlap: scene.bottom <= composer.top + 1,
+          surface: getComputedStyle(document.querySelector(".cx-scene")).backgroundColor };
+      });
+      assert.ok(layout.inViewport, `Agent Windows fits ${theme}/${width}`);
+      assert.ok(layout.noOverlap, `composer never overlays content ${theme}/${width}`);
+      assert.strictEqual(layout.surface, theme === "light" ? "rgb(251, 252, 255)" : "rgb(14, 20, 29)");
+      await page.screenshot({ path: path.join(__dirname, `screenshot-workbench-${theme}-${width}.png`) });
+      if (width === 700) {
+        await page.click("#cxSidebarRestore");
+        assert.ok(await page.locator(".cx-shell").evaluate((el) => el.classList.contains("cx-mobile-sidebar-open")), "narrow sidebar remains reachable");
+        await page.keyboard.press("Escape");
+        assert.ok(await page.locator(".cx-shell").evaluate((el) => !el.classList.contains("cx-mobile-sidebar-open")), "Escape closes narrow sidebar");
+      }
+    }
+  }
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
 

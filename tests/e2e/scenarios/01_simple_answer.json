@@ -1,0 +1,17 @@
+{
+  "id": "01_simple_answer",
+  "title": "纯文本问答",
+  "description": "Agent 不调用任何工具，直接流式给出最终回答",
+  "prompt": "Android 图片缓存用什么方案？",
+  "auto_approve": true,
+  "steps": [
+    {"type": "final", "text": "简单问题简单答：位图缓存优先使用 `LruCache`，配合合适的 `Bitmap` 解码参数即可。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": [],
+    "final_text_contains": "LruCache",
+    "event_types_include": ["user_message", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["tool_call", "approval_required"]
+  }
+}

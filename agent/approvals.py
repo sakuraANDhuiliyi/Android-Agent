@@ -148,12 +148,15 @@ def resolve_approval(
     approved: bool,
     reason: str = "",
     force_decision: Decision | None = None,
+    expected_job_id: str | None = None,
 ) -> dict[str, Any] | None:
     with _lock:
         req = _pending.get(approval_id)
         if not req:
             return None
         if req.user_id != user_id:
+            return None
+        if expected_job_id is not None and req.job_id != expected_job_id:
             return None
         if req.decision is not None:
             return {

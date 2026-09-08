@@ -64,6 +64,16 @@
                 android:textColor="?attr/colorOnSurfaceVariant"
                 tools:text="上次构建成功 · 12 分钟前" />
 
+            <TextView
+                android:id="@+id/textBranch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:fontFamily="monospace"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="?attr/colorPrimary"
+                tools:text="main · 6 个文件待审查" />
+
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardPendingApproval"
                 android:layout_width="match_parent"
@@ -158,6 +168,50 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:paddingBottom="8dp"
+                android:text="@string/project_overview"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/cardCurrentTask"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:clickable="true"
+                android:focusable="true"
+                app:cardCornerRadius="@dimen/radius_card"
+                app:cardElevation="0dp"
+                app:strokeColor="?attr/colorOutlineVariant"
+                app:strokeWidth="1dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/current_task" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" />
+                    <TextView android:id="@+id/textCurrentTaskTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:ellipsize="end" android:maxLines="2" android:textAppearance="?attr/textAppearanceTitleMedium" tools:text="● Implement dark mode" />
+                    <TextView android:id="@+id/textCurrentTaskMeta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textAppearance="?attr/textAppearanceBodySmall" android:textColor="?attr/colorOnSurfaceVariant" tools:text="正在读取 4 个文件 · 01:24" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:orientation="horizontal" android:weightSum="2">
+                <com.google.android.material.card.MaterialCardView android:id="@+id/cardChangesSummary" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginEnd="5dp" android:layout_weight="1" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="14dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/workspace_changes" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" /><TextView android:id="@+id/textChangesSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textAppearance="?attr/textAppearanceTitleSmall" tools:text="6 files · +128 −42" /></LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+                <com.google.android.material.card.MaterialCardView android:id="@+id/cardBuildSummary" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginStart="5dp" android:layout_weight="1" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="14dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/workspace_build" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" /><TextView android:id="@+id/textBuildSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textAppearance="?attr/textAppearanceTitleSmall" tools:text="✓ assembleDebug · 42s" /></LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:orientation="horizontal" android:weightSum="2">
+                <com.google.android.material.card.MaterialCardView android:id="@+id/cardTestsSummary" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginEnd="5dp" android:layout_weight="1" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="14dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/workspace_tests" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" /><TextView android:id="@+id/textTestsSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textAppearance="?attr/textAppearanceTitleSmall" tools:text="✓ 27 passed" /></LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+                <com.google.android.material.card.MaterialCardView android:id="@+id/cardProblemsSummary" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginStart="5dp" android:layout_weight="1" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="14dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/workspace_problems" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" /><TextView android:id="@+id/textProblemsSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textAppearance="?attr/textAppearanceTitleSmall" tools:text="⚠ 3 warnings" /></LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
+
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardApk"
                 android:layout_width="match_parent"
@@ -204,7 +258,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnViewApk"
-                        style="@style/Widget.Material3.Button.TonalButton"
+                        style="@style/Widget.AndroidAgent.Button.Tonal"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:minHeight="@dimen/touch_target"
@@ -217,7 +271,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:paddingBottom="@dimen/space_small"
-                android:text="@string/hub_conversations"
+                android:text="@string/recent_conversations"
                 android:textAppearance="?attr/textAppearanceTitleSmall"
                 android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -239,6 +293,17 @@
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="?attr/colorOnSurfaceVariant"
                 android:visibility="gone" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:paddingBottom="8dp"
+                android:text="@string/workspace_sections"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorOnSurfaceVariant" />
+
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowConversations" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_nav_activity" android:text="@string/workspace_conversations" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/rowFiles"
@@ -296,6 +361,7 @@
                 android:id="@+id/rowBuild"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/space_small"
                 android:clickable="true"
                 android:focusable="true"
                 app:cardBackgroundColor="?attr/colorSurface"
@@ -316,6 +382,12 @@
                     android:textAppearance="?attr/textAppearanceBodyLarge"
                     app:drawableStartCompat="@drawable/ic_tool_command" />
             </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowProblems" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:text="@string/workspace_problems" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowTerminal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_command" android:text="@string/workspace_terminal" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowContext" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_read" android:text="@string/workspace_context" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowHistory" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_history" android:text="@string/workspace_history" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_settings" android:text="@string/workspace_settings" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 

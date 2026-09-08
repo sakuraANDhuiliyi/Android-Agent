@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import sqlite3
@@ -90,6 +91,13 @@ def _password_matches(value: str, encoded: str | None) -> bool:
         return False
 
 
+def _guest_message_limit() -> int:
+    try:
+        return max(0, int(os.environ.get("AGENT_GUEST_MESSAGE_LIMIT") or 3))
+    except ValueError:
+        return 3
+
+
 class UserStore:
     """Accounts and independently revocable device sessions.
 
@@ -172,7 +180,7 @@ class UserStore:
             "updated_at": str(row["updated_at"] or row["created_at"]),
             "disabled": bool(row["disabled_at"]),
             "is_guest": is_guest,
-            "guest_remaining": max(0, 3 - used) if is_guest else None,
+            "guest_remaining": max(0, _guest_message_limit() - used) if is_guest else None,
         }
 
     def _new_session(self, db: sqlite3.Connection, user_id: str, **device: str) -> tuple[str, str]:

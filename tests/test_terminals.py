@@ -64,6 +64,7 @@ class TerminalTests(unittest.TestCase):
         self._data.mkdir()
         self._patches = [
             patch("agent.paths.DATA_DIR", self._data),
+            patch("agent.terminal.DATA_DIR", self._data),
             patch("agent.paths.WORKSPACES_DIR", self._workspaces),
         ]
         for p in self._patches:
@@ -79,6 +80,8 @@ class TerminalTests(unittest.TestCase):
         for session in sessions:
             if session.status in {"starting", "running"}:
                 session.terminate()
+            if session._reader_thread:
+                session._reader_thread.join(timeout=5)
         with _manager._lock:
             for session in sessions:
                 _manager._sessions.pop(session.session_id, None)

@@ -14,6 +14,8 @@
         android:layout_height="wrap_content"
         android:layout_gravity="end"
         android:background="@drawable/bg_user_bubble"
+        android:breakStrategy="high_quality"
+        android:hyphenationFrequency="normal"
         android:paddingStart="@dimen/space_medium"
         android:paddingTop="@dimen/space_medium"
         android:paddingEnd="@dimen/space_medium"
@@ -21,7 +23,6 @@
         android:textColor="?attr/colorOnSecondaryContainer"
         android:textIsSelectable="true"
         android:textSize="@dimen/body_text_size"
-        android:lineSpacingMultiplier="1.4"
-        android:maxWidth="300dp"
+        android:lineSpacingMultiplier="1.5"
         tools:text="帮我做一个计数器 App" />
 </FrameLayout>

@@ -76,9 +76,9 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnDrawerNewChat"
-            style="@style/Widget.Material3.Button"
+            style="@style/Widget.AndroidAgent.Button"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="start|center_vertical"
             android:text="@string/new_conversation"

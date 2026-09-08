@@ -43,9 +43,158 @@
         ]
       },
       "created_at": 1001.0
+    },
+    {
+      "id": "evt-003",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 3,
+      "event_type": "tool_call",
+      "role": "assistant",
+      "context_visible": true,
+      "schema_version": 1,
+      "payload": {
+        "message_id": "msg-002",
+        "tool_call_id": "call-gradle-001",
+        "block_index": 0,
+        "name": "run_gradle",
+        "input": {
+          "task": "testDebugUnitTest"
+        }
+      },
+      "created_at": 1001.5
+    },
+    {
+      "id": "evt-004",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 4,
+      "event_type": "tool_result",
+      "role": "tool",
+      "context_visible": true,
+      "schema_version": 1,
+      "payload": {
+        "tool_call_id": "call-gradle-001",
+        "name": "run_gradle",
+        "ok": false,
+        "model_output": "gradle output",
+        "structured_output": null,
+        "duration_ms": 9300,
+        "error_type": "ToolExecutionError",
+        "input": {
+          "task": "testDebugUnitTest"
+        }
+      },
+      "created_at": 1010.9
+    },
+    {
+      "id": "evt-005",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 5,
+      "event_type": "test_summary",
+      "role": null,
+      "context_visible": false,
+      "schema_version": 1,
+      "payload": {
+        "schema_version": 1,
+        "kind": "test",
+        "task": "testDebugUnitTest",
+        "tool_call_id": "call-gradle-001",
+        "success": false,
+        "exit_code": 1,
+        "duration_ms": 9300,
+        "build_id": "build-001",
+        "log_path": "builds/demo-app/test-001.log",
+        "error_count": 1,
+        "errors": [
+          "MathUtilsTest.testAdd expected:<3> but was:<4>"
+        ],
+        "tests": {
+          "passed": 10,
+          "failed": 2,
+          "skipped": 0
+        }
+      },
+      "created_at": 1011.0
+    },
+    {
+      "id": "evt-006",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 6,
+      "event_type": "build_summary",
+      "role": null,
+      "context_visible": false,
+      "schema_version": 1,
+      "payload": {
+        "schema_version": 1,
+        "kind": "build",
+        "task": "assembleDebug",
+        "tool_call_id": "call-gradle-002",
+        "success": true,
+        "exit_code": 0,
+        "duration_ms": 12300,
+        "build_id": "build-001",
+        "log_path": "builds/demo-app/build-001.log",
+        "error_count": 0,
+        "errors": [],
+        "apk_path": "builds/demo-app/job-001.apk",
+        "apk_size_bytes": 2048
+      },
+      "created_at": 1023.5
+    },
+    {
+      "id": "evt-007",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 7,
+      "event_type": "artifact",
+      "role": null,
+      "context_visible": false,
+      "schema_version": 1,
+      "payload": {
+        "kind": "apk",
+        "path": "job-001.apk",
+        "size_bytes": 2048,
+        "url": "/api/jobs/job-001/apk",
+        "schema_version": 1
+      },
+      "created_at": 1023.6
+    },
+    {
+      "id": "evt-008",
+      "conversation_id": "conv-001",
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "seq": 8,
+      "event_type": "changes",
+      "role": null,
+      "context_visible": false,
+      "schema_version": 1,
+      "payload": {
+        "files": [
+          {
+            "path": "app/src/main/AndroidManifest.xml",
+            "change": "modified"
+          },
+          {
+            "path": "app/src/main/java/com/example/demo/SettingsActivity.kt",
+            "change": "modified"
+          }
+        ],
+        "additions": 12,
+        "deletions": 3
+      },
+      "created_at": 1024.0
     }
   ],
-  "next_after_seq": 2,
+  "next_after_seq": 8,
   "has_more": false,
   "direction": "forward"
 }

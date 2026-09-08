@@ -125,14 +125,14 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnInstallApk"
-                style="@style/Widget.Material3.Button.TonalButton"
+                style="@style/Widget.AndroidAgent.Button.Tonal"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:minHeight="@dimen/touch_target"
                 android:text="@string/install_apk" />
 
-            <LinearLayout
+            <com.androidagent.client.AdaptiveActionLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
@@ -140,7 +140,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnShareApk"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.AndroidAgent.Button.Outlined"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_marginEnd="8dp"
@@ -150,13 +150,13 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnOpenBuildLog"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.AndroidAgent.Button.Outlined"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:minHeight="@dimen/touch_target"
                     android:text="@string/more_actions" />
-            </LinearLayout>
+            </com.androidagent.client.AdaptiveActionLayout>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 </LinearLayout>

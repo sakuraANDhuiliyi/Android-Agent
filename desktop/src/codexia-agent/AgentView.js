@@ -286,6 +286,11 @@
   }
 
   function toggleSidebar() {
+    if (window.matchMedia?.("(max-width: 760px)").matches) {
+      const open = els.root.classList.toggle("cx-mobile-sidebar-open");
+      document.getElementById("cxSidebarRestore")?.setAttribute("aria-expanded", String(open));
+      return;
+    }
     state.sidebarCollapsed = !state.sidebarCollapsed;
     els.root.classList.toggle("cx-sidebar-collapsed", state.sidebarCollapsed);
     document.getElementById("cxSidebarRestore")?.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
@@ -1165,6 +1170,7 @@
         fontFamily: "'SF Mono', Menlo, Monaco, Consolas, monospace",
         fontSize: 12,
         cursorBlink: true,
+        scrollback: 5000,
         theme: { background: "#111111", foreground: "#eeeeee", cursor: "#8fc99a", selectionBackground: "#3c6045" },
       });
       fitAddon = new FitAddonCtor();
@@ -1413,6 +1419,13 @@
   function bind() {
     document.getElementById("cxAgentBack")?.addEventListener("click", toggleSidebar);
     document.getElementById("cxSidebarRestore")?.addEventListener("click", toggleSidebar);
+    document.getElementById("cxSidebarBackdrop")?.addEventListener("click", toggleSidebar);
+    els.root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && els.root.classList.contains("cx-mobile-sidebar-open")) {
+        toggleSidebar();
+        document.getElementById("cxSidebarRestore")?.focus();
+      }
+    });
     document.getElementById("cxNewAgent")?.addEventListener("click", newConversation);
     document.getElementById("cxSidebarSearch")?.addEventListener("click", () => {
       els.searchBox.hidden = false;

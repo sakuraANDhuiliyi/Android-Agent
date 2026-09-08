@@ -1,0 +1,30 @@
+{
+  "id": "13_duplicate_events",
+  "title": "事件去重幂等",
+  "description": "重复拉取会话事件 + WS 全量重放，事件存储不产生重复行，seq 单调唯一",
+  "prompt": "写一个文件标记 E2E-DUP-EVENTS",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我来写入文件。",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "content": "<resources>\n    <string name=\"app_name\">E2E-DUP-EVENTS</string>\n</resources>\n"
+          }
+        }
+      ]
+    },
+    {"type": "final", "text": "文件已写入，标记 E2E-DUP-EVENTS。"}
+  ],
+  "driver": "duplicate_events",
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["write_file"],
+    "final_text_contains": "E2E-DUP-EVENTS",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "assistant_message", "turn_completed"]
+  }
+}

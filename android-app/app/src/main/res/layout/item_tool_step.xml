@@ -24,17 +24,34 @@
             android:contentDescription="@null"
             android:src="@drawable/ic_tool_generic" />
 
-        <TextView
-            android:id="@+id/textStepSummary"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="@dimen/space_small"
             android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="2"
-            android:textAppearance="?attr/textAppearanceBodyMedium"
-            android:textColor="?attr/colorOnSurface"
-            tools:text="run_command · ./gradlew assembleDebug" />
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/textStepSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="?attr/colorOnSurface"
+                tools:text="执行命令" />
+
+            <TextView
+                android:id="@+id/textStepTarget"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="middle"
+                android:fontFamily="monospace"
+                android:maxLines="1"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                tools:text="./gradlew assembleDebug" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/textStepStatus"
@@ -86,7 +103,7 @@
 
             <TextView
                 android:id="@+id/textStepOutput"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_code_block"
                 android:fontFamily="monospace"
@@ -94,17 +111,29 @@
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textColor="?attr/colorOnSurface"
                 android:textIsSelectable="true"
+                android:breakStrategy="simple"
                 tools:text="tool output..." />
         </HorizontalScrollView>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnCopyStep"
-            style="@style/Widget.Material3.Button.TextButton"
+            style="@style/Widget.AndroidAgent.Button.Text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:minHeight="40dp"
             android:text="@string/copy"
             app:icon="@drawable/ic_copy"
             app:iconGravity="textStart" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnApkStep"
+            style="@style/Widget.AndroidAgent.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:text="@string/apk_actions"
+            android:visibility="gone"
+            app:iconGravity="textStart"
+            tools:visibility="visible" />
     </LinearLayout>
 </LinearLayout>

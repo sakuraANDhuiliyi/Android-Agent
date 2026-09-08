@@ -529,6 +529,91 @@ class McpApiTests(McpHooksFixture):
         self.assertEqual(recon.status_code, 200)
         self.assertEqual(recon.json()["server"]["status"], "ready")
 
+    def test_mcp_config_get_put_and_secret_redaction(self) -> None:
+        proj_cfg = self.ws / ".android-agent" / "mcp.json"
+        proj_cfg.parent.mkdir(parents=True, exist_ok=True)
+        proj_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "proj": {
+                            "command": sys.executable,
+                            "args": [str(FAKE_SERVER)],
+                            "env": {
+                                "TOKEN": "sk-literal-secret-xyz",
+                                "MODE": "${FAKE_MODE}",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        r = self.client.get(
+            f"/api/projects/{self.project_id}/mcp/config",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["exists"])
+        env = body["config"]["mcpServers"]["proj"]["env"]
+        self.assertEqual(env["MODE"], "${FAKE_MODE}")
+        self.assertNotEqual(env["TOKEN"], "sk-literal-secret-xyz")
+        self.assertNotIn("sk-literal-secret-xyz", r.text)
+
+        put = self.client.put(
+            f"/api/projects/{self.project_id}/mcp/config",
+            headers=self.headers,
+            json={
+                "config": {
+                    "mcpServers": {
+                        "proj": {
+                            "command": sys.executable,
+                            "args": [str(FAKE_SERVER)],
+                            "env": {"TOKEN": "${PROJ_TOKEN}"},
+                        }
+                    }
+                }
+            },
+        )
+        self.assertEqual(put.status_code, 200, put.text)
+        self.assertTrue(
+            any(s["name"] == "proj" for s in put.json()["servers"])
+        )
+        saved = json.loads(proj_cfg.read_text(encoding="utf-8"))
+        self.assertEqual(saved["mcpServers"]["proj"]["env"]["TOKEN"], "${PROJ_TOKEN}")
+
+    def test_mcp_config_rejects_literal_secret_and_bad_payload(self) -> None:
+        bad = self.client.put(
+            f"/api/projects/{self.project_id}/mcp/config",
+            headers=self.headers,
+            json={
+                "config": {
+                    "mcpServers": {
+                        "proj": {
+                            "command": sys.executable,
+                            "env": {"TOKEN": "sk-literal-should-fail"},
+                        }
+                    }
+                }
+            },
+        )
+        self.assertEqual(bad.status_code, 400, bad.text)
+
+        no_command = self.client.put(
+            f"/api/projects/{self.project_id}/mcp/config",
+            headers=self.headers,
+            json={"config": {"mcpServers": {"proj": {"args": []}}}},
+        )
+        self.assertEqual(no_command.status_code, 400, no_command.text)
+
+    def test_mcp_config_missing_project(self) -> None:
+        r = self.client.get(
+            "/api/projects/nope/mcp/config",
+            headers=self.headers,
+        )
+        self.assertEqual(r.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,7 +53,7 @@
     <!-- Authentication surfaces -->
     <color name="auth_background_start">#FFF1F6FF</color>
     <color name="auth_background_center">#FFFBFCFF</color>
-    <color name="auth_background_end">#FFF7F2FF</color>
+    <color name="auth_background_end">#FFFBFCFF</color>
     <color name="auth_card_surface">#F7FFFFFF</color>
     <color name="auth_input_surface">#FFF8FAFD</color>
     <color name="auth_chip_surface">#DDEAF1FF</color>
@@ -64,7 +64,7 @@
 
     <!-- Projects dashboard -->
     <color name="projects_hero_start">#FF2459D3</color>
-    <color name="projects_hero_end">#FF7656D9</color>
+    <color name="projects_hero_end">#FF3B6CDA</color>
     <color name="projects_hero_muted">#D9FFFFFF</color>
     <color name="projects_hero_stat">#26FFFFFF</color>
     <color name="projects_card_surface">#FFFFFFFF</color>

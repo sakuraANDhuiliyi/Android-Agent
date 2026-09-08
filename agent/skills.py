@@ -155,14 +155,28 @@ def _scan_skills_root(
     return results
 
 
+def _disabled_skill_keys(workspace: Path | None) -> set[str]:
+    if workspace is None:
+        return set()
+    from agent.project_settings import load_project_settings
+
+    return set(load_project_settings(workspace).get("disabled_skills") or [])
+
+
 def list_skills(
     workspace: Path | None,
     user_id: str,
     *,
     include_user: bool = True,
+    include_disabled: bool = False,
 ) -> list[SkillMeta]:
+    """List skills; disabled ones are excluded unless ``include_disabled``.
+
+    Disabled keys use ``scope:name`` (e.g. ``project:android-build``).
+    """
     results: list[SkillMeta] = []
     seen: set[str] = set()
+    disabled = set() if include_disabled else _disabled_skill_keys(workspace)
 
     if workspace is not None:
         project_root = project_skills_dir(workspace)
@@ -173,6 +187,8 @@ def list_skills(
             rel_base=workspace.resolve(),
         ):
             key = f"project:{meta.name}"
+            if key in disabled:
+                continue
             if key not in seen:
                 seen.add(key)
                 results.append(meta)
@@ -186,6 +202,8 @@ def list_skills(
             rel_base=user_root.resolve(),
         ):
             key = f"user:{meta.name}"
+            if key in disabled:
+                continue
             # Project skill with same name wins for discovery listing uniqueness by name+scope.
             if key not in seen:
                 seen.add(key)
@@ -248,6 +266,7 @@ def resolve_skill_path(
         ordered.append((project_skills_dir(workspace) / name, "project", workspace.resolve()))
 
     seen: set[str] = set()
+    disabled = _disabled_skill_keys(workspace)
     for skill_dir, scope, confine in ordered:
         key = str(skill_dir)
         if key in seen:
@@ -263,6 +282,8 @@ def resolve_skill_path(
         if scope == "project" and workspace is not None and not _is_inside(workspace, resolved):
             raise PermissionError(f"skill 路径越界: {name}")
         if (resolved / "SKILL.md").is_file():
+            if f"{scope}:{name}" in disabled:
+                raise PermissionError(f"skill 已被项目禁用: {scope}:{name}")
             return resolved, scope
     raise FileNotFoundError(f"skill 不存在: {name}")
 

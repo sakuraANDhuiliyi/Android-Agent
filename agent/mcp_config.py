@@ -157,6 +157,81 @@ def load_project_mcp_config(workspace: Path) -> list[McpServerConfig]:
     return load_mcp_json(project_mcp_config_path(workspace), scope="project")
 
 
+def _is_env_reference(value: str) -> bool:
+    return bool(_ENV_REF_RE.fullmatch(value.strip()))
+
+
+def sanitize_mcp_config_for_edit(data: Any) -> Any:
+    """Deep-copy config for the editing API: literal env values are redacted,
+    ${VAR} references are preserved so the config round-trips."""
+    if isinstance(data, dict):
+        result: dict[str, Any] = {}
+        for key, value in data.items():
+            if key == "env" and isinstance(value, dict):
+                result[key] = {
+                    str(env_key): (
+                        env_value
+                        if isinstance(env_value, str) and _is_env_reference(env_value)
+                        else REDACTED
+                    )
+                    for env_key, env_value in value.items()
+                }
+            else:
+                result[key] = sanitize_mcp_config_for_edit(value)
+        return result
+    if isinstance(data, list):
+        return [sanitize_mcp_config_for_edit(item) for item in data]
+    return data
+
+
+def validate_mcp_config_payload(data: Any) -> dict[str, Any]:
+    """Validate a project mcp.json payload. Returns the normalized document."""
+    if not isinstance(data, dict):
+        raise ValueError("config 必须是 JSON 对象")
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        raise ValueError("缺少 mcpServers 对象")
+    for name, cfg in servers.items():
+        if not isinstance(name, str) or not _SERVER_NAME_RE.fullmatch(name):
+            raise ValueError(f"无效的服务器名称: {name!r}")
+        if not isinstance(cfg, dict):
+            raise ValueError(f"服务器 {name} 配置必须是对象")
+        transport = str(cfg.get("transport") or cfg.get("type") or "stdio")
+        if transport != "stdio":
+            raise ValueError(f"服务器 {name}: 仅支持 stdio transport")
+        command = cfg.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(f"服务器 {name}: 缺少 command")
+        args = cfg.get("args", [])
+        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+            raise ValueError(f"服务器 {name}: args 必须是字符串数组")
+        env = cfg.get("env", {})
+        if not isinstance(env, dict):
+            raise ValueError(f"服务器 {name}: env 必须是对象")
+        for env_key, env_value in env.items():
+            if not isinstance(env_key, str) or not isinstance(env_value, str):
+                raise ValueError(f"服务器 {name}: env 键值必须是字符串")
+            if env_value and not _is_env_reference(env_value):
+                raise ValueError(
+                    f"服务器 {name}: env 值必须是环境变量引用（如 ${{GITHUB_TOKEN}}），"
+                    "请勿在配置中写入明文密钥"
+                )
+    normalized = dict(data)
+    normalized["mcpServers"] = servers
+    return normalized
+
+
+def save_project_mcp_config(workspace: Path, data: dict[str, Any]) -> Path:
+    path = project_mcp_config_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    tmp.replace(path)
+    return path
+
+
 def resolve_env_secrets(env_refs: dict[str, str]) -> dict[str, str]:
     """Resolve ${VAR} / $VAR references from the process environment at spawn time."""
 

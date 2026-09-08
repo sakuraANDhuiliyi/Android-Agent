@@ -45,7 +45,7 @@
     }
   }
 
-  async function newTerminal(shell) {
+  async function newTerminal(shell, existing = null) {
     const pid = projectId();
     if (!pid) {
       window.renderer?.toast("请先选择项目");
@@ -53,10 +53,15 @@
     }
     ensureVisible();
     const id = createTerminalId();
+    const source = api();
+    const terminalApi = new window.AgentApi();
+    terminalApi.configure({ baseUrl: source.baseUrl, token: source.token });
+    const ownerMatches = () => api().baseUrl === terminalApi.baseUrl && api().token === terminalApi.token;
     const term = new Terminal({
       fontFamily: "'SF Mono', Menlo, Monaco, Consolas, monospace",
       fontSize: 12,
       cursorBlink: true,
+      scrollback: 5000,
       theme: terminalTheme(),
     });
     const fitAddon = new FitAddon();
@@ -81,7 +86,7 @@
     let alive = true;
 
     try {
-      const info = await api().createTerminal(pid, {
+      const info = existing || await terminalApi.createTerminal(pid, {
         shell: shell || "/bin/bash",
         cols,
         rows,
@@ -93,8 +98,8 @@
     }
 
     if (backendId) {
-      watcher = api().watchTerminal(backendId, (msg) => {
-        if (!alive) return;
+      watcher = terminalApi.watchTerminal(backendId, (msg) => {
+        if (!alive || !ownerMatches()) return;
         if (msg.kind === "output") {
           if (msg.seq) cursor = msg.seq;
           term.write(msg.data || "");
@@ -112,13 +117,13 @@
     }
 
     term.onData((data) => {
-      if (!backendId || !alive) return;
-      api().terminalInput(backendId, data).catch(() => {});
+      if (!backendId || !alive || !ownerMatches() || projectId() !== pid) return;
+      terminalApi.terminalInput(backendId, data).catch((err) => window.renderer?.toast(err.message));
     });
 
     term.onResize((size) => {
       if (!backendId || !alive) return;
-      api().terminalResize(backendId, size.cols, size.rows).catch(() => {});
+      if (ownerMatches()) terminalApi.terminalResize(backendId, size.cols, size.rows).catch(() => {});
     });
 
     terminals.set(id, {
@@ -131,10 +136,14 @@
       cursor,
       connected,
       alive,
+      projectId: pid,
+      terminalApi,
+      ownerMatches,
+      detach: () => { alive = false; watcher?.close(); },
     });
 
     renderTabs();
-    selectTerminal(id);
+    if (projectId() === pid && ownerMatches()) selectTerminal(id);
     return id;
   }
 
@@ -146,12 +155,20 @@
   function renderTabs() {
     els.terminalTabs.innerHTML = "";
     for (const t of terminals.values()) {
+      if (t.projectId !== projectId() || !t.ownerMatches()) continue;
       const tab = document.createElement("button");
       tab.type = "button";
       tab.className = "terminal-tab" + (t.id === activeId() ? " active" : "");
       tab.dataset.id = t.id;
       tab.title = `Terminal ${t.backendId || t.id.slice(-6)}`;
-      tab.innerHTML = `<span class="title">${tab.title}</span><span class="close" title="关闭">×</span>`;
+      const label = document.createElement("span");
+      label.className = "title";
+      label.textContent = tab.title;
+      const close = document.createElement("span");
+      close.className = "close";
+      close.title = "关闭";
+      close.textContent = "×";
+      tab.append(label, close);
       tab.addEventListener("click", (e) => {
         if (e.target.classList.contains("close")) {
           closeTerminal(t.id);
@@ -169,12 +186,12 @@
 
   function selectTerminal(id) {
     for (const t of terminals.values()) {
-      t.el.classList.toggle("active", t.id === id);
+      t.el.classList.toggle("active", t.id === id && t.projectId === projectId() && t.ownerMatches());
     }
     window.DesktopState?.dispatch({ type: "SELECT_TERMINAL", terminalId: id });
     renderTabs();
     const t = terminals.get(id);
-    if (t) {
+    if (t && t.projectId === projectId() && t.ownerMatches()) {
       setTimeout(() => {
         try {
           t.fitAddon.fit();
@@ -184,16 +201,18 @@
     }
   }
 
-  function closeTerminal(id) {
+  async function closeTerminal(id) {
     const t = terminals.get(id);
     if (!t) return;
+    if (t.backendId && t.ownerMatches()) {
+      try { await t.terminalApi.deleteTerminal(t.backendId); }
+      catch (err) { window.renderer?.toast(err.message); return; }
+    }
     t.alive = false;
+    t.detach();
     try {
       t.watcher?.close();
     } catch (_) {}
-    if (t.backendId) {
-      api().deleteTerminal(t.backendId).catch(() => {});
-    }
     try {
       t.term.dispose();
     } catch (_) {}
@@ -210,15 +229,15 @@
     const id = activeId();
     if (!id) return;
     const t = terminals.get(id);
-    if (!t || !t.backendId) return;
-    api().terminalInput(t.backendId, data).catch(() => {});
+    if (!t || !t.backendId || t.projectId !== projectId() || !t.ownerMatches()) return;
+    t.terminalApi.terminalInput(t.backendId, data).catch((err) => window.renderer?.toast(err.message));
   }
 
   function resizeAll() {
     for (const t of terminals.values()) {
       try {
         t.fitAddon.fit();
-        api().terminalResize(t.backendId, t.term.cols, t.term.rows).catch(() => {});
+        if (t.ownerMatches()) t.terminalApi.terminalResize(t.backendId, t.term.cols, t.term.rows).catch(() => {});
       } catch (_) {}
     }
   }
@@ -231,6 +250,44 @@
   if (els.btnNewTerminal) {
     els.btnNewTerminal.addEventListener("click", () => newTerminal());
   }
+
+  function activeOutput() {
+    const t = terminals.get(activeId());
+    if (!t || t.projectId !== projectId() || !t.ownerMatches()) return null;
+    const buffer = t.term.buffer.active;
+    const lines = [];
+    for (let i = Math.max(0, buffer.length - 300); i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) || "");
+    return { terminal: t, text: (t.term.getSelection() || lines.join("\n")).slice(-16000) };
+  }
+  document.getElementById("btnStopTerminal")?.addEventListener("click", () => inputToActive("\x03"));
+  document.getElementById("btnCopyTerminal")?.addEventListener("click", async () => {
+    const value = activeOutput();
+    if (value) try { await navigator.clipboard.writeText(value.text); } catch (err) { window.renderer?.toast(err.message); }
+  });
+  document.getElementById("btnAskTerminal")?.addEventListener("click", () => {
+    const value = activeOutput();
+    if (value?.text.trim()) window.AiPanel?.addTerminalContext(value.terminal.projectId, value.terminal.backendId, value.text);
+  });
+  document.getElementById("btnReconnectTerminals")?.addEventListener("click", async () => {
+    const pid = projectId();
+    if (!pid) return window.renderer?.toast("请先选择项目");
+    try {
+      const source = api();
+      const baseUrl = source.baseUrl;
+      const token = source.token;
+      const response = await source.listTerminals(pid);
+      if (projectId() !== pid || api().baseUrl !== baseUrl || api().token !== token) return;
+      for (const session of response.terminals || []) {
+        if (projectId() !== pid || api().baseUrl !== baseUrl || api().token !== token) break;
+        if (![...terminals.values()].some((t) => t.backendId === session.id && t.ownerMatches())) await newTerminal(null, session);
+      }
+    } catch (err) { window.renderer?.toast(err.message); }
+  });
+  window.DesktopState?.subscribe((state, action) => {
+    if (action.type !== "SELECT_PROJECT") return;
+    const next = [...terminals.values()].find((t) => t.projectId === projectId() && t.ownerMatches());
+    selectTerminal(next?.id || "");
+  });
 
   window.TerminalManager = {
     new: newTerminal,

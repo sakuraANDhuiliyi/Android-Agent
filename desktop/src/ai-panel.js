@@ -62,6 +62,13 @@
     btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     createProjectDialog: document.getElementById("createProjectDialog"),
     createProjectForm: document.getElementById("createProjectForm"),
+    btnMcpConfig: document.getElementById("btnMcpConfig"),
+    mcpConfigDialog: document.getElementById("mcpConfigDialog"),
+    mcpConfigForm: document.getElementById("mcpConfigForm"),
+    mcpConfigProjectLabel: document.getElementById("mcpConfigProjectLabel"),
+    mcpServerList: document.getElementById("mcpServerList"),
+    mcpConfigText: document.getElementById("mcpConfigText"),
+    btnSaveMcpConfig: document.getElementById("btnSaveMcpConfig"),
     diffToolbar: document.getElementById("diffToolbar"),
     diffTitle: document.getElementById("diffTitle"),
     btnAcceptDiff: document.getElementById("btnAcceptDiff"),
@@ -1611,6 +1618,7 @@
       if (chip.kind === "file") blocks.push(`当前聚焦文件: ${chip.path || chip.label}`);
       else if (chip.kind === "folder") blocks.push(`相关目录: ${chip.path || chip.label}`);
       else if (chip.kind === "selection") blocks.push(`选区 (${chip.path || ""}):\n${chip.text || ""}`);
+      else if (chip.kind === "terminal") blocks.push(`Terminal output (${chip.label}):\n${chip.text || ""}`);
     }
     if (blocks.length) prompt = `${blocks.join("\n\n")}\n\n${prompt}`;
     return prompt;
@@ -1798,6 +1806,111 @@
     els.createProjectDialog.showModal();
   }
 
+  // —— MCP servers config (project mcp.json; complex editing lives on desktop) ——
+
+  function mcpStatusMeta(server) {
+    const status = String(server.status || "stopped");
+    const labels = {
+      ready: "已连接",
+      starting: "启动中",
+      stopped: "未启动",
+      disabled: "已禁用",
+      untrusted: "待信任",
+      error: "错误",
+    };
+    return { status, label: labels[status] || status };
+  }
+
+  function renderMcpServers(servers) {
+    if (!els.mcpServerList) return;
+    els.mcpServerList.textContent = "";
+    const list = Array.isArray(servers) ? servers : [];
+    if (!list.length) {
+      els.mcpServerList.hidden = true;
+      return;
+    }
+    els.mcpServerList.hidden = false;
+    for (const server of list) {
+      const meta = mcpStatusMeta(server);
+      const row = document.createElement("div");
+      row.className = "mcp-server-row";
+      const dot = document.createElement("span");
+      dot.className = `mcp-server-dot is-${meta.status}`;
+      if (server.error) dot.title = server.error;
+      const name = document.createElement("span");
+      name.className = "mcp-server-name";
+      name.textContent = server.name;
+      const badges = document.createElement("span");
+      badges.className = "mcp-server-badges";
+      const scope = document.createElement("span");
+      scope.className = "mcp-server-badge";
+      scope.textContent = server.scope === "project" ? "项目" : "用户";
+      const status = document.createElement("span");
+      status.className = "mcp-server-badge";
+      status.textContent = meta.label;
+      if (server.error) status.title = server.error;
+      badges.append(scope, status);
+      const tools = document.createElement("span");
+      tools.className = "mcp-server-tools";
+      const count = Array.isArray(server.tools) ? server.tools.length : 0;
+      tools.textContent = count ? `${count} 工具` : "";
+      row.append(dot, name, badges, tools);
+      els.mcpServerList.appendChild(row);
+    }
+  }
+
+  async function openMcpConfig() {
+    if (!state.selectedProjectId) {
+      toast("请先选择项目");
+      return;
+    }
+    const projectId = state.selectedProjectId;
+    const project = state.projects.find((p) => p.id === projectId);
+    if (els.mcpConfigProjectLabel) {
+      els.mcpConfigProjectLabel.textContent = `项目：${project?.name || projectId} · .android-agent/mcp.json`;
+    }
+    els.mcpConfigText.value = "加载中…";
+    els.mcpConfigText.disabled = true;
+    els.mcpServerList.hidden = true;
+    els.mcpConfigDialog.showModal();
+    try {
+      if (!state.connected) await connect({ silent: true });
+      const [configData, serversData] = await Promise.all([
+        client.mcpConfig(projectId),
+        client.mcpServers(projectId),
+      ]);
+      renderMcpServers(serversData?.servers);
+      els.mcpConfigText.value = JSON.stringify(configData?.config ?? { mcpServers: {} }, null, 2);
+      els.mcpConfigText.disabled = false;
+    } catch (err) {
+      els.mcpConfigText.value = "";
+      els.mcpConfigText.disabled = false;
+      els.mcpConfigDialog.close();
+      toast(err.message);
+    }
+  }
+
+  async function saveMcpConfig() {
+    if (!state.selectedProjectId) return;
+    let config;
+    try {
+      config = JSON.parse(els.mcpConfigText.value);
+    } catch (_) {
+      toast("mcp.json 不是合法的 JSON");
+      return;
+    }
+    els.btnSaveMcpConfig.disabled = true;
+    try {
+      await client.saveMcpConfig(state.selectedProjectId, config);
+      els.mcpConfigDialog.close();
+      toast("MCP 配置已保存");
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      els.btnSaveMcpConfig.disabled = false;
+    }
+  }
+
   function focusComposer() {
     window.EditorApp?.showAi?.();
     els.promptInput.focus();
@@ -1965,6 +2078,17 @@
       }
     });
 
+    els.btnMcpConfig?.addEventListener("click", () => {
+      toggleMenu(els.aiMoreMenu);
+      openMcpConfig();
+    });
+    els.mcpConfigForm?.addEventListener("submit", (ev) => {
+      const submitter = ev.submitter;
+      if (submitter?.value === "cancel") return;
+      ev.preventDefault();
+      saveMcpConfig();
+    });
+
     // Diff review cleanup when the diff host closes (editor disposal included).
     const cleanupReview = () => {
       closeReviewSession();
@@ -2052,6 +2176,14 @@
   }
 
   window.AiPanel = {
+    addTerminalContext: (projectId, terminalId, text) => {
+      if (projectId !== state.selectedProjectId) return toast("请切换到终端所属项目");
+      pushChip({ key: `terminal:${terminalId}`, kind: "terminal", label: `Terminal ${terminalId.slice(0, 8)}`, text: text.slice(-16000) });
+      if (!els.promptInput.value.trim()) els.promptInput.value = "请分析这段终端输出，定位问题并给出修复。";
+      persistDraft();
+      autosizePrompt();
+      focusComposer();
+    },
     init,
     openSettings,
     openCreateProject,

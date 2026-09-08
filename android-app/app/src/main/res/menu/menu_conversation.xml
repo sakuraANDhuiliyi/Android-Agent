@@ -10,6 +10,9 @@
         android:id="@+id/action_diff"
         android:title="@string/menu_view_diff" />
     <item
+        android:id="@+id/action_usage"
+        android:title="@string/usage_inspector_title" />
+    <item
         android:id="@+id/action_apk"
         android:title="@string/menu_apk" />
     <item

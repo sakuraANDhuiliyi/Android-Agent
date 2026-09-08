@@ -42,6 +42,15 @@ class TimelineStore {
     private val items = HashMap<String, TimelineItem>()
     private var posCounter = 0
 
+    /** 排序缓存：结构未变时 sortedItems() 直接复用，避免高频 delta 每帧 O(N log N)。 */
+    private var structureVersion = 0L
+    private var sortedCache: List<TimelineItem>? = null
+    private var sortedCacheVersion = -1L
+
+    private fun invalidateSortCache() {
+        structureVersion += 1
+    }
+
     /** 审批终态决策集合，与服务端 Decision 字面量一致。 */
     private val RESOLVED_DECISIONS = setOf("approved", "rejected", "timeout", "canceled")
 
@@ -59,6 +68,9 @@ class TimelineStore {
 
     /** 每个 turn 当前打开的流式 item key（未定稿回答缓冲）。 */
     private val openStreams = HashMap<String, MutableList<String>>()
+
+    /** tool_call_id → 结构化摘要：分页边界导致摘要先于 tool 条目到达时暂存。 */
+    private val pendingSummaries = HashMap<String, JSONObject>()
 
     /** turn 内打开中的 status 组 key。 */
     private var openStatusGroupKey: String? = null
@@ -92,6 +104,8 @@ class TimelineStore {
         Kind.TEXT_DELTA -> handleTextDelta(ev)
         Kind.TEXT -> handleTextSnapshot(ev)
         Kind.TOOL_CALL, Kind.TOOL_RESULT -> handleTool(ev)
+        Kind.BUILD_SUMMARY, Kind.TEST_SUMMARY -> handleSummary(ev)
+        Kind.ARTIFACT -> handleArtifact(ev)
         Kind.APPROVAL_REQUIRED -> handleApprovalRequired(ev)
         Kind.APPROVAL_RESOLVED -> handleApprovalResolved(ev)
         Kind.PLAN -> handlePlan(ev)
@@ -117,6 +131,7 @@ class TimelineStore {
         if (turnByJob[jobId] == turnId) return
         turnByJob[jobId] = turnId
         jobIdsByTurn.getOrPut(turnId) { HashSet() }.add(jobId)
+        invalidateSortCache()
     }
 
     /** live-only 事件（无 turn_id）在 canonical 事件到达后回填 turn 归属。 */
@@ -126,6 +141,7 @@ class TimelineStore {
             val turnId = turnByJob[item.jobId] ?: continue
             item.turnId = turnId
             registerTurnOrder(turnId, item.pos)
+            invalidateSortCache()
         }
     }
 
@@ -133,6 +149,7 @@ class TimelineStore {
         val turnKey = "t:$turnId"
         if (turnOrder.containsKey(turnKey)) return
         turnOrder[turnKey] = nextTurnOrd++
+        invalidateSortCache()
         // 后续同 turn 事件的 pos 已可能更小；ordinal 只影响分组排序，不影响组内顺序
         if (turnOrder.size == 1) return
     }
@@ -153,14 +170,26 @@ class TimelineStore {
     private fun ensureTurnOrder(item: TimelineItem) {
         when {
             item.turnId != null -> {
-                if (!turnOrder.containsKey("t:${item.turnId}")) turnOrder["t:${item.turnId}"] = nextTurnOrd++
+                if (!turnOrder.containsKey("t:${item.turnId}")) {
+                    turnOrder["t:${item.turnId}"] = nextTurnOrd++
+                    invalidateSortCache()
+                }
             }
             item.jobId != null -> {
                 val tid = turnByJob[item.jobId]
-                if (tid != null && !turnOrder.containsKey("t:$tid")) turnOrder["t:$tid"] = nextTurnOrd++
-                if (!turnOrder.containsKey("j:${item.jobId}")) turnOrder["j:${item.jobId}"] = nextTurnOrd++
+                if (tid != null && !turnOrder.containsKey("t:$tid")) {
+                    turnOrder["t:$tid"] = nextTurnOrd++
+                    invalidateSortCache()
+                }
+                if (!turnOrder.containsKey("j:${item.jobId}")) {
+                    turnOrder["j:${item.jobId}"] = nextTurnOrd++
+                    invalidateSortCache()
+                }
             }
-            else -> if (!turnOrder.containsKey("_orphan")) turnOrder["_orphan"] = nextTurnOrd++
+            else -> if (!turnOrder.containsKey("_orphan")) {
+                turnOrder["_orphan"] = nextTurnOrd++
+                invalidateSortCache()
+            }
         }
     }
 
@@ -177,6 +206,7 @@ class TimelineStore {
         if (existing != null) {
             if (ev.seq != null && existing.seq == null) existing.seq = ev.seq
             existing.jobId = existing.jobId ?: ev.jobId
+            if (ev.turnId != null && existing.turnId != ev.turnId) invalidateSortCache()
             if (ev.turnId != null) existing.turnId = ev.turnId
             configure(existing)
             existing.bump()
@@ -193,6 +223,7 @@ class TimelineStore {
         )
         configure(created)
         items[key] = created
+        invalidateSortCache()
         ensureTurnOrder(created)
         closeStatusGroupIfInterleaved(created)
         return created
@@ -221,17 +252,18 @@ class TimelineStore {
             echo.messageId = messageId
             echo.timestampMs = echo.timestampMs ?: ev.timestampMs
             items[keyOfUser(ev, text)] = echo
+            invalidateSortCache()
             ensureTurnOrder(echo)
             echo.bump()
             return true
         }
         val dedupeKey = keyOfUser(ev, text)
         if (items.containsKey(dedupeKey)) return false
-        val item = upsert(dedupeKey, ItemType.USER, ev) {
+        upsert(dedupeKey, ItemType.USER, ev) {
             it.content = JSONObject().put("text", text)
             it.messageId = messageId
         }
-        return item != null
+        return true
     }
 
     private fun keyOfUser(ev: NormalizedEvent, text: String): String {
@@ -250,12 +282,17 @@ class TimelineStore {
             content = JSONObject().put("text", text),
         )
         items[key] = item
+        invalidateSortCache()
         ensureTurnOrder(item)
         return key
     }
 
     /** 发送失败时移除乐观 echo。 */
-    fun removeItem(key: String): Boolean = items.remove(key) != null
+    fun removeItem(key: String): Boolean {
+        val removed = items.remove(key) != null
+        if (removed) invalidateSortCache()
+        return removed
+    }
 
     private fun handleAssistantMessage(ev: NormalizedEvent): Boolean {
         val messageId = ev.payload.optString("message_id").takeIf { it.isNotBlank() }
@@ -265,7 +302,10 @@ class TimelineStore {
 
         // 收养同 message_id 的流式缓冲（或 turn 内未定稿流）
         val adoptedKey = messageId?.let { msgId ->
-            items.values.firstOrNull { it.key == "stream:$msgId" || (it.messageId == msgId && it.type == ItemType.ASSISTANT) }?.key
+            items.values.firstOrNull {
+                it.key == "msg:$msgId" || it.key == "stream:$msgId" ||
+                    (it.messageId == msgId && it.type == ItemType.ASSISTANT)
+            }?.key
         } ?: run {
             val turnKey = ev.turnId ?: ev.jobId?.let { turnByJob[it] } ?: return@run null
             openStreams[turnKey]?.firstOrNull()?.let { streamKey ->
@@ -273,29 +313,26 @@ class TimelineStore {
                 if (stream?.messageId == null) streamKey else null
             }
         }
-        if (adoptedKey != null && adoptedKey != "msg:$messageId") {
-            val adopted = items.remove(adoptedKey) ?: return false
-            val newKey = "msg:${messageId ?: adoptedKey.removePrefix("stream:")}"
-            adopted.key.let { /* key is val in Kotlin: create new item preserving pos */ }
-            val finalItem = TimelineItem(
-                key = newKey,
-                type = ItemType.ASSISTANT,
-                pos = adopted.pos,
-                turnId = ev.turnId ?: adopted.turnId,
-                jobId = adopted.jobId ?: ev.jobId,
-                seq = ev.seq ?: adopted.seq,
-                timestampMs = ev.timestampMs ?: adopted.timestampMs,
-                status = "done",
-                messageId = messageId ?: adopted.messageId,
-                content = JSONObject().put("text", text.ifBlank { adopted.content.optString("text") }),
-                streaming = false,
-                isFinal = isFinal,
-                version = adopted.version + 1,
-            )
-            items[newKey] = finalItem
-            if (finalItem.turnId != null) {
-                openStreams[finalItem.turnId]?.remove(adoptedKey)
+        if (adoptedKey != null) {
+            // Keep the original key and object identity: RecyclerView patches
+            // the same AnswerNode instead of removing a streaming row and
+            // inserting a final row at a different position.
+            val adopted = items[adoptedKey] ?: return false
+            val adoptedTurn = ev.turnId
+            if (adoptedTurn != null && adopted.turnId != adoptedTurn) {
+                adopted.turnId = adoptedTurn
+                invalidateSortCache()
             }
+            adopted.jobId = adopted.jobId ?: ev.jobId
+            adopted.seq = ev.seq ?: adopted.seq
+            adopted.timestampMs = ev.timestampMs ?: adopted.timestampMs
+            adopted.status = "done"
+            adopted.messageId = messageId ?: adopted.messageId
+            adopted.content = JSONObject().put("text", text.ifBlank { adopted.content.optString("text") })
+            adopted.streaming = false
+            adopted.isFinal = isFinal
+            adopted.bump()
+            adopted.turnId?.let { openStreams[it]?.remove(adoptedKey) }
             return true
         }
 
@@ -318,12 +355,15 @@ class TimelineStore {
         val messageId = ev.payload.optString("message_id").takeIf { it.isNotBlank() }
             ?: ev.payload.optString("stream_id").takeIf { it.isNotBlank() }
         val turnId = ev.turnId ?: ev.jobId?.let { turnByJob[it] }
-        val key = "stream:${messageId ?: "turn:" + (turnId ?: "_")}"
+        val key = messageId?.let { "msg:$it" } ?: "stream:turn:${turnId ?: "_"}"
         val existing = items[key]
         if (existing != null) {
             existing.content = JSONObject().put("text", existing.content.optString("text") + delta)
             existing.jobId = existing.jobId ?: ev.jobId
-            existing.turnId = existing.turnId ?: turnId
+            if (existing.turnId == null && turnId != null) {
+                existing.turnId = turnId
+                invalidateSortCache()
+            }
             existing.streaming = true
             existing.status = "streaming"
             existing.messageId = existing.messageId ?: messageId
@@ -335,7 +375,10 @@ class TimelineStore {
                 it.status = "streaming"
                 it.messageId = messageId
             }
-            created.turnId = turnId ?: created.turnId
+            if (turnId != null && created.turnId != turnId) {
+                created.turnId = turnId
+                invalidateSortCache()
+            }
             ensureTurnOrder(created)
         }
         registerOpenStream(turnId, key)
@@ -356,10 +399,10 @@ class TimelineStore {
         if (snapshot.isBlank()) return false
         val messageId = ev.payload.optString("message_id").takeIf { it.isNotBlank() }
         val turnId = ev.turnId ?: ev.jobId?.let { turnByJob[it] }
-        val target = messageId?.let { items["stream:$it"] }
+        val target = messageId?.let { items["msg:$it"] ?: items["stream:$it"] }
             ?: turnId?.let { tid -> openStreams[tid]?.lastOrNull()?.let { items[it] } }
         if (target == null) {
-            val key = "stream:${messageId ?: "turn:" + (turnId ?: "_")}"
+            val key = messageId?.let { "msg:$it" } ?: "stream:turn:${turnId ?: "_"}"
             upsert(key, ItemType.ASSISTANT, ev) {
                 it.content = JSONObject().put("text", snapshot)
                 it.streaming = true
@@ -393,7 +436,7 @@ class TimelineStore {
         } else {
             "tool:${ev.turnId ?: ev.jobId ?: "_"}:$name:${ev.seq ?: ev.taskEventId ?: posCounter}"
         }
-        if (ev.kind == Kind.TOOL_CALL) {
+        val tool = if (ev.kind == Kind.TOOL_CALL) {
             val inputObj = p.optJSONObject("input") ?: p.optJSONObject("arguments")
             upsert(key, ItemType.TOOL, ev) {
                 it.toolCallId = callId ?: it.toolCallId
@@ -426,6 +469,61 @@ class TimelineStore {
                 if (p.has("input") && !it.content.has("input")) it.content.put("input", p.optJSONObject("input"))
             }
         }
+        callId?.let { pendingSummaries.remove(it)?.let { summary -> attachSummary(tool, summary) } }
+        applySummaryStatus(tool)
+        return true
+    }
+
+    /**
+     * Domain Core：run_gradle 的结构化 Build/Test 摘要合并进对应工具条目，
+     * 渲染层直接读 content.summary，客户端不再解析 gradle 日志。
+     */
+    private fun handleSummary(ev: NormalizedEvent): Boolean {
+        val callId = ev.payload.optString("tool_call_id").takeIf { it.isNotBlank() }
+        val tool = callId?.let { items["tool:$it"] }
+        if (tool == null) {
+            if (callId != null) pendingSummaries[callId] = ev.payload
+            return false
+        }
+        attachSummary(tool, ev.payload)
+        return true
+    }
+
+    private fun attachSummary(tool: TimelineItem, summary: JSONObject) {
+        tool.content.put("summary", summary)
+        applySummaryStatus(tool)
+        tool.bump()
+    }
+
+    /** 摘要是权威终态裁决：无 ok 字段的 tool_result 不得覆盖已声明的成败。 */
+    private fun applySummaryStatus(tool: TimelineItem) {
+        val summary = tool.content.optJSONObject("summary") ?: return
+        if (!summary.has("success") || summary.isNull("success")) return
+        if (summary.optBoolean("success")) {
+            if (tool.status == "running") tool.status = "success"
+        } else if (tool.status == "running" || tool.status == "done") {
+            tool.status = "failed"
+        }
+    }
+
+    /** 产物事件（APK 等）附到同 turn 最近一个带构建摘要的工具条目上；
+     *  测试摘要的工具不承载 APK，无构建摘要时才退而求其次。 */
+    private fun handleArtifact(ev: NormalizedEvent): Boolean {
+        val ownerTurn = ev.turnId ?: ev.jobId?.let { turnByJob[it] }
+        val candidates = items.values
+            .filter {
+                it.type == ItemType.TOOL &&
+                    (it.turnId == ownerTurn || (ownerTurn == null && it.jobId == ev.jobId))
+            }
+            .filter { it.content.optJSONObject("summary") != null }
+        if (candidates.isEmpty()) return false
+        val target = candidates
+            .filter { it.content.optJSONObject("summary")?.optString("kind") != "test" }
+            .maxByOrNull { it.pos }
+            ?: candidates.maxByOrNull { it.pos }
+            ?: return false
+        target.content.put("artifact", ev.payload)
+        target.bump()
         return true
     }
 
@@ -548,12 +646,24 @@ class TimelineStore {
         val owner = ev.turnId ?: ev.jobId ?: "_"
         val canonicalKey = "changes:${ev.turnId ?: owner}"
         val files = filesOf(ev.payload)
+        // ChangesSummary（Domain Core）：服务端 additions/deletions 行数统计直接透传，
+        // 客户端不解析 diff 文本。
+        val lineStats = JSONObject()
+        if (ev.payload.has("additions") && !ev.payload.isNull("additions")) {
+            lineStats.put("additions", ev.payload.optInt("additions"))
+        }
+        if (ev.payload.has("deletions") && !ev.payload.isNull("deletions")) {
+            lineStats.put("deletions", ev.payload.optInt("deletions"))
+        }
         // live（job key）与 canonical（turn key）合并为一张卡
         val existing = items[canonicalKey]
         if (existing != null) {
             val oldFiles = filesOf(existing.content)
             val (arr, counts) = mergeFilesWithKinds(oldFiles, files)
+            val oldStats = existing.content
             existing.content = JSONObject().put("files", arr).put("counts", counts)
+            carryLineStats(oldStats, existing.content)
+            mergeLineStats(existing.content, lineStats)
             existing.seq = existing.seq ?: ev.seq
             existing.bump()
             return true
@@ -562,6 +672,9 @@ class TimelineStore {
         items.remove(liveKey)?.let { live ->
             val liveFiles = filesOf(live.content)
             val (arr, counts) = mergeFilesWithKinds(liveFiles, files)
+            val content = JSONObject().put("files", arr).put("counts", counts)
+            carryLineStats(live.content, content)
+            mergeLineStats(content, lineStats)
             val merged = TimelineItem(
                 key = canonicalKey,
                 type = ItemType.CHANGES,
@@ -570,17 +683,31 @@ class TimelineStore {
                 jobId = live.jobId ?: ev.jobId,
                 seq = ev.seq ?: live.seq,
                 timestampMs = live.timestampMs ?: ev.timestampMs,
-                content = JSONObject().put("files", arr).put("counts", counts),
+                content = content,
                 version = live.version + 1,
             )
             items[canonicalKey] = merged
+            invalidateSortCache()
             return true
         }
         val (arr, counts) = mergeFilesWithKinds(files)
         upsert(canonicalKey, ItemType.CHANGES, ev) {
             it.content = JSONObject().put("files", arr).put("counts", counts)
+            mergeLineStats(it.content, lineStats)
         }
         return true
+    }
+
+    private fun carryLineStats(from: JSONObject, to: JSONObject) {
+        if (from.has("additions")) to.put("additions", from.optInt("additions"))
+        if (from.has("deletions")) to.put("deletions", from.optInt("deletions"))
+    }
+
+    /** 事件未携带行数统计时保留旧值（canonical 与 live 事件同源，新值优先）。 */
+    private fun mergeLineStats(content: JSONObject, lineStats: JSONObject) {
+        if (lineStats.length() == 0) return
+        if (lineStats.has("additions")) content.put("additions", lineStats.optInt("additions"))
+        if (lineStats.has("deletions")) content.put("deletions", lineStats.optInt("deletions"))
     }
 
     /** Server sends files as [{"path": ..., "change": "added|modified|deleted"}]; older
@@ -608,7 +735,8 @@ class TimelineStore {
         var added = 0
         var deleted = 0
         for ((path, change) in byPath) {
-            arr.put(path)
+            // 存类型化条目，二次合并（live→canonical）时不丢失 added/deleted
+            arr.put(JSONObject().put("path", path).put("change", change))
             when (change) {
                 "added" -> added++
                 "deleted" -> deleted++
@@ -656,6 +784,19 @@ class TimelineStore {
     }
 
     private fun handleStatusLine(ev: NormalizedEvent): Boolean {
+        val child = ev.payload.optString("child_task_id")
+        if (child.isNotBlank() && child != "null") {
+            openStatusGroupKey = null
+            upsert("agent:$child", ItemType.STATUS, ev) {
+                val role = it.content.optString("role")
+                val previousEvent = it.content.optString("agent_event")
+                val nextEvent = ev.payload.optString("agent_event").ifBlank { ev.rawType }
+                it.content = JSONObject(ev.payload.toString())
+                if (it.content.optString("role").isBlank()) it.content.put("role", role)
+                it.content.put("agent_event", if (previousEvent == "subagent_completed") previousEvent else nextEvent)
+            }
+            return true
+        }
         val message = ev.payload.optString("message").ifBlank {
             when (ev.kind) {
                 Kind.RECOVERY_NOTE -> ev.payload.optString("content")
@@ -685,7 +826,10 @@ class TimelineStore {
         val created = upsert(key, ItemType.STATUS, ev) {
             it.content = JSONObject().put("messages", JSONArray().put(message)).put("last", message)
         }
-        created.turnId = turnId ?: created.turnId
+        if (turnId != null && created.turnId != turnId) {
+            created.turnId = turnId
+            invalidateSortCache()
+        }
         openStatusGroupKey = key
         ensureTurnOrder(created)
         return true
@@ -723,6 +867,7 @@ class TimelineStore {
             val stream = items[streamKey] ?: return@forEach
             if (stream.content.optString("text").isBlank()) {
                 items.remove(streamKey)
+                invalidateSortCache()
             } else {
                 stream.streaming = false
                 stream.status = "done"
@@ -743,7 +888,12 @@ class TimelineStore {
 
     fun sortedItems(): List<TimelineItem> {
         reanchor()
-        return items.values.sortedWith(compareBy({ turnOrdOf(it) }, { it.pos }))
+        val cache = sortedCache
+        if (cache != null && sortedCacheVersion == structureVersion) return cache
+        val sorted = items.values.sortedWith(compareBy({ turnOrdOf(it) }, { it.pos }))
+        sortedCache = sorted
+        sortedCacheVersion = structureVersion
+        return sorted
     }
 
     fun hasConversationSeq(seq: Long): Boolean = seq in seenSeqs

@@ -85,10 +85,17 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnViewChanges"
-            style="@style/Widget.Material3.Button.TextButton"
+            style="@style/Widget.AndroidAgent.Button.Text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:minHeight="44dp"
             android:text="@string/view_changes" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnRevertTurn"
+            style="@style/Widget.AndroidAgent.Button.Text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/history_revert_turn" />
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

@@ -1,0 +1,32 @@
+{
+  "id": "05_build_success",
+  "title": "构建成功",
+  "description": "Agent 调用 run_gradle 完成构建：构建日志、build_summary 事件与 APK 产物全链路",
+  "prompt": "跑一次构建验证工程",
+  "auto_approve": true,
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\n# E2E fake gradlew: deterministic success, no Android SDK needed.\necho '> Task :app:preBuild UP-TO-DATE'\necho '> Task :app:assembleDebug'\nmkdir -p app/build/outputs/apk/debug\nprintf 'PK\\x03\\x04E2E-FAKE-APK' > app/build/outputs/apk/debug/app-debug.apk\necho 'BUILD SUCCESSFUL in 2s'\nexit 0\n"
+    }
+  },
+  "steps": [
+    {
+      "type": "tool",
+      "text": "开始执行构建。",
+      "calls": [{"name": "run_gradle", "arguments": {"task": "assembleDebug"}}]
+    },
+    {"type": "final", "text": "构建成功，APK 已生成。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_gradle"],
+    "has_apk": true,
+    "has_build_log": true,
+    "build_summary_success": true,
+    "build_log_contains": "BUILD SUCCESSFUL",
+    "final_text_contains": "构建成功",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "build_summary", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

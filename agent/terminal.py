@@ -510,6 +510,11 @@ class TerminalSession:
                     )
                 self._master_fd = None
 
+        # Drain the reader before a caller removes its store/workspace. Joining
+        # outside the session lock lets the reader finish its final status write.
+        if self._reader_thread is not None and self._reader_thread is not threading.current_thread():
+            self._reader_thread.join(timeout=5)
+
     def is_idle(self, timeout: float = MAX_IDLE_SECONDS) -> bool:
         with self._lock:
             return self.status == "running" and (

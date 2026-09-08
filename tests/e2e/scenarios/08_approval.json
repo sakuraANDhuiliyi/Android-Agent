@@ -1,0 +1,25 @@
+{
+  "id": "08_approval",
+  "title": "审批链路",
+  "description": "run_command 触发 approval_required，用户通过 API 批准后命令真实执行",
+  "prompt": "运行一条命令打印 E2E-APPROVAL-OK",
+  "auto_approve": false,
+  "driver": "approval",
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我需要运行一条命令，请确认。",
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "print('E2E-APPROVAL-OK')"]}}]
+    },
+    {"type": "final", "text": "命令已执行完成，输出包含 E2E-APPROVAL-OK。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_command"],
+    "tool_result_contains": {"run_command": "E2E-APPROVAL-OK"},
+    "approval_required": true,
+    "approval_decision": "approved",
+    "final_text_contains": "E2E-APPROVAL-OK",
+    "event_types_include": ["user_message", "approval_required", "approval_resolved", "tool_call", "tool_result", "assistant_message", "turn_completed"]
+  }
+}

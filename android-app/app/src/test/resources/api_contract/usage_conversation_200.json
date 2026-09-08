@@ -1,0 +1,56 @@
+{
+  "user_id": "user-alice",
+  "conversation_id": "conv-001",
+  "totals": {
+    "turns": 2,
+    "input_tokens": 22400,
+    "output_tokens": 6800,
+    "cached_tokens": 15800,
+    "cache_creation_tokens": 1200,
+    "total_tokens": 29200,
+    "tool_calls": 18,
+    "duration_seconds": 138.0,
+    "cost_usd": 0.21,
+    "cost_available": true
+  },
+  "turns": [
+    {
+      "turn_id": "turn-002",
+      "task_id": "job-002",
+      "status": "succeeded",
+      "models": ["gpt-4o"],
+      "providers": ["openai"],
+      "started_at": 1788600000.0,
+      "finished_at": 1788600060.0,
+      "duration_seconds": 60.0,
+      "input_tokens": 12400,
+      "output_tokens": 3800,
+      "cached_tokens": 8800,
+      "cache_creation_tokens": 600,
+      "total_tokens": 16200,
+      "cached_ratio": 0.7097,
+      "tool_calls": 11,
+      "cost_usd": 0.13,
+      "cost_available": true
+    },
+    {
+      "turn_id": "turn-001",
+      "task_id": "job-001",
+      "status": "succeeded",
+      "models": ["gpt-4o"],
+      "providers": ["openai"],
+      "started_at": 1788599900.0,
+      "finished_at": 1788599978.0,
+      "duration_seconds": 78.0,
+      "input_tokens": 10000,
+      "output_tokens": 3000,
+      "cached_tokens": 7000,
+      "cache_creation_tokens": 600,
+      "total_tokens": 13000,
+      "cached_ratio": 0.7,
+      "tool_calls": 7,
+      "cost_usd": 0.08,
+      "cost_available": true
+    }
+  ]
+}

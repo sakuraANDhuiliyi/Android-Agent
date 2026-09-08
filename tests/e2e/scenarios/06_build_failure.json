@@ -1,0 +1,31 @@
+{
+  "id": "06_build_failure",
+  "title": "构建失败",
+  "description": "构建失败（状态化假 gradlew 首次必败）：失败摘要、日志与 tool_result ok=false 全链路",
+  "prompt": "构建一下工程",
+  "auto_approve": true,
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\n# E2E fake gradlew: fails on the first invocation, succeeds afterwards.\nMARKER=\"app/build/.e2e-built-once\"\nif [ ! -f \"$MARKER\" ]; then\n  mkdir -p app/build\n  touch \"$MARKER\"\n  echo 'FAILURE: Build failed with an exception.'\n  echo '* What went wrong:'\n  echo \"Execution failed for task ':app:checkDebugAarMetadata'.\"\n  echo 'BUILD FAILED in 3s'\n  exit 1\nfi\nmkdir -p app/build/outputs/apk/debug\nprintf 'PK\\x03\\x04E2E-FAKE-APK' > app/build/outputs/apk/debug/app-debug.apk\necho 'BUILD SUCCESSFUL in 2s'\nexit 0\n"
+    }
+  },
+  "steps": [
+    {
+      "type": "tool",
+      "text": "开始执行构建。",
+      "calls": [{"name": "run_gradle", "arguments": {"task": "assembleDebug"}}]
+    },
+    {"type": "final", "text": "构建失败：checkDebugAarMetadata 任务执行失败，需要修复。"}
+  ],
+  "expect": {
+    "job_status": "failed",
+    "tool_calls": ["run_gradle"],
+    "tool_result_ok": {"run_gradle": false},
+    "build_summary_success": false,
+    "build_log_contains": "BUILD FAILED",
+    "final_text_contains": "构建失败",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "build_summary", "assistant_message", "turn_failed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

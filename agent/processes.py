@@ -183,7 +183,52 @@ def build_sandboxed_command(
     return [sandbox_exec, "-p", profile, *argv]
 
 
-def _apply_resource_limits(timeout_seconds: float) -> None:
+_NPROC_COUNT_CACHE_SECONDS = 5.0
+_nproc_count_cache: tuple[float, int] = (0.0, 0)
+
+
+def _current_user_process_count() -> int:
+    """Count live processes owned by the current (real) uid.
+
+    RLIMIT_NPROC is enforced per-user, not per-process-tree, so imposing a
+    cap below the machine's existing usage would fail every fork inside the
+    command (mkdir, gradle workers, ...). Computed in the parent process;
+    never call this from preexec_fn.
+    """
+    global _nproc_count_cache
+    now = time.monotonic()
+    cached_at, cached = _nproc_count_cache
+    if now - cached_at < _NPROC_COUNT_CACHE_SECONDS:
+        return cached
+    count = 0
+    try:
+        if os.path.isdir("/proc"):
+            uid = os.getuid()
+            count = sum(
+                1
+                for name in os.listdir("/proc")
+                if name.isdigit() and os.stat(f"/proc/{name}").st_uid == uid
+            )
+        else:
+            result = subprocess.run(
+                ["ps", "-o", "pid=", "-U", str(os.getuid())],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            count = len(result.stdout.split())
+    except Exception:
+        count = 0
+    _nproc_count_cache = (now, count)
+    return count
+
+
+def _safe_nproc_limit(base: int = 256, margin: int = 128) -> int:
+    """Fork-bomb cap that never undercuts the uid's live process count."""
+    return max(base, _current_user_process_count() + margin)
+
+
+def _apply_resource_limits(timeout_seconds: float, nproc_limit: int | None = None) -> None:
     try:
         import resource
 
@@ -191,7 +236,11 @@ def _apply_resource_limits(timeout_seconds: float) -> None:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
         resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
         if hasattr(resource, "RLIMIT_NPROC"):
-            resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
+            limit = nproc_limit if nproc_limit is not None else _safe_nproc_limit()
+            _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, max(hard, 1))
+            resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
         resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 30, 1 << 30))
     except (ImportError, OSError, ValueError):
         return
@@ -254,6 +303,64 @@ def cancel_process(process_key: str) -> bool:
     except Exception:
         _kill_process_group(proc)
     return True
+
+
+class LazyLogFile:
+    """Write-through buffer that creates the log file only once output
+    exceeds the threshold, so small commands leave no artifact behind.
+
+    The full pre-threshold content is retained and dumped on materialize,
+    so a materialized log is always complete.
+    """
+
+    def __init__(self, path: Path, threshold_chars: int) -> None:
+        self.path = path
+        self.threshold_chars = max(1, int(threshold_chars))
+        self.materialized = False
+        self._buffer: list[str] = []
+        self._length = 0
+        self._file = None
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> None:
+        with self._lock:
+            if self._file is not None:
+                self._file.write(text)
+                return
+            self._buffer.append(text)
+            self._length += len(text)
+            if self._length >= self.threshold_chars:
+                self._materialize_locked()
+
+    def _materialize_locked(self) -> None:
+        if self._file is not None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self.path, "w", encoding="utf-8")
+            self._file.write("".join(self._buffer))
+        except Exception:
+            self._file = None
+            return
+        self._buffer = []
+        self.materialized = True
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.flush()
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except Exception:
+                    pass
+                self._file = None
 
 
 class _StreamReader:
@@ -383,13 +490,16 @@ def run_command(
         env=minimal_env,
     )
 
+    # RLIMIT_NPROC accounting must happen in the parent: preexec_fn may only
+    # run async-signal-safe code between fork and exec.
+    nproc_limit = _safe_nproc_limit()
     popen_kwargs: dict[str, Any] = {
         "cwd": resolved_cwd,
         "env": minimal_env,
         "stdout": subprocess.PIPE,
         "text": True,
         "start_new_session": True,
-        "preexec_fn": lambda: _apply_resource_limits(timeout_seconds),
+        "preexec_fn": lambda: _apply_resource_limits(timeout_seconds, nproc_limit),
     }
     if combine_output:
         popen_kwargs["stderr"] = subprocess.STDOUT
@@ -406,12 +516,19 @@ def run_command(
             _active[process_key] = proc
 
     log_file = None
+    full_output_path = None
     if task_log_path is not None:
-        task_log_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            log_file = open(task_log_path, "w", encoding="utf-8")
-        except Exception:
-            log_file = None
+        if hasattr(task_log_path, "write"):
+            # Pre-built file-like (e.g. LazyLogFile): use as-is.
+            log_file = task_log_path
+            full_output_path = getattr(task_log_path, "path", None)
+        else:
+            task_log_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                log_file = open(task_log_path, "w", encoding="utf-8")
+                full_output_path = task_log_path
+            except Exception:
+                log_file = None
 
     started_at = time.monotonic()
     stdout_reader: _StreamReader | None = None
@@ -512,6 +629,6 @@ def run_command(
         stderr=stderr,
         duration_ms=duration_ms,
         truncated=truncated,
-        full_output_path=task_log_path,
+        full_output_path=full_output_path,
         error_type=error_type,
     )

@@ -28,7 +28,7 @@
         android:layout_marginStart="@dimen/space_small"
         android:layout_weight="1"
         android:ellipsize="end"
-        android:maxLines="3"
+        android:maxLines="1"
         android:textAppearance="?attr/textAppearanceBodySmall"
         android:textColor="?attr/colorOnSurfaceVariant"
         tools:text="已连接模型服务" />

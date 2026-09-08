@@ -1,0 +1,208 @@
+/* Shared Workbench visual language. Loaded after legacy view-specific styles. */
+:root {
+  --primary: #6b8cff;
+  --primary-glow: #8eabff;
+  --primary-deep: #456bea;
+  --primary-foreground: #101f40;
+  --background: #0e141d;
+  --foreground: #e9edf5;
+  --card: #171e28;
+  --secondary: #1a222d;
+  --muted-foreground: #aab5c5;
+  --border: #2c3542;
+  --ring: #8eabff;
+  --radius: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --title-h: 48px;
+  --status-h: 28px;
+  --activity-w: 56px;
+  --shadow-sm: 0 1px 2px #00000012;
+  --shadow-md: 0 8px 28px #00000026;
+  --shadow-lg: 0 16px 48px #00000040;
+}
+[data-theme="light"] {
+  --primary: #2563eb;
+  --primary-glow: #2563eb;
+  --primary-deep: #1d4ed8;
+  --primary-foreground: #fff;
+  --background: #fbfcff;
+  --foreground: #172033;
+  --card: #fff;
+  --secondary: #f0f3f8;
+  --muted-foreground: #59677b;
+  --border: #e2e7ef;
+  --ring: #2563eb;
+}
+body { line-height: 1.5; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+button, input, select, textarea { accent-color: var(--primary); }
+button:not(:disabled):active { filter: brightness(.96); }
+button svg { flex-shrink: 0; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+::selection { background: var(--bg-selection); }
+::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+
+/* Chrome cannot shrink into the editor when the window gets short. */
+.titlebar, .statusbar { flex-shrink: 0; }
+.titlebar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; box-shadow: none; }
+.titlebar-left, .titlebar-right { min-width: 0; }
+.titlebar-right { gap: 8px; }
+.brand-mark { background: var(--primary); box-shadow: none; }
+.brand { white-space: nowrap; }
+.focus-switch { border-radius: 10px; padding: 2px; background: var(--bg-input); }
+.focus-switch-btn { min-height: 30px; padding: 4px 10px; border-radius: 7px; }
+.focus-switch-btn + .focus-switch-btn { border-left: 0; }
+.focus-switch-btn.active { box-shadow: var(--shadow-sm); background: var(--bg-elevated); }
+.workbench, .editor-pane, .editor-hosts, .sidebar-content, .ai-pane { min-width: 0; min-height: 0; }
+.activity-btn { border-radius: 10px; margin: 4px 6px; }
+.sidebar { background: var(--bg-sidebar); }
+.sidebar-empty { padding: 24px 16px; }
+.conversation-item { min-height: 44px; border-radius: 10px; margin: 2px 6px; }
+.btn { min-height: 36px; height: auto; padding: 7px 14px; border-radius: 10px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.icon-btn { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 8px; }
+.input, .select { min-height: 36px; border-radius: 10px; }
+.modal { max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 18px; }
+.modal-body { min-height: 0; overflow-y: auto; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.statusbar { overflow-x: auto; overflow-y: hidden; white-space: nowrap; }
+
+/* Agent remains readable; tool details and source code keep their own scroll. */
+.ai-header-row, .ai-composer-row { min-width: 0; flex-wrap: wrap; }
+.ai-task-controls { flex-wrap: wrap; }
+.ai-task-control { height: auto; min-height: 30px; line-height: 1.4; padding: 5px 9px; }
+.ai-menu, .ai-context-menu { max-width: calc(100% - 16px); max-height: 60dvh; overflow-y: auto; }
+.ai-messages { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.ai-composer { border-top-color: var(--line); background: var(--bg); }
+.tl-user-body { border-radius: 16px; background: var(--bg-panel); }
+.tl-approval, .tl-changes, .tl-error { border-radius: 12px; }
+.tl-approval-actions, .tl-changes-actions, .tl-dock-actions { flex-wrap: wrap; }
+.tl-approval-command, .tl-error, .ai-context-chip { overflow-wrap: anywhere; }
+.tl-work-head { min-height: 36px; }
+.tl-changes-toggle { width: 100%; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); }
+.tl-changes-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.tl-status-text, .tl-status-line { white-space: normal; overflow-wrap: anywhere; }
+.tl-output, .md-codeblock { overscroll-behavior: contain; }
+
+/* Terminal actions and tabs are separate rows, so no button vanishes. */
+.terminal-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; gap: 6px; padding: 6px 8px; flex-shrink: 0; }
+.terminal-tabs { flex: 1 0 100%; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.terminal-tab { min-height: 32px; flex-shrink: 0; max-width: 240px; }
+.bottom-tabs { overflow-x: auto; flex-shrink: 0; }
+.bottom-panel { max-height: 65%; min-height: 0; }
+
+/* Agent Windows uses the SAME tokens, not a separate permanently-light theme. */
+.cx-shell {
+  --cx-line: var(--line);
+  --cx-sidebar: var(--bg-sidebar);
+  --cx-sidebar-active: var(--bg-active);
+  --cx-text: var(--text);
+  --cx-muted: var(--muted);
+  --sidebar-width: 244px;
+  --main-width: clamp(360px, 43vw, 680px);
+  min-width: 0;
+  box-shadow: none;
+  background: var(--bg);
+  font-family: var(--font-ui);
+}
+.cx-sidebar { background: var(--bg-sidebar); border-color: var(--line); }
+.cx-agent-main, .cx-right-panel, .cx-right-content, .cx-file-preview { background: var(--bg); }
+.cx-agent-header, .cx-panel-toolbar { background: var(--bg-elevated); border-color: var(--line); }
+.cx-agent-title, .cx-agent-header-actions { min-width: 0; }
+.cx-agent-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-sidebar-brand, .cx-sidebar-footer { border-color: var(--line); }
+.cx-primary-nav button, .cx-launcher-list button { min-height: 38px; border-radius: 10px; }
+.cx-shell button:hover:not(:disabled) { background-color: var(--bg-hover); }
+.cx-sidebar-search-box, .cx-composer-shell, .cx-add-menu, .cx-todo-composer, .cx-insights-card {
+  background: var(--bg-elevated); border-color: var(--line); box-shadow: var(--shadow-sm);
+}
+.cx-shell input, .cx-shell textarea, .cx-shell select { background: transparent; color: var(--text); }
+.cx-shell input::placeholder, .cx-shell textarea::placeholder { color: var(--muted); opacity: 1; }
+.cx-composer-shell { height: auto; min-height: 100%; overflow: visible; }
+.cx-composer-shell:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px var(--bg-selection); }
+.cx-composer-plus { background: var(--bg-panel) !important; }
+.cx-send-button { background: var(--btn-primary-bg) !important; color: var(--btn-primary-fg) !important; }
+.cx-approval-mode, .cx-effort-button, .cx-chevron-button { color: var(--muted) !important; }
+.cx-panel-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; padding-block: 6px; }
+.cx-panel-toolbar button { min-height: 30px; height: auto; }
+.cx-panel-toolbar > span, .cx-change-row span, .cx-add-menu-label, .cx-add-menu button small,
+.cx-task-controls > span, .cx-launcher-list svg, .cx-category-head button:first-child,
+.cx-category-row em, .cx-todo-action, .cx-insights-card > p, .cx-insights-card span { color: var(--muted); }
+.cx-files-tree, .cx-diff-view { background: var(--bg-panel); border-color: var(--line); }
+.cx-diff-view span.add { color: var(--diff-add-fg); background: var(--diff-add-bg); }
+.cx-diff-view span.del { color: var(--diff-del-fg); background: var(--diff-del-bg); }
+.cx-diff-view span.hunk { color: var(--accent); background: var(--bg-selection); }
+.cx-insights-card { width: min(520px, 100%); }
+.cx-workspace-card, .cx-changes-card { width: min(520px, 100%); background: var(--bg-elevated); border-color: var(--line); }
+.cx-change-row, .cx-review-change { background: var(--bg-elevated); border-color: var(--line); }
+.cx-thread-message.user { background: var(--bg-panel); border-color: var(--line); }
+.cx-thread-message.error { background: var(--diff-del-bg); color: var(--diff-del-fg); }
+.cx-tool-row, .cx-tool-time, .cx-thread-empty, .cx-workspace-card small { color: var(--muted); }
+.cx-approval-card { background: color-mix(in srgb, var(--warn) 8%, var(--bg-elevated)); border-color: var(--warn); }
+.cx-approval-card > div { flex-wrap: wrap; }
+.cx-approval-card button { min-height: 34px; height: auto; background: var(--bg-elevated); border-color: var(--line); }
+.cx-approval-card .cx-approval-approve { color: var(--btn-primary-fg); background: var(--btn-primary-bg); }
+/* Flow layout reserves the actual composer height, including wrapped controls. */
+.cx-agent-composer { position: relative; inset: auto; height: auto; flex-shrink: 0; margin: 10px 16px 16px; }
+.cx-scene { padding-bottom: 16px; background: var(--bg); }
+.cx-thread-tab, .cx-open-in, .cx-open-caret { background: var(--bg-elevated); border-color: var(--line); }
+.cx-thread-tab.active, .cx-layout-button.active { background: var(--bg-active); color: var(--text); }
+.cx-thread-card { width: 100%; max-width: 760px; min-height: 0; background: transparent; }
+.cx-thread-message { overflow-wrap: anywhere; }
+.cx-thread-tabs { overflow-x: auto; flex-shrink: 0; }
+.cx-thread-tab { flex-shrink: 0; }
+.cx-launcher-list kbd { background: var(--bg-panel); color: var(--muted); border: 1px solid var(--line); }
+.cx-layout-switch { border-color: var(--line); }
+.cx-project-task { height: auto; min-height: 32px; padding-block: 6px; overflow-wrap: anywhere; }
+.cx-job-status { background: var(--bg-panel); color: var(--muted); }
+.cx-job-status.succeeded { background: var(--diff-add-bg); color: var(--diff-add-fg); }
+.cx-workspace-icon, .cx-change-icon { background: var(--bg-panel); color: var(--accent); }
+.cx-workspace-card b { border-color: var(--line); }
+.cx-sidebar-backdrop { display: none; }
+.cx-composer-bar { height: auto; min-height: 42px; flex-wrap: wrap; padding-block: 6px; }
+.cx-composer-bar button { min-height: 30px; }
+.cx-add-menu { bottom: calc(100% + 8px); }
+
+@media (max-width: 1150px) {
+  .cx-right-panel { display: flex; }
+  .cx-shell:not(.cx-panel-focused) .cx-right-tabs { flex-direction: column; height: auto; padding: 6px 2px; }
+  .cx-shell:not(.cx-panel-focused) .cx-panel-actions { flex-direction: column; gap: 8px; }
+  .cx-shell:not(.cx-panel-focused) #cxPanelTitle { display: none; }
+  .titlebar { grid-template-columns: minmax(0, 1fr) auto; }
+  .titlebar-center { display: none; }
+  .cx-shell, .cx-shell.cx-panel-collapsed { grid-template-columns: 220px minmax(0, 1fr) 42px; }
+  .cx-shell:not(.cx-panel-focused) .cx-right-content { display: none; }
+  .cx-shell.cx-panel-focused { grid-template-columns: 220px 0 minmax(0, 1fr); }
+  .cx-shell.cx-sidebar-collapsed { grid-template-columns: 0 minmax(0, 1fr) 42px; min-width: 0; }
+  .cx-shell.cx-sidebar-collapsed.cx-panel-focused { grid-template-columns: 0 0 minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .titlebar { padding-right: 8px; }
+  .brand, .conn-pill { display: none; }
+  .titlebar-left { display: none; }
+  .titlebar { grid-template-columns: minmax(0, 1fr); }
+  .titlebar-right { justify-content: flex-end; }
+  .focus-switch { min-width: 0; overflow-x: auto; }
+  .focus-switch-btn { flex-shrink: 0; padding-inline: 8px; }
+  .ai-pane { min-width: 0; width: calc(100% - var(--activity-w)) !important; }
+  .cx-shell, .cx-shell.cx-panel-collapsed, .cx-shell.cx-sidebar-collapsed { grid-template-columns: 0 minmax(0, 1fr) 42px; }
+  .cx-shell > .cx-sidebar { visibility: hidden; }
+  .cx-sidebar-restore { display: inline-flex; flex-shrink: 0; }
+  .cx-shell.cx-mobile-sidebar-open > .cx-sidebar { position: absolute; inset: 0 auto 0 0; width: min(280px, 85vw); visibility: visible; z-index: 102; box-shadow: var(--shadow-lg); }
+  .cx-shell.cx-mobile-sidebar-open .cx-sidebar-backdrop { display: block; position: absolute; inset: 0; z-index: 101; border: 0; background: #0008; border-radius: 0; }
+  .cx-shell.cx-panel-focused { grid-template-columns: 0 0 minmax(0, 1fr); }
+  .cx-panel-resizer { display: none; }
+  .cx-agent-header { padding-inline: 12px; }
+  .cx-header-share, .cx-open-caret { display: none; }
+  .cx-shell { --main-padding-x: 16px; }
+}
+@media (max-width: 900px) {
+  .sidebar { min-width: 0; overflow: hidden; }
+}
+@media (max-height: 600px) {
+  .modal { max-height: calc(100dvh - 16px); }
+  .ai-messages { padding-block: 8px; }
+  .ai-composer textarea { max-height: 100px; }
+  .approval-dock { max-height: 35dvh; overflow-y: auto; }
+}

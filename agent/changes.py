@@ -48,3 +48,17 @@ def compare_snapshots(workspace: Path, before: dict[str, str], after: dict[str, 
         )
         diff_parts.extend(patch)
     return changes, "".join(diff_parts)[:200_000]
+
+
+def diff_stats(diff: str) -> dict[str, int]:
+    """ChangesSummary: aggregate +N/-N counts from a unified diff."""
+    additions = 0
+    deletions = 0
+    for line in diff.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return {"additions": additions, "deletions": deletions}

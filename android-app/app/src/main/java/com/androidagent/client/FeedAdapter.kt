@@ -59,6 +59,7 @@ class FeedAdapter(
             }
             textJobSummary.text = buildString {
                 append(item.projectName.ifBlank { item.job.projectId })
+                item.job.role?.let { append(" · Subagent: $it") }
                 val detail = when {
                     item.job.status == "failed" -> item.job.error?.lineSequence()?.firstOrNull()
                     UiFormat.isActive(item.job.status) -> item.job.prompt.lineSequence().firstOrNull()
@@ -70,6 +71,10 @@ class FeedAdapter(
                 context,
                 item.job.finishedAt ?: item.job.startedAt ?: item.job.createdAt,
             )
+            if (UiFormat.isActive(item.job.status)) item.job.startedAt?.let {
+                val seconds = (System.currentTimeMillis() / 1000 - it.toLong()).coerceAtLeast(0)
+                textJobTime.text = "%02d:%02d".format(seconds / 60, seconds % 60)
+            }
             textJobBadge.isVisible = true
             textJobBadge.text = UiFormat.jobStatusLabel(context, item.job.status)
             textJobBadge.setTextColor(UiFormat.statusColor(context, item.job.status))

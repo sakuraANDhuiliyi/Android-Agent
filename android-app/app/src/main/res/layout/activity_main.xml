@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/mainRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="?attr/colorSurface">
+
+<androidx.constraintlayout.widget.ConstraintLayout
+    android:id="@+id/mainRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:background="?attr/colorSurface"
     android:paddingStart="28dp"
     android:paddingEnd="28dp"
@@ -27,6 +33,7 @@
         android:id="@+id/brandBlock"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
         android:gravity="center_horizontal"
         android:orientation="vertical"
         app:layout_constraintBottom_toTopOf="@id/loginContent"
@@ -72,7 +79,9 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginBottom="18dp"
+        android:layout_marginTop="32dp"
         android:orientation="vertical"
+        app:layout_constraintTop_toBottomOf="@id/brandBlock"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -81,24 +90,24 @@
         <com.google.android.material.button.MaterialButtonToggleGroup
             android:id="@+id/authMethodToggle"
             android:layout_width="match_parent"
-            android:layout_height="46dp"
+            android:layout_height="wrap_content"
             app:checkedButton="@id/btnPasswordMode"
             app:selectionRequired="true"
             app:singleSelection="true">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnPasswordMode"
-                style="@style/Widget.Material3.Button.TonalButton"
+                style="@style/Widget.AndroidAgent.Button.Tonal"
                 android:layout_width="0dp"
-                android:layout_height="46dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/password_login" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnCodeMode"
-                style="@style/Widget.Material3.Button.TonalButton"
+                style="@style/Widget.AndroidAgent.Button.Tonal"
                 android:layout_width="0dp"
-                android:layout_height="46dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/email_code_login" />
         </com.google.android.material.button.MaterialButtonToggleGroup>
@@ -179,9 +188,9 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSendCode"
-                style="@style/Widget.Material3.Button.OutlinedButton"
+                style="@style/Widget.AndroidAgent.Button.Outlined"
                 android:layout_width="112dp"
-                android:layout_height="54dp"
+                android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:text="@string/send_code" />
         </LinearLayout>
@@ -202,7 +211,7 @@
             android:id="@+id/btnLoginCloud"
             style="@style/Widget.AndroidAgent.Auth.PrimaryButton"
             android:layout_width="match_parent"
-            android:layout_height="54dp"
+            android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="@string/login" />
 
@@ -220,7 +229,7 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnGoRegister"
-            style="@style/Widget.Material3.Button.TextButton"
+            style="@style/Widget.AndroidAgent.Button.Text"
             android:layout_width="match_parent"
             android:layout_height="42dp"
             android:text="@string/no_account_register" />
@@ -234,3 +243,4 @@
             android:textColor="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.core.widget.NestedScrollView>

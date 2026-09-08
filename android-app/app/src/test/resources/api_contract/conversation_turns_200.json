@@ -1,0 +1,29 @@
+{
+  "conversation_id": "conv-001",
+  "schema_version": 1,
+  "turns": [
+    {
+      "id": "turn-001",
+      "task_id": "job-001",
+      "status": "succeeded",
+      "provider": "deepseek",
+      "model": "fake-model",
+      "trace_id": "trace-001",
+      "created_at": 1000.0,
+      "started_at": 1000.5,
+      "finished_at": 1024.0,
+      "error_message": null,
+      "user_preview": "Add dark mode toggle",
+      "event_counts": {
+        "user_message": 1,
+        "assistant_message": 1,
+        "tool_call": 2,
+        "tool_result": 2,
+        "test_summary": 1,
+        "build_summary": 1,
+        "artifact": 1,
+        "changes": 1
+      }
+    }
+  ]
+}

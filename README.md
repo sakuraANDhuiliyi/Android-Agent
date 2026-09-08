@@ -20,9 +20,15 @@ Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有
 - SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
 - 同一项目串行执行，可请求停止，服务重启后中断任务会标记失败。
 - Agent 必须执行 `assembleDebug`，成功任务保留任务级 APK 和构建日志。
-- 手机端支持连接/项目、多 Conversation、任务流、审批、steer/follow_up/pause/resume/cancel、Diff/Checkpoint 恢复、构建日志与 APK 下载安装分享；WebSocket 优先并在断线后游标轮询。
+- 手机端支持连接/项目、多 Conversation、任务流、审批、steer/follow_up/pause/resume/cancel、Project Workspace Dashboard、Changes 分类审查、Hunk 接受/拒绝/解释/回退、Context Chips、`@` 文件/符号/目录检索、Context Inspector、Diff/Checkpoint 恢复、构建日志与 APK 下载安装分享；WebSocket 优先并在断线后游标轮询。
 
 ## 多对话（Cursor 式）
+
+Mobile Code Explorer 提供逻辑目录、文件搜索/筛选、Modified/Open files、选区 Agent 操作及带版本检查的 Quick Edit。Build / Test / Problems 提供结构化构建摘要、JUnit 测试结果、统一问题列表和最多两次修复的自动反馈循环。使用方式与边界见 [File Explorer / Feedback V2](docs/FILE_EXPLORER_FEEDBACK_V2.md)。
+
+Project History / Revert turn 提供保留对话的代码恢复与从快照创建分支；Task Center 使用 WorkManager 同步和审批/完成通知；Subagent 聚合展示；Android Remote Terminal 与桌面 xterm 支持多 session 和发送输出给 Agent。使用与恢复、后台时延边界见 [History / Tasks / Terminal V2](docs/HISTORY_TASKS_TERMINAL_V2.md)。
+
+手机与桌面共享 Workbench UI V3 的颜色、按钮层级、卡片与响应式布局；新增大字体操作栏、可滚动登录页与窄窗口侧栏。视觉规范与回归范围见 [Workbench UI V3](docs/WORKBENCH_UI_V3.md)。
 
 每个 Android 项目下可开多个独立 **Conversation（对话）**，各自保留 Agent 上下文：
 
@@ -31,6 +37,8 @@ Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有
 - `POST /api/conversations/{id}/ask` — 在该对话中提问（多轮连续）
 - 同一项目同时只跑一个 turn（workspace 锁）；未调用 `assembleDebug` 的追问也可成功
 - 旧版 `POST /api/projects/{id}/ask` 仍可用，内部自动挂到默认对话
+
+Conversation Composer 可通过 `+` 添加文件、目录、选区、Diff、构建日志、终端输出、错误、截图说明、Conversation 和 Symbol 上下文；输入 `@` 可按 Files、Symbols、Folders 分组搜索仓库索引。发送时显式 Context 会与自动仓库检索和项目 Memory 一起受统一预算控制，顶部 Context Inspector 可查看最近一轮实际使用的来源、估算 Token 和仓库 Symbol 数量。
 
 ## Conversation Event 模型
 
@@ -197,6 +205,8 @@ PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for
 
 双端 UI/UX 基线见
 [`docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md`](docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md)，
+会话节点身份、Tool Cluster、流式归类与响应式排版见
+[`docs/CONVERSATION_TIMELINE_V2.md`](docs/CONVERSATION_TIMELINE_V2.md)，
 后续升级顺序与可直接执行的完整提示词见
 [`docs/NEXT_UPGRADE_MASTER_PROMPT.md`](docs/NEXT_UPGRADE_MASTER_PROMPT.md)。
 

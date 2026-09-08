@@ -252,6 +252,108 @@ class ApiContractTests(unittest.TestCase):
         self.assertIn("schema_version", payload["events"][0])
         self.assertEqual(payload["events"][0]["schema_version"], 1)
 
+    def test_conversation_turns_and_trace_match_contract(self) -> None:
+        conversation = self.task_store.create_conversation(
+            self.user_id,
+            "demo",
+            title="Contract",
+        )
+        event_store = ConversationEventStore(self.task_store)
+        turn = event_store.create_turn(
+            conversation["id"],
+            self.user_id,
+            "demo",
+            task_id="job-001",
+            status="succeeded",
+            provider="deepseek",
+            model="fake-model",
+            created_at=1000.0,
+            started_at=1000.5,
+            finished_at=1024.0,
+        )
+        event_store.append_event(
+            conversation["id"],
+            turn["id"],
+            "user_message",
+            {"content": [{"type": "text", "text": "Add dark mode toggle"}]},
+            role="user",
+            context_visible=True,
+            created_at=1000.0,
+        )
+        event_store.append_event(
+            conversation["id"],
+            turn["id"],
+            "turn_started",
+            {"message": "turn started"},
+            task_id="job-001",
+            created_at=1000.5,
+        )
+
+        turns_response = self.client.get(
+            f"/api/conversations/{conversation['id']}/turns",
+            headers=self._headers(),
+        )
+        self.assertEqual(turns_response.status_code, 200)
+        turns = turns_response.json()["turns"]
+        self.assertEqual(len(turns), 1)
+        expected_turn = load_fixture("conversation_turns_200.json")["turns"][0]
+        for key in expected_turn:
+            self.assertIn(key, turns[0], key)
+        self.assertEqual(turns[0]["user_preview"], "Add dark mode toggle")
+        self.assertEqual(turns[0]["event_counts"].get("user_message"), 1)
+
+        trace_response = self.client.get(
+            f"/api/conversations/{conversation['id']}/turns/{turn['id']}/trace",
+            headers=self._headers(),
+        )
+        self.assertEqual(trace_response.status_code, 200)
+        trace = trace_response.json()
+        expected_trace = load_fixture("turn_trace_200.json")
+        for key in expected_trace:
+            self.assertIn(key, trace, key)
+        for key in expected_trace["steps"][0]:
+            self.assertIn(key, trace["steps"][0], key)
+        self.assertEqual(trace["queue_ms"], 500)
+        self.assertEqual(trace["total_ms"], 24000)
+
+    def test_conversation_events_fixture_covers_structured_summaries(self) -> None:
+        fixture = load_fixture("conversation_events_200.json")
+        events = fixture["events"]
+        by_type = {event["event_type"]: event["payload"] for event in events}
+
+        build = by_type["build_summary"]
+        for key in (
+            "schema_version",
+            "kind",
+            "task",
+            "tool_call_id",
+            "success",
+            "exit_code",
+            "duration_ms",
+            "build_id",
+            "log_path",
+            "error_count",
+            "errors",
+            "apk_path",
+            "apk_size_bytes",
+        ):
+            self.assertIn(key, build, key)
+        self.assertEqual(build["kind"], "build")
+
+        test = by_type["test_summary"]
+        self.assertEqual(test["kind"], "test")
+        for key in ("passed", "failed", "skipped"):
+            self.assertIn(key, test["tests"], key)
+
+        changes = by_type["changes"]
+        self.assertIn("additions", changes)
+        self.assertIn("deletions", changes)
+        self.assertIn("files", changes)
+
+        artifact = by_type["artifact"]
+        for key in ("kind", "path", "size_bytes", "url"):
+            self.assertIn(key, artifact, key)
+
     def test_job_dto_matches_contract_keys(self) -> None:
         public = job_to_dict(
             {

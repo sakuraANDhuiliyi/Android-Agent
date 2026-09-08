@@ -26,7 +26,7 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnCopyCode"
-            style="@style/Widget.Material3.Button.TextButton"
+            style="@style/Widget.AndroidAgent.Button.Text"
             android:layout_width="wrap_content"
             android:layout_height="40dp"
             android:icon="@drawable/ic_copy"
@@ -54,7 +54,7 @@
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnToggleCode"
-        style="@style/Widget.Material3.Button.TextButton"
+        style="@style/Widget.AndroidAgent.Button.Text"
         android:layout_width="match_parent"
         android:layout_height="40dp"
         android:text="@string/code_block_expand"

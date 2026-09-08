@@ -29,6 +29,9 @@ class ProjectDetailActivity : AppCompatActivity() {
     private var hasApk: Boolean = false
     private var latestConversation: ConversationInfo? = null
     private var pendingApprovalJob: JobInfo? = null
+    private var activeJob: JobInfo? = null
+    private var latestBuildJob: JobInfo? = null
+    private var projectPackage: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,7 +41,9 @@ class ProjectDetailActivity : AppCompatActivity() {
         prefs = AgentPrefs(this)
         projectId = intent.getStringExtra(EXTRA_PROJECT_ID).orEmpty()
         projectName = intent.getStringExtra(EXTRA_PROJECT_NAME).orEmpty()
-        binding.textHubPackage.text = intent.getStringExtra(EXTRA_PACKAGE).orEmpty().ifBlank { projectId }
+        projectPackage = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
+        hasApk = intent.getBooleanExtra(EXTRA_HAS_APK, false)
+        binding.textHubPackage.text = projectPackage.ifBlank { projectId }
         if (projectId.isBlank() || prefs.apiToken.isBlank()) {
             toast(getString(R.string.resource_unavailable))
             finish()
@@ -50,7 +55,7 @@ class ProjectDetailActivity : AppCompatActivity() {
         binding.toolbar.title = projectName.ifBlank { projectId }
         binding.toolbar.setNavigationOnClickListener { finish() }
         binding.textHubName.text = projectName.ifBlank { projectId }
-        binding.textHubPackage.text = intent.getStringExtra(EXTRA_PACKAGE).orEmpty().ifBlank { projectId }
+        binding.textHubPackage.text = projectPackage.ifBlank { projectId }
         binding.textHubStatus.text = ""
 
         adapter = ConversationAdapter(
@@ -63,8 +68,9 @@ class ProjectDetailActivity : AppCompatActivity() {
 
         binding.fabNewConversation.setOnClickListener { createConversation() }
         binding.cardQuickContinue.setOnClickListener {
-            latestConversation?.let { openConversation(it) }
+            latestConversation?.let { openConversation(it) } ?: createConversation()
         }
+        binding.cardCurrentTask.setOnClickListener { openJobConversation(activeJob) }
         binding.cardPendingApproval.setOnClickListener {
             pendingApprovalJob?.let { job ->
                 val conversationId = job.conversationId
@@ -76,16 +82,21 @@ class ProjectDetailActivity : AppCompatActivity() {
             }
         }
         binding.btnViewApk.setOnClickListener { ApkActivity.start(this, projectId, null, hasApk) }
-        binding.rowFiles.setOnClickListener {
-            FileBrowserActivity.start(
-                this,
-                ProjectInfo(projectId, projectName, "", hasApk, null, null),
-                prefs.serverUrl,
-                prefs.apiToken,
-            )
-        }
+        binding.rowFiles.setOnClickListener { openFiles() }
         binding.rowChanges.setOnClickListener { DiffActivity.start(this, projectId) }
-        binding.rowBuild.setOnClickListener { ApkActivity.start(this, projectId, null, hasApk) }
+        binding.cardChangesSummary.setOnClickListener { DiffActivity.start(this, projectId) }
+        binding.rowBuild.setOnClickListener { openBuildOrApk() }
+        binding.cardBuildSummary.setOnClickListener { openBuildOrApk() }
+        binding.cardTestsSummary.setOnClickListener { openBuildLog() }
+        binding.cardProblemsSummary.setOnClickListener { FeedbackActivity.start(this, projectId, problems = true) }
+        binding.rowConversations.setOnClickListener {
+            binding.hubScroll.smoothScrollTo(0, binding.recyclerConversations.top)
+        }
+        binding.rowProblems.setOnClickListener { FeedbackActivity.start(this, projectId, problems = true) }
+        binding.rowTerminal.setOnClickListener { RemoteTerminalActivity.start(this, projectId) }
+        binding.rowHistory.setOnClickListener { ProjectHistoryActivity.start(this, projectId) }
+        binding.rowContext.setOnClickListener { openFiles() }
+        binding.rowSettings.setOnClickListener { ProjectConfigActivity.start(this, projectId) }
     }
 
     override fun onResume() {
@@ -96,11 +107,16 @@ class ProjectDetailActivity : AppCompatActivity() {
     private fun refresh() {
         lifecycleScope.launch {
             try {
-                val (conversations, jobs) = withContext(Dispatchers.IO) {
-                    api.listConversations(projectId) to api.listJobs(projectId)
+                val data = withContext(Dispatchers.IO) {
+                    val conversations = api.listConversations(projectId)
+                    val jobs = api.listJobs(projectId)
+                    val workspace = runCatching { api.getWorkspaceStatus(projectId) }.getOrNull()
+                    val diff = runCatching { api.getDiff(projectId) }.getOrNull()
+                    val feedback = runCatching { api.feedback(projectId) }.getOrNull()
+                    DashboardData(conversations, jobs, workspace, diff, feedback)
                 }
-                renderConversations(conversations)
-                renderQuickCards(conversations, jobs)
+                renderConversations(data.conversations)
+                renderDashboard(data)
             } catch (e: Exception) {
                 toast(userMessage(e))
             }
@@ -109,7 +125,7 @@ class ProjectDetailActivity : AppCompatActivity() {
 
     private fun renderConversations(list: List<ConversationInfo>) {
         val sorted = list.sortedByDescending { it.updatedAt ?: 0.0 }
-        adapter.submitList(sorted)
+        adapter.submitList(sorted.take(3))
         latestConversation = sorted.firstOrNull()
         binding.textEmptyConversations.visibility = if (sorted.isEmpty()) View.VISIBLE else View.GONE
         val selected = prefs.selectedConversationId
@@ -118,7 +134,8 @@ class ProjectDetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderQuickCards(conversations: List<ConversationInfo>, jobs: List<JobInfo>) {
+    private fun renderDashboard(data: DashboardData) {
+        val jobs = data.jobs.sortedByDescending { it.createdAt ?: 0.0 }
         // 快速继续
         val latest = latestConversation
         if (latest != null) {
@@ -133,16 +150,19 @@ class ProjectDetailActivity : AppCompatActivity() {
                 }
             }
         } else {
-            binding.cardQuickContinue.visibility = View.GONE
+            binding.cardQuickContinue.visibility = View.VISIBLE
+            binding.textQuickContinueTitle.setText(R.string.start_agent_task)
+            binding.textQuickContinueMeta.setText(R.string.hub_no_conversations)
         }
 
         // 待审批警告卡置顶
-        val pendingJob = jobs.firstOrNull { it.status == "awaiting_approval" }
+        val pendingJobs = jobs.filter { it.resolvedStatus() == "awaiting_approval" }
+        val pendingJob = pendingJobs.firstOrNull()
         pendingApprovalJob = pendingJob
         binding.cardPendingApproval.visibility =
             if (pendingJob != null) View.VISIBLE else View.GONE
         if (pendingJob != null) {
-            binding.textPendingMeta.text = getString(R.string.pending_count, 1)
+            binding.textPendingMeta.text = getString(R.string.pending_count, pendingJobs.size)
         }
 
         // 状态行
@@ -162,11 +182,114 @@ class ProjectDetailActivity : AppCompatActivity() {
             }
         }
 
+        val workspace = data.workspace
+        val branch = workspace?.branch ?: "workspace"
+        val workspaceLabel = when {
+            workspace == null -> getString(R.string.workspace_unknown)
+            workspace.dirty -> getString(R.string.workspace_dirty, workspace.changedFiles)
+            else -> getString(R.string.workspace_clean)
+        }
+        binding.textBranch.text = getString(R.string.branch_status, branch, workspaceLabel)
+
+        activeJob = jobs.firstOrNull { UiFormat.isActive(it.resolvedStatus()) }
+        val current = activeJob
+        if (current == null) {
+            binding.textCurrentTaskTitle.setText(R.string.no_active_task)
+            binding.textCurrentTaskMeta.text = lastJob?.let {
+                UiFormat.jobStatusLabel(this, it.resolvedStatus()) + " · " +
+                    UiFormat.relativeTime(this, it.finishedAt ?: it.createdAt)
+            }.orEmpty()
+        } else {
+            binding.textCurrentTaskTitle.text = "● ${current.prompt.ifBlank { getString(R.string.current_task) }}"
+            binding.textCurrentTaskMeta.text = buildString {
+                append(UiFormat.jobStatusLabel(this@ProjectDetailActivity, current.resolvedStatus()))
+                val elapsed = current.durationMs ?: current.startedAt?.let {
+                    ((System.currentTimeMillis() / 1000.0 - it) * 1000).toLong().coerceAtLeast(0)
+                }
+                elapsed?.let { append(" · ").append(formatDuration(it)) }
+            }
+        }
+
+        val diffFiles = data.diff?.files.orEmpty()
+        val additions = diffFiles.sumOf { it.additions }
+        val deletions = diffFiles.sumOf { it.deletions }
+        binding.textChangesSummary.text = getString(
+            R.string.changes_summary,
+            diffFiles.size,
+            additions,
+            deletions,
+        )
+
+        latestBuildJob = jobs.filter { it.hasBuildLog }.maxByOrNull { it.createdAt ?: 0.0 }
+        val build = latestBuildJob
+        binding.textBuildSummary.text = if (build == null) {
+            getString(R.string.no_task_selected)
+        } else {
+            val mark = if (build.resolvedStatus() == "succeeded") "✓" else if (build.resolvedStatus() == "failed") "✕" else "●"
+            "$mark ${UiFormat.jobStatusLabel(this, build.resolvedStatus())}${build.durationMs?.let { " · ${formatDuration(it)}" }.orEmpty()}"
+        }
+
+        val feedbackBuild = data.feedback?.optJSONObject("build")
+        binding.textBuildSummary.text = when (feedbackBuild?.optString("status")) {
+            "success" -> "✓ assembleDebug · %.1fs".format(feedbackBuild.optLong("duration_ms") / 1000.0)
+            "failed" -> "✕ assembleDebug"
+            else -> getString(R.string.feedback_not_run)
+        }
+        val tests = data.feedback?.optJSONObject("tests")?.optJSONObject("tests")
+        binding.textTestsSummary.text = if (tests?.optBoolean("reported") == true) "${tests.optInt("passed")} passed · ${tests.optInt("failed")} failed" else getString(R.string.tests_not_reported)
+        val problemCount = data.feedback?.optJSONArray("problems")?.length() ?: 0
+        binding.textProblemsSummary.text = if (problemCount == 0) {
+            getString(R.string.problems_none)
+        } else {
+            getString(R.string.problems_count, problemCount)
+        }
+
         // APK 卡
         val apkReady = hasApk || jobs.any { it.hasApk }
+        hasApk = apkReady
         binding.cardApk.visibility = if (apkReady) View.VISIBLE else View.GONE
         binding.textApkMeta.text = getString(R.string.hub_view_apk)
     }
+
+    private fun openFiles() {
+        FileBrowserActivity.start(
+            this,
+            ProjectInfo(projectId, projectName, projectPackage, hasApk, null, null),
+            prefs.serverUrl,
+            prefs.apiToken,
+        )
+    }
+
+    private fun openJobConversation(job: JobInfo?) {
+        val conversationId = job?.conversationId
+        if (conversationId.isNullOrBlank()) {
+            latestConversation?.let { openConversation(it) } ?: createConversation()
+        } else {
+            val title = latestConversation?.takeIf { it.id == conversationId }?.title.orEmpty()
+            ConversationActivity.start(this, projectId, conversationId, title, job.id)
+        }
+    }
+
+    private fun openBuildOrApk() {
+        FeedbackActivity.start(this, projectId)
+    }
+
+    private fun openBuildLog() {
+        FeedbackActivity.start(this, projectId)
+    }
+
+    private fun formatDuration(durationMs: Long): String {
+        val seconds = (durationMs / 1000).coerceAtLeast(1)
+        return if (seconds < 60) "${seconds}s" else "%d:%02d".format(seconds / 60, seconds % 60)
+    }
+
+    private data class DashboardData(
+        val conversations: List<ConversationInfo>,
+        val jobs: List<JobInfo>,
+        val workspace: WorkspaceStatus?,
+        val diff: DiffSummary?,
+        val feedback: org.json.JSONObject?,
+    )
 
     private fun createConversation() {
         lifecycleScope.launch {

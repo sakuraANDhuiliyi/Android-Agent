@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import shutil
 import smtplib
 import socket
@@ -26,7 +27,18 @@ from agent.api_contract import (
 )
 from agent.api_errors import build_error_body
 from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
-from agent.conversation_events import ConversationEventError, EVENT_SCHEMA_VERSION
+from agent.conversation_events import (
+    ConversationEventError,
+    ConversationEventStore,
+    EVENT_SCHEMA_VERSION,
+)
+from agent.explicit_context import build_context_bundle
+from agent.feedback import FeedbackStore, feedback_summary
+from agent.explorer import search_files
+from agent.history import history, restore_preview, restore_snapshot, branch_snapshot
+from agent.workspace import WorkspaceRepository
+from agent.project_lifecycle import project_operation
+import hashlib
 from agent.database import TaskStore
 from agent.jobs import (
     add_job_message,
@@ -52,6 +64,7 @@ from agent.jobs import (
     restore_checkpoint,
     restore_conversation,
     restore_file,
+    revert_hunk,
     resolve_job_approval,
     resume_job,
     start_ask_job,
@@ -72,11 +85,34 @@ from agent.project import delete_project, init_project, list_projects, load_proj
 from agent.project_lifecycle import ProjectDeletingError, project_deletion
 from agent.redaction import redact_sensitive_text
 from agent.repo_index import get_repo_index
-from agent.rules import diagnose_rules, discover_rules, load_rules_for_turn
+from agent.rules import (
+    create_project_rule,
+    delete_project_rule,
+    diagnose_rules,
+    discover_rules,
+    load_rules_for_turn,
+    update_project_rule,
+)
 from agent.skills import discover_skills_for_context, list_skills, load_skill
+from agent.project_settings import (
+    PERMISSION_PROFILES,
+    load_project_settings,
+    set_rule_disabled,
+    set_skill_disabled,
+    update_project_settings,
+)
+from agent.permissions import profile_summary
+from agent.usage_inspector import conversation_usage, usage_summary
+from agent.turn_trace import build_turn_trace
 from agent.mcp_manager import get_mcp_manager
 from agent.mcp_manager import reset_mcp_managers
-from agent.mcp_config import is_project_mcp_trusted
+from agent.mcp_config import (
+    is_project_mcp_trusted,
+    project_mcp_config_path,
+    sanitize_mcp_config_for_edit,
+    save_project_mcp_config,
+    validate_mcp_config_payload,
+)
 from agent.memory_store import get_memory_store
 from agent.memory_retrieve import retrieve_memories_for_task
 from agent.terminal import (
@@ -183,6 +219,7 @@ RunMode = Literal["read_only", "workspace", "ask"]
 
 
 class AskRequest(StrictRequest):
+    feedback_requested: bool = False
     prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
     auto_fallback: bool = False
@@ -190,6 +227,7 @@ class AskRequest(StrictRequest):
     reset_session: bool = False
     conversation_id: Optional[str] = None
     run_mode: Optional[RunMode] = None
+    contexts: list["ContextAttachmentRequest"] = Field(default_factory=list, max_length=20)
 
 
 class ApprovalDecisionRequest(StrictRequest):
@@ -206,20 +244,62 @@ class UpdateConversationRequest(StrictRequest):
 
 
 class ConversationAskRequest(StrictRequest):
+    feedback_requested: bool = False
     prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
     auto_fallback: bool = False
     run_mode: Optional[RunMode] = None
+    contexts: list["ContextAttachmentRequest"] = Field(default_factory=list, max_length=20)
+
+
+class ContextAttachmentRequest(StrictRequest):
+    kind: str = Field(..., pattern="^(file|folder|selection|diff|build_log|terminal|error|screenshot|conversation|symbol)$")
+    label: str = Field(..., min_length=1, max_length=240)
+    path: Optional[str] = Field(default=None, max_length=1000)
+    text: Optional[str] = Field(default=None, max_length=24_000)
+    symbol: Optional[str] = Field(default=None, max_length=500)
+    line_start: Optional[int] = Field(default=None, ge=1)
+    line_end: Optional[int] = Field(default=None, ge=1)
+    ref_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class ContextPreviewRequest(StrictRequest):
+    prompt: str = Field(default="", max_length=100_000)
+    contexts: list[ContextAttachmentRequest] = Field(default_factory=list, max_length=20)
 
 
 class WriteFileRequest(StrictRequest):
     path: str = Field(..., min_length=1)
     content: str = Field(default="", max_length=2_000_000)
+    expected_revision: Optional[str] = Field(default=None, pattern="^[a-f0-9]{64}$")
+
+
+class FeedbackSettingsRequest(StrictRequest):
+    build_after_changes: bool = False
+    run_tests: bool = False
+    fix_failures: bool = False
+
+
+class RuntimeDiagnosticRequest(StrictRequest):
+    message: str = Field(..., min_length=1, max_length=24_000)
 
 
 class RestoreCheckpointRequest(StrictRequest):
     path: Optional[str] = None
     preview: bool = False
+
+
+class RestoreSnapshotRequest(StrictRequest):
+    expected_revision: str = Field(..., min_length=64, max_length=64)
+
+
+class SnapshotBranchRequest(StrictRequest):
+    name: str = Field(..., min_length=1, max_length=160)
+
+
+class RevertHunkRequest(StrictRequest):
+    path: str = Field(..., min_length=1)
+    hunk: str = Field(..., min_length=1, max_length=200_000)
 
 
 class JobMessageRequest(StrictRequest):
@@ -258,6 +338,9 @@ class TerminalResizeRequest(StrictRequest):
 class McpEnableRequest(StrictRequest):
     enabled: bool = True
 
+class McpConfigRequest(StrictRequest):
+    config: dict[str, Any] = Field(default_factory=dict)
+
 
 class MemoryEditRequest(StrictRequest):
     title: Optional[str] = None
@@ -273,6 +356,31 @@ class MemoryCreateRequest(StrictRequest):
     scope: str = "project"
     tags: list[str] = Field(default_factory=list)
     status: str = "candidate"
+
+
+class RuleCreateRequest(StrictRequest):
+    name: str = Field(..., min_length=1, max_length=67)
+    description: str = Field(default="", max_length=200)
+    content: str = Field(..., min_length=1, max_length=32_000)
+    always: bool = True
+    globs: list[str] = Field(default_factory=list, max_length=16)
+
+
+class RuleUpdateRequest(StrictRequest):
+    description: Optional[str] = Field(default=None, max_length=200)
+    content: Optional[str] = Field(default=None, max_length=32_000)
+    always: Optional[bool] = None
+    globs: Optional[list[str]] = Field(default=None, max_length=16)
+
+
+class SkillToggleRequest(StrictRequest):
+    scope: str = Field(..., pattern="^(project|user)$")
+    name: str = Field(..., min_length=1, max_length=64)
+    enabled: bool = True
+
+
+class ProjectSettingsPatchRequest(StrictRequest):
+    permission_profile: Optional[str] = Field(default=None, min_length=1, max_length=32)
 
 
 class WebSocketTicketRequest(StrictRequest):
@@ -498,6 +606,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Restart recovery belongs to server startup, not app construction.
+        # Schema generation and read-only contract checks must not invalidate live PTYs.
+        mark_interrupted_terminals()
         try:
             yield
         finally:
@@ -524,9 +635,6 @@ def create_app(
     reg_limiter = runtime.registration_limiter
     app.state.diagnostics = get_diagnostic_store(effective_task_store.db_path)
     configure_task_store(effective_task_store, settings)
-    # Mark pre-restart PTY sessions as interrupted; we cannot recover their
-    # underlying processes.
-    mark_interrupted_terminals()
 
     app.add_middleware(
         CORSMiddleware,
@@ -670,7 +778,9 @@ def create_app(
 
     def reserve_guest_turn(user_id: str) -> int | None:
         try:
-            return app.state.user_store.consume_guest_message(user_id)
+            return app.state.user_store.consume_guest_message(
+                user_id, limit=settings.guest_message_limit
+            )
         except UserStoreError as exc:
             status = 403 if exc.code == "guest_quota_exhausted" else 400
             raise account_error(exc, status) from exc
@@ -1227,6 +1337,8 @@ def create_app(
                 continue_session=body.continue_session and not body.reset_session,
                 reset_session=body.reset_session,
                 run_mode=body.run_mode,
+                contexts=[item.model_dump(exclude_none=True) for item in body.contexts],
+                feedback_requested=body.feedback_requested,
             )
         except RuntimeError as e:
             if guest_remaining is not None:
@@ -1290,6 +1402,45 @@ def create_app(
         if not conv:
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
         return conv
+
+    @app.get("/api/conversations/{conversation_id}/turns/{turn_id}/trace")
+    def get_turn_trace(
+        conversation_id: str,
+        turn_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        trace = build_turn_trace(
+            ConversationEventStore(app.state.task_store),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
+        if trace is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Turn 不存在或不属于该对话: {turn_id}",
+            )
+        return trace
+
+    @app.get("/api/conversations/{conversation_id}/turns")
+    def list_conversation_turns(
+        conversation_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        turns = ConversationEventStore(app.state.task_store).list_turns(
+            conversation_id,
+            user_id=user_id,
+        )
+        if turns is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"对话不存在: {conversation_id}",
+            )
+        return {
+            "conversation_id": conversation_id,
+            "schema_version": 1,
+            "turns": turns,
+        }
 
     @app.get("/api/conversations/{conversation_id}/events")
     def get_conversation_events(
@@ -1407,6 +1558,8 @@ def create_app(
                 continue_session=True,
                 reset_session=False,
                 run_mode=body.run_mode,
+                contexts=[item.model_dump(exclude_none=True) for item in body.contexts],
+                feedback_requested=body.feedback_requested,
             )
         except RuntimeError as e:
             if guest_remaining is not None:
@@ -1416,6 +1569,37 @@ def create_app(
             "job": job_to_dict(job),
             "conversation_id": conversation_id,
             "guest_remaining": guest_remaining,
+        }
+
+    @app.get("/api/conversations/{conversation_id}/context")
+    def get_conversation_context(
+        conversation_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        conv = get_conversation(conversation_id, user_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        jobs = list_jobs(user_id, conv["project_id"], conversation_id)
+        latest = max(jobs, key=lambda row: row.get("created_at") or 0) if jobs else None
+        context = latest.get("context") if latest and isinstance(latest.get("context"), dict) else {}
+        summary = context.get("summary") if isinstance(context.get("summary"), dict) else None
+        if summary is None:
+            bundle = build_context_bundle(
+                user_id,
+                conv["project_id"],
+                str(latest.get("prompt") or "") if latest else "",
+                context.get("attachments") or [],
+                effective_task_store,
+                include_automatic=True,
+                budget_chars=settings.max_prompt_chars,
+            )
+            bundle.pop("model_context", None)
+            summary = bundle
+        return {
+            "user_id": user_id,
+            "project_id": conv["project_id"],
+            "conversation_id": conversation_id,
+            **summary,
         }
 
     @app.get("/api/projects/{project_id}/session")
@@ -1591,7 +1775,12 @@ def create_app(
         )
 
     @app.get("/api/jobs/{job_id}/log")
-    def get_task_log(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+    def get_task_log(
+        job_id: str,
+        offset: int = 0,
+        limit: int | None = None,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
         job = get_job(job_id, user_id=user_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
@@ -1599,7 +1788,29 @@ def create_app(
         path = __import__("pathlib").Path(log_path) if log_path else None
         if not path or not path.is_file():
             raise HTTPException(status_code=404, detail="该任务没有构建日志")
-        return {"job_id": job_id, "content": path.read_text(encoding="utf-8", errors="replace")}
+        content = path.read_text(encoding="utf-8", errors="replace")
+        total = len(content)
+        # 分页读取：客户端传 offset/limit，10MB 级日志不再一次性下发
+        if limit is not None:
+            page_limit = max(1, min(limit, 524_288))
+            page_offset = max(0, offset)
+            chunk = content[page_offset : page_offset + page_limit]
+            return {
+                "job_id": job_id,
+                "content": chunk,
+                "offset": page_offset,
+                "limit": page_limit,
+                "total_size": total,
+                "has_more": page_offset + len(chunk) < total,
+            }
+        return {
+            "job_id": job_id,
+            "content": content,
+            "offset": 0,
+            "limit": total,
+            "total_size": total,
+            "has_more": False,
+        }
 
     @app.post("/api/jobs/{job_id}/recover", status_code=201)
     def recover_interrupted_job(
@@ -1703,6 +1914,48 @@ def create_app(
             "content": log_file.read_text(encoding="utf-8", errors="replace"),
         }
 
+    @app.get("/api/projects/{project_id}/feedback")
+    def get_project_feedback(project_id: str, job_id: Optional[str] = None, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if job_id:
+            job = effective_task_store.get_task(job_id, user_id)
+            if not job or job["project_id"] != project_id:
+                raise HTTPException(status_code=404, detail="任务不存在")
+        result = feedback_summary(effective_task_store, user_id, project_id, job_id)
+        result["settings"] = FeedbackStore(effective_task_store.db_path).settings(user_id, project_id, settings.auto_build_after_edit)
+        return result
+
+    @app.put("/api/projects/{project_id}/feedback/settings")
+    def put_feedback_settings(project_id: str, body: FeedbackSettingsRequest, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return FeedbackStore(effective_task_store.db_path).save_settings(user_id, project_id, body.model_dump())
+
+    @app.post("/api/projects/{project_id}/feedback/runtime", status_code=201)
+    def add_runtime_diagnostic(project_id: str, body: RuntimeDiagnosticRequest, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        current = feedback_summary(effective_task_store, user_id, project_id)
+        return app.state.diagnostics.record("runtime", "user_report", body.message, severity="error", user_id=user_id, project_id=project_id, task_id=current.get("job_id"))
+
+    @app.get("/api/projects/{project_id}/files/search")
+    def search_project_files(project_id: str, q: str = Query(default="", max_length=200), kind: str = Query(default="all", pattern="^(all|code|resources)$"), modified_only: bool = False, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+            modified = None
+            if modified_only:
+                modified = {f["path"] for f in workspace_diff(user_id, project_id).get("files", [])}
+            return search_files(workspace_path(user_id, project_id), q, kind, modified)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
     @app.get("/api/projects/{project_id}/files")
     def list_project_files(
         project_id: str,
@@ -1747,6 +2000,7 @@ def create_app(
             "user_id": user_id,
             "project_id": project_id,
             "writable": is_writable_path(path),
+            "revision": hashlib.sha256(result.output["content"].encode("utf-8")).hexdigest(),
             **result.output,
         }
 
@@ -1766,7 +2020,14 @@ def create_app(
             raise HTTPException(status_code=400, detail="缺少 path 参数")
 
         workspace = workspace_path(user_id, project_id)
-        result = write_file(workspace, path, body.content)
+        with project_operation(user_id, project_id):
+            if any(job["status"] in {"queued", "running", "paused", "awaiting_approval", "cancel_requested"} for job in effective_task_store.list_tasks(user_id, project_id)):
+                raise HTTPException(status_code=409, detail="Agent 正在操作项目，请等待任务结束后保存")
+            if body.expected_revision:
+                current = read_file_meta(workspace, path)
+                if not current.ok or current.output.get("truncated") or hashlib.sha256(current.output["content"].encode("utf-8")).hexdigest() != body.expected_revision:
+                    raise HTTPException(status_code=409, detail="文件已发生变化。请保留草稿并重新加载文件后合并修改")
+            result = write_file(workspace, path, body.content)
         if not result.ok:
             raise HTTPException(status_code=400, detail=result.output)
         return {
@@ -1821,6 +2082,56 @@ def create_app(
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
+    def history_repo(project_id: str, user_id: str, *, write: bool = False) -> WorkspaceRepository:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if write:
+            active = {"queued", "running", "paused", "awaiting_approval", "cancel_requested"}
+            if any(t["status"] in active for t in effective_task_store.list_tasks(user_id, project_id)):
+                raise HTTPException(status_code=409, detail="Wait for project tasks to finish before restoring")
+            if any(t.get("status") in {"starting", "running"} for t in list_terminals(user_id, project_id)):
+                raise HTTPException(status_code=409, detail="Close project terminals before restoring")
+        return WorkspaceRepository(user_id, project_id, task_store=effective_task_store)
+
+    @app.get("/api/projects/{project_id}/history")
+    def get_project_history(project_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        return {"entries": history(history_repo(project_id, user_id))}
+
+    @app.get("/api/projects/{project_id}/checkpoints/{checkpoint_id}/preview")
+    def preview_snapshot(project_id: str, checkpoint_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            with project_operation(user_id, project_id):
+                return restore_preview(history_repo(project_id, user_id), checkpoint_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.post("/api/projects/{project_id}/checkpoints/{checkpoint_id}/restore-snapshot")
+    def restore_history_snapshot(project_id: str, checkpoint_id: str, body: RestoreSnapshotRequest,
+                                 user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            with project_operation(user_id, project_id):
+                result = restore_snapshot(history_repo(project_id, user_id, write=True), checkpoint_id, body.expected_revision)
+                if not result["ok"]:
+                    raise HTTPException(status_code=409, detail=result)
+                return result
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
+    @app.post("/api/projects/{project_id}/checkpoints/{checkpoint_id}/branch")
+    def create_snapshot_branch(project_id: str, checkpoint_id: str, body: SnapshotBranchRequest,
+                               user_id: str = Depends(current_user)) -> dict[str, Any]:
+        try:
+            with project_operation(user_id, project_id):
+                return branch_snapshot(history_repo(project_id, user_id, write=True), checkpoint_id, body.name)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.get("/api/projects/{project_id}/checkpoints")
     def get_checkpoints(
         project_id: str,
@@ -1844,16 +2155,18 @@ def create_app(
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
         try:
-            if body.preview:
-                result = detect_checkpoint_conflicts(
-                    user_id, project_id, checkpoint_id
-                )
-            elif body.path:
-                result = restore_file(
-                    user_id, project_id, checkpoint_id, body.path
-                )
-            else:
-                result = restore_checkpoint(user_id, project_id, checkpoint_id)
+            with project_operation(user_id, project_id):
+                repo = history_repo(project_id, user_id, write=not body.preview)
+                if body.preview:
+                    result = detect_checkpoint_conflicts(user_id, project_id, checkpoint_id)
+                else:
+                    # Legacy conflict-safe undo also retains a durable recovery point.
+                    check = repo.detect_conflicts(checkpoint_id)
+                    if check.get("has_conflicts") or not check.get("ok"):
+                        raise HTTPException(status_code=409, detail=check)
+                    backup = repo.create_checkpoint("manual")
+                    result = repo.restore_file(checkpoint_id, body.path) if body.path else repo.restore_checkpoint(checkpoint_id)
+                    result["backup_checkpoint_id"] = backup["id"]
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         if body.preview:
@@ -1872,6 +2185,20 @@ def create_app(
             "checkpoint_id": checkpoint_id,
             **result,
         }
+
+    @app.post("/api/projects/{project_id}/diff/revert-hunk")
+    def post_revert_hunk(
+        project_id: str,
+        body: RevertHunkRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            result = revert_hunk(user_id, project_id, body.path, body.hunk)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if not result.get("ok"):
+            raise HTTPException(status_code=409, detail=result)
+        return {"user_id": user_id, "project_id": project_id, **result}
 
     @app.get("/api/projects/{project_id}/index/status")
     def get_index_status(
@@ -1956,6 +2283,71 @@ def create_app(
             "symbols": symbols,
         }
 
+    @app.get("/api/projects/{project_id}/context/suggestions")
+    def get_context_suggestions(
+        project_id: str,
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=40, ge=1, le=100),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        index = get_repo_index(user_id, project_id)
+        if index.status()["status"] != "ready":
+            index.rebuild()
+        repo_map = index.repo_map(max_files=500)
+        query = q.strip().lower().lstrip("@")
+        files = [
+            row for row in repo_map.get("files", [])
+            if not query or query in str(row.get("rel_path") or "").lower()
+        ][:limit]
+        folders = sorted(
+            {
+                str(Path(str(row.get("rel_path") or "")).parent.as_posix())
+                for row in repo_map.get("files", [])
+                if "/" in str(row.get("rel_path") or "")
+            }
+        )
+        folders = [path for path in folders if path != "." and (not query or query in path.lower())][:limit]
+        symbols = index.find_symbol(limit=200)
+        symbols = [
+            row for row in symbols
+            if not query
+            or query in str(row.get("name") or "").lower()
+            or query in str(row.get("qualified_name") or "").lower()
+        ][:limit]
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "files": files,
+            "folders": folders,
+            "symbols": symbols,
+        }
+
+    @app.post("/api/projects/{project_id}/context/preview")
+    def post_context_preview(
+        project_id: str,
+        body: ContextPreviewRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+            bundle = build_context_bundle(
+                user_id,
+                project_id,
+                body.prompt,
+                [item.model_dump(exclude_none=True) for item in body.contexts],
+                effective_task_store,
+                include_automatic=True,
+                budget_chars=settings.max_prompt_chars,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        bundle.pop("model_context", None)
+        return {"user_id": user_id, "project_id": project_id, **bundle}
+
     @app.get("/api/projects/{project_id}/rules")
     def get_project_rules(
         project_id: str,
@@ -1968,13 +2360,19 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(e)) from e
         workspace = workspace_path(user_id, project_id)
         focus_paths = [p.strip() for p in (focus or "").split(",") if p.strip()]
+        settings_data = load_project_settings(workspace)
+        disabled_rules = set(settings_data.get("disabled_rules") or [])
         candidates = discover_rules(workspace, user_id, focus_paths=focus_paths)
         bundle = load_rules_for_turn(workspace, user_id, focus_paths=focus_paths)
+        candidate_dicts = [
+            {**c.to_dict(), "enabled": c.id not in disabled_rules}
+            for c in candidates
+        ]
         return {
             "user_id": user_id,
             "project_id": project_id,
             "focus_paths": focus_paths,
-            "candidates": [c.to_dict() for c in candidates],
+            "candidates": candidate_dicts,
             "loaded": [item.to_dict() for item in bundle.loaded],
             "skipped": list(bundle.skipped),
             "total_chars": bundle.total_chars,
@@ -2014,6 +2412,9 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(e)) from e
         workspace = workspace_path(user_id, project_id)
         focus_paths = [p.strip() for p in (focus or "").split(",") if p.strip()]
+        disabled_skills = set(
+            load_project_settings(workspace).get("disabled_skills") or []
+        )
         if q or focus_paths:
             skills = discover_skills_for_context(
                 workspace,
@@ -2022,13 +2423,20 @@ def create_app(
                 query=q,
             )
         else:
-            skills = list_skills(workspace, user_id)
+            skills = list_skills(workspace, user_id, include_disabled=True)
+        skill_dicts = [
+            {
+                **s.to_dict(),
+                "enabled": f"{s.scope}:{s.name}" not in disabled_skills,
+            }
+            for s in skills
+        ]
         return {
             "user_id": user_id,
             "project_id": project_id,
             "query": q,
             "focus_paths": focus_paths,
-            "skills": [s.to_dict() for s in skills],
+            "skills": skill_dicts,
             "note": "Metadata only; full bodies require load_skill / skills/{name}.",
         }
 
@@ -2063,6 +2471,236 @@ def create_app(
             "executed": False,
             "skill": content.to_dict(),
         }
+
+    @app.post("/api/projects/{project_id}/rules", status_code=201)
+    def create_project_rule_route(
+        project_id: str,
+        body: RuleCreateRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        try:
+            rule = create_project_rule(
+                workspace,
+                body.name,
+                description=body.description,
+                body=body.content,
+                always=body.always,
+                globs=body.globs,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except FileExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "rule": {**rule.to_dict(), "enabled": True},
+        }
+
+    @app.patch("/api/projects/{project_id}/rules/{rule_id}")
+    def update_project_rule_route(
+        project_id: str,
+        rule_id: str,
+        body: RuleUpdateRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        try:
+            rule = update_project_rule(
+                workspace,
+                rule_id,
+                description=body.description,
+                body=body.content,
+                always=body.always,
+                globs=body.globs,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        disabled_rules = set(
+            load_project_settings(workspace).get("disabled_rules") or []
+        )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "rule": {**rule.to_dict(), "enabled": rule_id not in disabled_rules},
+        }
+
+    @app.delete("/api/projects/{project_id}/rules/{rule_id}", status_code=204)
+    def delete_project_rule_route(
+        project_id: str,
+        rule_id: str,
+        user_id: str = Depends(current_user),
+    ) -> None:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        try:
+            delete_project_rule(workspace, rule_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        current = load_project_settings(workspace)
+        if rule_id in current.get("disabled_rules") or []:
+            update_project_settings(
+                workspace,
+                disabled_rules=[
+                    item for item in current["disabled_rules"] if item != rule_id
+                ],
+            )
+
+    @app.post("/api/projects/{project_id}/rules/{rule_id}/toggle")
+    def toggle_project_rule_route(
+        project_id: str,
+        rule_id: str,
+        body: McpEnableRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        known_ids = {rule.id for rule in discover_rules(workspace, user_id)}
+        if rule_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+        try:
+            settings_data = set_rule_disabled(workspace, rule_id, not body.enabled)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "rule_id": rule_id,
+            "enabled": body.enabled,
+            "settings": settings_data,
+        }
+
+    @app.post("/api/projects/{project_id}/skills/toggle")
+    def toggle_project_skill_route(
+        project_id: str,
+        body: SkillToggleRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        known = {
+            f"{s.scope}:{s.name}"
+            for s in list_skills(workspace, user_id, include_disabled=True)
+        }
+        skill_key = f"{body.scope}:{body.name}"
+        if skill_key not in known:
+            raise HTTPException(status_code=404, detail=f"Skill 不存在: {skill_key}")
+        try:
+            settings_data = set_skill_disabled(workspace, skill_key, not body.enabled)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "skill_key": skill_key,
+            "enabled": body.enabled,
+            "settings": settings_data,
+        }
+
+    @app.get("/api/projects/{project_id}/settings")
+    def get_project_settings_route(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "settings": load_project_settings(workspace),
+            "permission_profiles": profile_summary(),
+        }
+
+    @app.patch("/api/projects/{project_id}/settings")
+    def patch_project_settings_route(
+        project_id: str,
+        body: ProjectSettingsPatchRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        if body.permission_profile is not None:
+            if body.permission_profile not in PERMISSION_PROFILES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "无效的权限档位: "
+                        f"{body.permission_profile}（可选: {', '.join(PERMISSION_PROFILES)}）"
+                    ),
+                )
+            update_project_settings(
+                workspace, permission_profile=body.permission_profile
+            )
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "settings": load_project_settings(workspace),
+            "permission_profiles": profile_summary(),
+        }
+
+    @app.get("/api/conversations/{conversation_id}/usage")
+    def get_conversation_usage_route(
+        conversation_id: str,
+        turn_limit: int = Query(default=100, ge=1, le=500),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = conversation_usage(
+            effective_task_store,
+            user_id,
+            conversation_id,
+            turn_limit=turn_limit,
+        )
+        if result is None:
+            raise HTTPException(
+                status_code=404, detail=f"对话不存在: {conversation_id}"
+            )
+        return result
+
+    @app.get("/api/usage/summary")
+    def get_usage_summary_route(
+        project_id: Optional[str] = Query(default=None),
+        days: int = Query(default=30, ge=0, le=365),
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        if project_id is not None:
+            try:
+                load_project_meta(user_id, project_id)
+            except (FileNotFoundError, ValueError) as e:
+                raise HTTPException(status_code=404, detail=str(e)) from e
+        return usage_summary(
+            effective_task_store,
+            user_id,
+            project_id=project_id,
+            days=days,
+        )
 
     def _memory_store():
         from agent.paths import DATA_DIR
@@ -2139,6 +2777,7 @@ def create_app(
     def list_memory_usage(
         project_id: str,
         memory_id: Optional[str] = None,
+        task_id: Optional[str] = None,
         limit: int = Query(default=50, ge=1, le=200),
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
@@ -2147,7 +2786,11 @@ def create_app(
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         rows = _memory_store().list_usage(
-            user_id, memory_id=memory_id, project_id=project_id, limit=limit
+            user_id,
+            memory_id=memory_id,
+            project_id=project_id,
+            task_id=task_id,
+            limit=limit,
         )
         return {"user_id": user_id, "project_id": project_id, "usage": rows}
 
@@ -2417,6 +3060,64 @@ def create_app(
             "servers": refreshed,
         }
 
+    @app.get("/api/projects/{project_id}/mcp/config")
+    def get_mcp_config(
+        project_id: str,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        path = project_mcp_config_path(workspace)
+        if not path.is_file():
+            return {
+                "user_id": user_id,
+                "project_id": project_id,
+                "exists": False,
+                "config": {"mcpServers": {}},
+                "project_trusted": is_project_mcp_trusted(user_id, project_id, workspace),
+            }
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"mcp.json 解析失败: {e}"
+            ) from e
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "exists": True,
+            "config": sanitize_mcp_config_for_edit(data),
+            "project_trusted": is_project_mcp_trusted(user_id, project_id, workspace),
+        }
+
+    @app.put("/api/projects/{project_id}/mcp/config")
+    def put_mcp_config(
+        project_id: str,
+        body: McpConfigRequest,
+        user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            load_project_meta(user_id, project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        workspace = workspace_path(user_id, project_id)
+        try:
+            normalized = validate_mcp_config_payload(body.config)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        save_project_mcp_config(workspace, normalized)
+        mgr = get_mcp_manager(user_id, project_id, workspace)
+        mgr.reload_configs()
+        return {
+            "user_id": user_id,
+            "project_id": project_id,
+            "config": sanitize_mcp_config_for_edit(normalized),
+            "servers": mgr.list_servers(),
+        }
+
     @app.post("/api/projects/{project_id}/terminals", status_code=201)
     def create_project_terminal(
         project_id: str,
@@ -2443,16 +3144,20 @@ def create_app(
             )
         ensure_write_budget()
         try:
-            return create_terminal(
-                user_id,
-                project_id,
-                cwd=body.cwd or ".",
-                argv=body.argv,
-                shell=body.shell,
-                cols=body.cols,
-                rows=body.rows,
-                env=body.env,
-            )
+            with project_operation(user_id, project_id):
+                load_project_meta(user_id, project_id)
+                if sum(t.get("status") in {"starting", "running"} for t in list_terminals(user_id, project_id)) >= settings.max_terminals_per_project:
+                    raise RuntimeError("项目活动终端达到上限")
+                return create_terminal(
+                    user_id,
+                    project_id,
+                    cwd=body.cwd or ".",
+                    argv=body.argv,
+                    shell=body.shell,
+                    cols=body.cols,
+                    rows=body.rows,
+                    env=body.env,
+                )
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
         except RuntimeError as e:
@@ -2486,6 +3191,17 @@ def create_app(
         if not info:
             raise HTTPException(status_code=404, detail="终端不存在")
         return info
+
+    @app.get("/api/terminals/{terminal_id}/output")
+    def get_terminal_output(terminal_id: str, after_seq: int = Query(default=0, ge=0),
+                            user_id: str = Depends(current_user)) -> dict[str, Any]:
+        require_terminal_enabled()
+        info = get_terminal(terminal_id, user_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="终端不存在")
+        chunks = terminal_outputs(terminal_id, after_seq=after_seq, limit=200)
+        return {"terminal": info, "chunks": chunks,
+                "next_seq": chunks[-1]["seq"] if chunks else after_seq}
 
     @app.post("/api/terminals/{terminal_id}/input")
     def post_terminal_input(

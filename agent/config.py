@@ -113,6 +113,7 @@ class Settings:
     max_events_per_conversation: int = 100_000
     max_registration_per_hour: int = 20
     max_requests_per_minute: int = 600
+    guest_message_limit: int = 3
     minimum_free_disk_bytes: int = 512 * 1024 * 1024
     max_build_artifacts_per_project: int = 50
     max_terminals_per_project: int = 5
@@ -266,6 +267,9 @@ def _build_settings(
         ),
         max_requests_per_minute=int(
             shared.get("max_requests_per_minute", 600)
+        ),
+        guest_message_limit=max(
+            0, int(shared.get("guest_message_limit", 3))
         ),
         minimum_free_disk_bytes=int(
             shared.get("minimum_free_disk_bytes", 512 * 1024 * 1024)
@@ -494,7 +498,18 @@ def load_settings() -> Settings:
             1, int(file_data.get("max_registration_per_hour", 20))
         ),
         "max_requests_per_minute": max(
-            10, int(file_data.get("max_requests_per_minute", 600))
+            10,
+            int(
+                os.environ.get("AGENT_MAX_REQUESTS_PER_MINUTE")
+                or file_data.get("max_requests_per_minute", 600)
+            ),
+        ),
+        "guest_message_limit": max(
+            0,
+            int(
+                os.environ.get("AGENT_GUEST_MESSAGE_LIMIT")
+                or file_data.get("guest_message_limit", 3)
+            ),
         ),
         "minimum_free_disk_bytes": max(
             0, int(file_data.get("minimum_free_disk_bytes", 512 * 1024 * 1024))

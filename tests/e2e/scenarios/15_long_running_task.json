@@ -1,0 +1,44 @@
+{
+  "id": "15_long_running_task",
+  "title": "长任务",
+  "description": "5 步工具调用 + 模型延迟的长任务：全部事件按序落库、任务最终成功",
+  "prompt": "执行一组耗时步骤",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "执行第 1/5 步。",
+      "delay_ms": 200,
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(0.6); print('E2E-LONG-1')"]}}]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 200,
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(0.6); print('E2E-LONG-2')"]}}]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 200,
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(0.6); print('E2E-LONG-3')"]}}]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 200,
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(0.6); print('E2E-LONG-4')"]}}]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 200,
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(0.6); print('E2E-LONG-5')"]}}]
+    },
+    {"type": "final", "text": "五步长任务全部完成。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_command", "run_command", "run_command", "run_command", "run_command"],
+    "tool_result_contains": {"run_command": "E2E-LONG-5"},
+    "min_tool_results": 5,
+    "final_text_contains": "全部完成",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "assistant_message", "turn_completed"]
+  }
+}

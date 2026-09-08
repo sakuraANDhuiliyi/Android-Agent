@@ -18,6 +18,10 @@
     filePath: ".",
     fileEditPath: null,
     fileWritable: false,
+    traceConversations: [],
+    traceConversationId: null,
+    traceTurnId: null,
+    traceTurns: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -61,6 +65,13 @@
     changesEmpty: $("changesEmpty"),
     logText: $("logText"),
     btnLoadLog: $("btnLoadLog"),
+    traceConversation: $("traceConversation"),
+    btnTraceRefresh: $("btnTraceRefresh"),
+    traceTurnList: $("traceTurnList"),
+    traceDetail: $("traceDetail"),
+    traceMeta: $("traceMeta"),
+    traceSteps: $("traceSteps"),
+    traceEmpty: $("traceEmpty"),
     createDialog: $("createDialog"),
     createForm: $("createForm"),
     filesDialog: $("filesDialog"),
@@ -311,6 +322,7 @@
     if (!active) {
       stopPolling();
       await refreshProjects({ silent: true });
+      syncTraceWithJob(job).catch(() => {});
     }
   }
 
@@ -468,16 +480,24 @@
     els.btnDownloadApk.disabled = !enabled || !project?.has_apk;
     els.btnDeleteProject.disabled = !enabled;
     els.jobHistory.disabled = !enabled;
+    els.traceConversation.disabled = !enabled;
+    els.btnTraceRefresh.disabled = !enabled;
 
     if (!project) {
       els.projectTitle.textContent = "选择项目";
       els.projectMeta.textContent = "从左侧选择或创建一个项目";
       els.jobHistory.innerHTML = '<option value="">最近任务</option>';
+      state.traceConversationId = null;
+      state.traceTurnId = null;
+      state.traceConversations = [];
+      renderTraceEmpty("先选择项目。");
       return;
     }
 
     els.projectTitle.textContent = project.name || project.id;
     els.projectMeta.textContent = `${project.package || project.package_name || "—"} · ${project.id}`;
+
+    loadTraceConversations().catch(() => renderTraceEmpty("对话列表加载失败。"));
 
     if (reloadJobs) {
       await loadJobHistory(project.id);
@@ -513,6 +533,7 @@
     state.currentJobId = job.id;
     els.jobHistory.value = job.id;
     await syncJob(job, { appendOnly: false });
+    syncTraceWithJob(job).catch(() => {});
     const active = job.status === "queued" || job.status === "running";
     if (startIfActive && active) startPolling(job.id);
   }
@@ -629,6 +650,199 @@
     }
   }
 
+  const TURN_STATUS_LABELS = {
+    queued: "排队中",
+    running: "运行中",
+    awaiting_approval: "等待审批",
+    succeeded: "成功",
+    failed: "失败",
+    canceled: "已取消",
+    interrupted: "已中断",
+    paused: "已暂停",
+  };
+
+  function formatClock(ts) {
+    if (!ts) return "—";
+    return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  }
+
+  function formatMs(ms) {
+    if (ms == null) return "—";
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
+  }
+
+  function renderTraceEmpty(message) {
+    els.traceTurnList.innerHTML = "";
+    els.traceDetail.hidden = true;
+    els.traceEmpty.textContent = message || "选择对话后查看 Turn 执行追踪。";
+    els.traceEmpty.hidden = false;
+  }
+
+  function markActiveTurn(turnId) {
+    els.traceTurnList.querySelectorAll(".trace-turn").forEach((el) => {
+      el.classList.toggle("active", el.dataset.id === turnId);
+    });
+  }
+
+  async function loadTraceConversations({ keepSelection = false } = {}) {
+    const projectId = state.selectedProjectId;
+    if (!projectId) {
+      renderTraceEmpty("先选择项目。");
+      return;
+    }
+    const data = await api(`/api/projects/${projectId}/conversations`);
+    state.traceConversations = data.conversations || [];
+    const previous = state.traceConversationId;
+    els.traceConversation.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = "选择对话";
+    els.traceConversation.appendChild(def);
+    for (const conv of state.traceConversations) {
+      const opt = document.createElement("option");
+      opt.value = conv.id;
+      opt.textContent = `${conv.title || conv.id} (${conv.turn_count ?? 0})`;
+      els.traceConversation.appendChild(opt);
+    }
+    const stillThere =
+      keepSelection &&
+      previous &&
+      state.traceConversations.some((c) => c.id === previous);
+    const target = stillThere ? previous : state.traceConversations[0]?.id || "";
+    state.traceConversationId = target || null;
+    els.traceConversation.value = target;
+    if (target) await loadTraceTurns();
+    else renderTraceEmpty("该项目暂无对话。");
+  }
+
+  async function loadTraceTurns({ selectTaskId = null } = {}) {
+    const conversationId = state.traceConversationId;
+    if (!conversationId) return;
+    const data = await api(`/api/conversations/${conversationId}/turns`);
+    state.traceTurns = data.turns || [];
+    if (!state.traceTurns.length) {
+      renderTraceEmpty("该对话暂无 Turn。");
+      return;
+    }
+    els.traceEmpty.hidden = true;
+    els.traceTurnList.innerHTML = "";
+    for (const turn of state.traceTurns) {
+      const li = document.createElement("li");
+      li.className = "trace-turn" + (turn.id === state.traceTurnId ? " active" : "");
+      li.dataset.id = turn.id;
+      const counts = turn.event_counts || {};
+      const toolCalls = counts.tool_call || 0;
+      const approvals = counts.approval_required || 0;
+      const subParts = [`tools ${toolCalls}`];
+      if (approvals) subParts.push(`审批 ${approvals}`);
+      if (turn.task_id) subParts.push(turn.task_id.slice(0, 10));
+      li.innerHTML = `
+        <div class="trace-turn-head">
+          <span class="badge turn-${escapeHtml(turn.status || "unknown")}">${escapeHtml(
+            TURN_STATUS_LABELS[turn.status] || turn.status || "—",
+          )}</span>
+          <span class="mono trace-turn-time">${formatClock(turn.created_at)}</span>
+        </div>
+        <div class="trace-turn-preview">${escapeHtml(turn.user_preview || "（无输入）")}</div>
+        <div class="trace-turn-sub mono">${subParts.map(escapeHtml).join(" · ")}</div>
+      `;
+      li.addEventListener("click", () => {
+        state.traceTurnId = turn.id;
+        markActiveTurn(turn.id);
+        loadTurnTrace().catch((e) => toast(e.message));
+      });
+      els.traceTurnList.appendChild(li);
+    }
+
+    let wanted = null;
+    if (selectTaskId) {
+      const match = state.traceTurns.find((t) => t.task_id === selectTaskId);
+      wanted = match ? match.id : null;
+    }
+    if (
+      !wanted &&
+      state.traceTurnId &&
+      state.traceTurns.some((t) => t.id === state.traceTurnId)
+    ) {
+      wanted = state.traceTurnId;
+    }
+    wanted = wanted || state.traceTurns[0].id;
+    state.traceTurnId = wanted;
+    markActiveTurn(wanted);
+    await loadTurnTrace();
+  }
+
+  async function loadTurnTrace() {
+    const conversationId = state.traceConversationId;
+    const turnId = state.traceTurnId;
+    if (!conversationId || !turnId) return;
+    const trace = await api(
+      `/api/conversations/${conversationId}/turns/${turnId}/trace`,
+    );
+
+    const meta = [];
+    const status = trace.status || "unknown";
+    meta.push(
+      `<span class="badge turn-${escapeHtml(status)}">${escapeHtml(
+        TURN_STATUS_LABELS[trace.status] || trace.status || "—",
+      )}</span>`,
+    );
+    if (trace.trace_id) {
+      meta.push(`<span class="mono">trace ${escapeHtml(trace.trace_id.slice(0, 12))}</span>`);
+    }
+    if (trace.queue_ms != null) meta.push(`排队 ${formatMs(trace.queue_ms)}`);
+    if (trace.total_ms != null) meta.push(`总耗时 ${formatMs(trace.total_ms)}`);
+    if (trace.provider || trace.model) {
+      meta.push(`${escapeHtml(trace.provider || "?")}/${escapeHtml(trace.model || "?")}`);
+    }
+    meta.push(`${(trace.steps || []).length} 步`);
+    els.traceMeta.innerHTML = meta.join('<span class="trace-meta-sep">·</span>');
+
+    els.traceSteps.innerHTML = "";
+    for (const step of trace.steps || []) {
+      const li = document.createElement("li");
+      li.className = "trace-step";
+      li.dataset.type = step.type || "";
+      const metaParts = [];
+      if (step.duration_ms > 0) metaParts.push(`+${formatMs(step.duration_ms)}`);
+      if (step.tool_call_id) metaParts.push(`call ${step.tool_call_id.slice(0, 10)}`);
+      if (step.approval_id) metaParts.push(`approval ${step.approval_id.slice(0, 10)}`);
+      li.innerHTML = `
+        <div class="trace-step-rail"><span class="trace-dot"></span></div>
+        <div class="trace-step-body">
+          <div class="trace-step-head">
+            <span class="trace-step-label">${escapeHtml(step.label || step.type || "事件")}</span>
+            <span class="mono trace-step-time">${formatClock(step.at)}</span>
+          </div>
+          ${step.detail ? `<div class="trace-step-detail">${escapeHtml(step.detail)}</div>` : ""}
+          ${
+            metaParts.length
+              ? `<div class="trace-step-meta mono">${metaParts.map(escapeHtml).join(" · ")}</div>`
+              : ""
+          }
+        </div>
+      `;
+      els.traceSteps.appendChild(li);
+    }
+    els.traceDetail.hidden = false;
+  }
+
+  async function syncTraceWithJob(job) {
+    if (!state.connected) return;
+    const conversationId = job.conversation_id;
+    if (!conversationId) return;
+    if (state.traceConversationId !== conversationId) {
+      if (!state.traceConversations.some((c) => c.id === conversationId)) {
+        await loadTraceConversations({ keepSelection: true });
+      }
+      state.traceConversationId = conversationId;
+      els.traceConversation.value = conversationId;
+    }
+    await loadTraceTurns({ selectTaskId: job.id });
+  }
+
   async function openFiles() {
     if (!state.selectedProjectId) return;
     state.filePath = ".";
@@ -702,19 +916,20 @@
     toast("已保存");
   }
 
+  const TAB_PANELS = {
+    summary: "tabSummary",
+    changes: "tabChanges",
+    log: "tabLog",
+    trace: "tabTrace",
+  };
+
   function bindTabs() {
     document.querySelectorAll(".tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
         tab.classList.add("active");
-        const panel = document.getElementById(
-          tab.dataset.tab === "summary"
-            ? "tabSummary"
-            : tab.dataset.tab === "changes"
-              ? "tabChanges"
-              : "tabLog",
-        );
+        const panel = document.getElementById(TAB_PANELS[tab.dataset.tab] || "");
         panel?.classList.add("active");
       });
     });
@@ -762,6 +977,18 @@
     els.btnCloseFiles.addEventListener("click", () => els.filesDialog.close());
     els.btnSaveFile.addEventListener("click", () =>
       saveFile().catch((e) => toast(e.message)),
+    );
+    els.traceConversation.addEventListener("change", () => {
+      state.traceConversationId = els.traceConversation.value || null;
+      state.traceTurnId = null;
+      if (state.traceConversationId) {
+        loadTraceTurns().catch((e) => toast(e.message));
+      } else {
+        renderTraceEmpty("选择对话后查看 Turn 执行追踪。");
+      }
+    });
+    els.btnTraceRefresh.addEventListener("click", () =>
+      loadTraceConversations({ keepSelection: true }).catch((e) => toast(e.message)),
     );
     els.jobHistory.addEventListener("change", () => {
       const id = els.jobHistory.value;

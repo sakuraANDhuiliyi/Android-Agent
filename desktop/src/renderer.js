@@ -898,7 +898,7 @@
       });
     };
     bind(els.sashSidebar, "--sidebar-w", 160, 480);
-    bind(els.sashAi, "--ai-w", 360, 640);
+    bind(els.sashAi, "--ai-w", 400, 960);
     if (els.sashPreview) {
       const sash = els.sashPreview;
       let startX = 0;
@@ -1047,6 +1047,10 @@
         ev.preventDefault();
         toggleAi();
         if (!state.aiCollapsed) window.AiPanel?.focusComposer();
+      }
+      if (mod && ev.shiftKey && ev.key.toLowerCase() === "i") {
+        ev.preventDefault();
+        els.focusSwitch?.querySelector('[data-mode="agent"]')?.click();
       }
       if (mod && ev.key.toLowerCase() === "o" && !ev.shiftKey) {
         ev.preventDefault();

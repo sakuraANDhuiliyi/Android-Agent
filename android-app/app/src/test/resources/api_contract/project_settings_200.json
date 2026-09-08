@@ -1,0 +1,47 @@
+{
+  "user_id": "user-alice",
+  "project_id": "demo-app",
+  "settings": {
+    "permission_profile": "standard",
+    "disabled_rules": [],
+    "disabled_skills": []
+  },
+  "permission_profiles": [
+    {
+      "profile": "safe",
+      "label": "安全",
+      "description": "只读、搜索、构建与测试自动执行；写入文件、联网、运行命令均需确认。",
+      "risk_actions": {
+        "read": "allow",
+        "workspace_write": "ask",
+        "process": "ask",
+        "network": "ask",
+        "destructive": "ask"
+      }
+    },
+    {
+      "profile": "standard",
+      "label": "标准",
+      "description": "工作区读写、Git 与构建测试自动执行；联网、命令与破坏性操作需确认。",
+      "risk_actions": {
+        "read": "allow",
+        "workspace_write": "allow",
+        "process": "ask",
+        "network": "ask",
+        "destructive": "ask"
+      }
+    },
+    {
+      "profile": "full_access",
+      "label": "完全访问",
+      "description": "大部分操作自动执行；破坏性操作、下载与外部服务调用始终需要确认。",
+      "risk_actions": {
+        "read": "allow",
+        "workspace_write": "allow",
+        "process": "allow",
+        "network": "allow",
+        "destructive": "ask"
+      }
+    }
+  ]
+}

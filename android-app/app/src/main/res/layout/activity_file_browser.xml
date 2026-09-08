@@ -35,7 +35,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnOpenFiles"
-                style="@style/Widget.Material3.Button.TonalButton"
+                style="@style/Widget.AndroidAgent.Button.Tonal"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/files" />
@@ -54,12 +54,28 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSave"
-                style="@style/Widget.Material3.Button.OutlinedButton"
+                style="@style/Widget.AndroidAgent.Button.Outlined"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:enabled="false"
                 android:text="@string/save" />
         </LinearLayout>
+
+        <HorizontalScrollView
+            android:id="@+id/editorActions"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            app:layout_constraintTop_toBottomOf="@id/layoutEditorBar"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingHorizontal="12dp">
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnEdit" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/explorer_edit" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnUndo" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/explorer_undo" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnRedo" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/explorer_redo" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnCodeAgent" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/ask_agent" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnOpenTabs" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/explorer_open_files" />
+            </LinearLayout>
+        </HorizontalScrollView>
 
         <TextView
             android:id="@+id/textEditorStatus"
@@ -70,7 +86,7 @@
             android:textAppearance="?attr/textAppearanceBodySmall"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/layoutEditorBar"
+            app:layout_constraintTop_toBottomOf="@id/editorActions"
             tools:text="只读 · 12 KB" />
 
         <HorizontalScrollView
@@ -78,7 +94,7 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:fillViewport="true"
-            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintBottom_toTopOf="@id/selectionActions"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/textEditorStatus">
@@ -89,7 +105,7 @@
                 android:layout_height="match_parent"
                 android:fillViewport="true">
 
-                <EditText
+                <com.androidagent.client.CodeEditorView
                     android:id="@+id/editFileContent"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -104,6 +120,10 @@
                     android:padding="12dp"
                     android:textSize="13sp" />
             </ScrollView>
+        </HorizontalScrollView>
+
+        <HorizontalScrollView android:id="@+id/selectionActions" android:layout_width="0dp" android:layout_height="wrap_content" android:visibility="gone" android:background="?attr/colorSurfaceVariant" app:layout_constraintStart_toStartOf="parent" app:layout_constraintEnd_toEndOf="parent" app:layout_constraintBottom_toBottomOf="parent">
+            <LinearLayout android:id="@+id/selectionMenu" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:paddingHorizontal="8dp" />
         </HorizontalScrollView>
 
     </androidx.constraintlayout.widget.ConstraintLayout>
@@ -126,6 +146,9 @@
             android:textAppearance="?attr/textAppearanceTitleMedium"
             tools:text="项目: demo" />
 
+        <EditText android:id="@+id/editSearchFiles" android:layout_width="match_parent" android:layout_height="wrap_content" android:singleLine="true" android:inputType="text" android:hint="@string/explorer_search" android:importantForAutofill="no" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnFileFilter" style="@style/Widget.AndroidAgent.Button.Outlined" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/explorer_filter" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -135,7 +158,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnParentDir"
-                style="@style/Widget.Material3.Button.OutlinedButton"
+                style="@style/Widget.AndroidAgent.Button.Outlined"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/parent_dir" />

@@ -116,6 +116,7 @@ class IsolatedWorkspaceMixin:
             patch("agent.paths.BUILDS_DIR", self._builds),
             patch("agent.paths.DATA_DIR", self._data),
             patch("agent.workspace.DATA_DIR", self._data),
+            patch("agent.terminal.DATA_DIR", self._data),
             patch("agent.database.DATA_DIR", self._data),
             patch("agent.paths.TEMPLATE_DIR", self._template_copy),
             patch("agent.project.TEMPLATE_DIR", self._template_copy),
@@ -204,6 +205,29 @@ class WorkspaceRepositoryTests(IsolatedWorkspaceMixin, unittest.TestCase):
             self.assertTrue(any(f["status"] == "deleted" for f in status["files"]))
             self.assertTrue(any(f["status"] == "untracked" for f in status["files"]))
             self.assertTrue(any(f["status"] == "modified" for f in status["files"]))
+
+    def test_git_diff_is_structured_and_hunk_can_be_reverted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "fixture"
+            source.mkdir()
+            target = source / "Main.kt"
+            target.write_text("one\nold\nthree\n", encoding="utf-8")
+            _git_init(source)
+            _git_commit(source, "initial")
+            project_id = import_project("u1", source, name="review", package="com.example.review")
+            workspace_file = self._workspaces / "u1" / project_id / "Main.kt"
+            workspace_file.write_text("one\nnew\nthree\n", encoding="utf-8")
+
+            repo = WorkspaceRepository("u1", project_id, task_store=self._store())
+            diff = repo.git_diff()
+            self.assertEqual(diff["files"][0]["path"], "Main.kt")
+            self.assertEqual(diff["files"][0]["additions"], 1)
+            self.assertIn("@@", diff["files"][0]["patch"])
+            hunk = diff["files"][0]["patch"][diff["files"][0]["patch"].index("@@"):]
+
+            result = repo.revert_hunk("Main.kt", hunk)
+            self.assertTrue(result["ok"])
+            self.assertEqual(workspace_file.read_text(encoding="utf-8"), "one\nold\nthree\n")
 
     def test_turn_diff_and_checkpoint_diff(self) -> None:
         project_id = init_project("diff", package="com.example.diff", user_id="u1")
@@ -448,6 +472,40 @@ class WorkspaceApiTests(IsolatedWorkspaceMixin, unittest.TestCase):
         self.assertEqual(data["source_kind"], "template")
         self.assertFalse(data["is_git"])
 
+    def test_context_suggestions_preview_and_inspector(self) -> None:
+        project_id = init_project("api-context", package="com.example.apicontext", user_id="local")
+        rebuild = self.client.post(f"/api/projects/{project_id}/index/rebuild")
+        self.assertEqual(rebuild.status_code, 200)
+
+        suggestions = self.client.get(
+            f"/api/projects/{project_id}/context/suggestions",
+            params={"q": "MainActivity"},
+        )
+        self.assertEqual(suggestions.status_code, 200)
+        self.assertTrue(suggestions.json()["files"])
+        rel_path = suggestions.json()["files"][0]["rel_path"]
+
+        preview = self.client.post(
+            f"/api/projects/{project_id}/context/preview",
+            json={
+                "prompt": "检查 MainActivity",
+                "contexts": [{"kind": "file", "label": "MainActivity.kt", "path": rel_path}],
+            },
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        body = preview.json()
+        self.assertEqual(body["explicit"][0]["label"], "MainActivity.kt")
+        self.assertGreater(body["total_tokens"], 0)
+        self.assertIn("symbol_count", body)
+
+        conversation = self.client.post(
+            f"/api/projects/{project_id}/conversations",
+            json={"title": "Context review"},
+        ).json()
+        inspector = self.client.get(f"/api/conversations/{conversation['id']}/context")
+        self.assertEqual(inspector.status_code, 200)
+        self.assertIn("budget_tokens", inspector.json())
+
     def test_diff_and_checkpoints_and_restore_endpoints(self) -> None:
         project_id = init_project("api-restore", package="com.example.apirestore", user_id="local")
         repo = WorkspaceRepository("local", project_id, task_store=self.store)
@@ -467,6 +525,14 @@ class WorkspaceApiTests(IsolatedWorkspaceMixin, unittest.TestCase):
         diff_resp = self.client.get(f"/api/projects/{project_id}/diff?turn_id=turn1")
         self.assertEqual(diff_resp.status_code, 200)
         self.assertTrue(diff_resp.json()["ok"])
+
+        default_diff = self.client.get(f"/api/projects/{project_id}/diff")
+        self.assertEqual(default_diff.status_code, 200)
+        self.assertEqual(default_diff.json()["files"][0]["change"], "modified")
+        self.assertIn("patch", default_diff.json()["files"][0])
+
+        status_resp = self.client.get(f"/api/projects/{project_id}/workspace/status")
+        self.assertTrue(status_resp.json()["git"]["dirty"])
 
         cp_resp = self.client.get(f"/api/projects/{project_id}/checkpoints")
         self.assertEqual(cp_resp.status_code, 200)
@@ -489,6 +555,15 @@ class WorkspaceApiTests(IsolatedWorkspaceMixin, unittest.TestCase):
         self.assertTrue(preview.get("preview"))
         self.assertIn("conflicts", preview)
         self.assertIn("file_count", preview)
+
+        target = java_dir / "MainActivity.kt"
+        target.write_text("new\n", encoding="utf-8")
+        hunk_resp = self.client.post(
+            f"/api/projects/{project_id}/diff/revert-hunk",
+            json={"path": target.relative_to(self._workspaces / "local" / project_id).as_posix(), "hunk": "@@ -1 +1 @@\n-old\n+new"},
+        )
+        self.assertEqual(hunk_resp.status_code, 200)
+        self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
 
     def test_user_isolation_on_endpoints(self) -> None:
         project_id = init_project("api-iso", package="com.example.apiiso", user_id="local")

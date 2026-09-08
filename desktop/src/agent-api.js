@@ -284,6 +284,22 @@
       );
     }
 
+    // —— MCP ——
+    mcpServers(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/mcp/servers`);
+    }
+
+    mcpConfig(projectId) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/mcp/config`);
+    }
+
+    saveMcpConfig(projectId, config) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/mcp/config`, {
+        method: "PUT",
+        body: { config },
+      });
+    }
+
     // —— Terminals ——
     listTerminals(projectId) {
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/terminals`);

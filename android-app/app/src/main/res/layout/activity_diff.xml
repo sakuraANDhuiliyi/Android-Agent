@@ -13,148 +13,55 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        app:title="@string/change_details" />
+        app:title="@string/workspace_changes" />
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/textSummary"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
         android:paddingStart="16dp"
+        android:paddingTop="4dp"
         android:paddingEnd="16dp"
-        android:paddingBottom="8dp">
+        android:textAppearance="?attr/textAppearanceTitleMedium"
+        tools:text="6 个文件　+128 −42" />
 
-        <TextView
-            android:id="@+id/textDiffPath"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="middle"
-            android:fontFamily="monospace"
-            android:singleLine="true"
-            android:textAppearance="?attr/textAppearanceBodySmall"
-            android:textColor="?attr/colorOnSurfaceVariant" />
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/chipFilters"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="12dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="12dp"
+        app:selectionRequired="true"
+        app:singleSelection="true">
 
-        <TextView
-            android:id="@+id/textDiffFileAdd"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:fontFamily="monospace"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="@color/status_success"
-            android:visibility="gone"
-            tools:text="+2"
-            tools:visibility="visible" />
+        <com.google.android.material.chip.Chip android:id="@+id/chipAll" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" android:text="@string/filter_all" />
+        <com.google.android.material.chip.Chip android:id="@+id/chipModified" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_modified" />
+        <com.google.android.material.chip.Chip android:id="@+id/chipAdded" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_added" />
+        <com.google.android.material.chip.Chip android:id="@+id/chipDeleted" style="@style/Widget.Material3.Chip.Filter" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/filter_deleted" />
+    </com.google.android.material.chip.ChipGroup>
 
-        <TextView
-            android:id="@+id/textDiffFileMod"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:fontFamily="monospace"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="@color/status_warning"
-            android:visibility="gone"
-            tools:text="~1"
-            tools:visibility="visible" />
+    <com.androidagent.client.AdaptiveActionLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:orientation="horizontal" android:paddingStart="8dp" android:paddingEnd="8dp">
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnExpandAll" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/expand_all" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnCollapseAll" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/collapse_all" />
+    </com.androidagent.client.AdaptiveActionLayout>
 
-        <TextView
-            android:id="@+id/textDiffFileDel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:fontFamily="monospace"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="@color/status_failed"
-            android:visibility="gone"
-            tools:text="−1"
-            tools:visibility="visible" />
-    </LinearLayout>
+    <TextView android:id="@+id/textEmpty" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:padding="32dp" android:text="@string/no_changes" android:textColor="?attr/colorOnSurfaceVariant" android:visibility="gone" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recyclerDiffFiles"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp" />
-
-    <ScrollView
-        android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp" />
 
-        <TextView
-            android:id="@+id/textDiffContent"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:padding="12dp"
-            android:textIsSelectable="true"
-            android:textSize="12sp" />
-    </ScrollView>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingBottom="8dp">
-
-        <TextView
-            android:id="@+id/textDiffAdded"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textColor="@color/diff_add_text"
-            android:textAppearance="?attr/textAppearanceLabelMedium" />
-
-        <TextView
-            android:id="@+id/textDiffDeleted"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textColor="@color/diff_del_text"
-            android:textAppearance="?attr/textAppearanceLabelMedium" />
-
-        <TextView
-            android:id="@+id/textDiffContext"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="?attr/colorOnSurfaceVariant" />
-    </LinearLayout>
-
-    <com.google.android.material.card.MaterialCardView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_margin="12dp"
-        app:cardCornerRadius="@dimen/radius_card"
-        app:cardElevation="0dp"
-        app:strokeColor="?attr/colorOutlineVariant"
-        app:strokeWidth="1dp">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="12dp">
-
-            <TextView
-                android:id="@+id/textCheckpoint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textAppearance="?attr/textAppearanceBodyMedium" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnRestoreCheckpoint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:minHeight="@dimen/touch_target"
-                android:text="@string/restore_to_checkpoint" />
+    <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_margin="12dp" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:padding="12dp">
+            <TextView android:id="@+id/textCheckpoint" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:textAppearance="?attr/textAppearanceBodySmall" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnRestoreCheckpoint" style="@style/Widget.AndroidAgent.Button.Tonal" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/restore_to_checkpoint" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 </LinearLayout>

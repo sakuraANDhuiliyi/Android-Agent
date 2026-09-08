@@ -60,7 +60,11 @@
   --font-ui: var(--font-body);
   --activity-w: 48px;
   --sidebar-w: 260px;
-  --ai-w: 440px;
+  --ai-w: 520px;
+  --conversation-max-width: 920px;
+  --conversation-body-size: 14px;
+  --conversation-body-line-height: 1.6;
+  --timeline-turn-gap: 18px;
   --preview-w: 360px;
   --title-h: 40px;
   --status-h: 22px;
@@ -898,8 +902,8 @@ kbd {
 /* —— AI pane: task timeline —— */
 .ai-pane {
   width: var(--ai-w);
-  min-width: 360px;
-  max-width: 640px;
+  min-width: 400px;
+  max-width: 960px;
   background: var(--tl-bg);
   border-left: 1px solid var(--line);
   display: flex;
@@ -1161,7 +1165,7 @@ kbd {
   padding: 12px 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--timeline-turn-gap);
   overscroll-behavior: contain;
 }
 
@@ -1208,6 +1212,7 @@ kbd {
 /* Flash highlight is provided by the generic .tl-flash rule below. */
 .tl-turn-user { display: flex; flex-direction: column; }
 .tl-turn-final { display: flex; flex-direction: column; gap: 10px; }
+.tl-turn-outcome { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 
 /* Progressive history entry */
 .tl-load-earlier {
@@ -1260,12 +1265,13 @@ kbd {
 .tl-work-label { flex-shrink: 0; font-weight: 600; color: var(--tl-muted); }
 .tl-work-head:hover .tl-work-label { color: var(--tl-text); }
 .tl-work-summary {
-  flex: 1;
   min-width: 0;
+  margin: -1px 28px 3px 88px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--tl-subtle);
+  font-size: 12px;
 }
 .tl-chevron {
   margin-left: auto;
@@ -1314,11 +1320,12 @@ kbd {
   border: 1px solid var(--tl-border);
   border-radius: 9px;
   padding: 9px 12px;
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: var(--conversation-body-size);
+  line-height: var(--conversation-body-line-height);
   color: var(--tl-text);
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 .tl-row-actions {
   position: absolute;
@@ -1341,11 +1348,13 @@ kbd {
 
 /* Assistant message: sits directly on the timeline background */
 .tl-assistant-body {
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--conversation-body-size);
+  line-height: var(--conversation-body-line-height);
   color: var(--tl-text);
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
+.tl-assistant-body .md-code { overflow-wrap: anywhere; }
 .tl-stream-caret {
   display: inline-block;
   width: 7px;
@@ -2453,6 +2462,74 @@ dialog .ghost-btn:hover {
 }
 .approval-detail-actions { flex-wrap: wrap; }
 
+/* —— MCP config dialog —— */
+.mcp-config-dialog { width: min(680px, 94vw); }
+.mcp-config-field { gap: 8px; }
+.mcp-config-textarea {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  outline: none;
+  transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
+}
+.mcp-config-textarea:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+.mcp-config-textarea:disabled { opacity: 0.55; }
+.mcp-server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.mcp-server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-bright);
+}
+.mcp-server-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+.mcp-server-dot.is-ready { background: #3fb950; }
+.mcp-server-dot.is-starting { background: #d29922; }
+.mcp-server-dot.is-error { background: #f85149; }
+.mcp-server-dot.is-untrusted { background: #d29922; }
+.mcp-server-dot.is-disabled { background: var(--muted); }
+.mcp-server-dot.is-stopped { background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.mcp-server-name { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.mcp-server-badges { display: flex; gap: 6px; margin-left: auto; flex: none; }
+.mcp-server-badge {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mcp-server-tools { color: var(--muted); font-size: 11px; flex: none; }
+
 /* —— Bottom panel —— */
 .bottom-panel {
   position: absolute;
@@ -2677,6 +2754,41 @@ dialog .ghost-btn:hover {
 }
 @media (max-width: 1100px) {
   .ai-pane { width: 400px; }
+}
+
+/* Focus Agent workspace: the same canonical timeline gets a proper reading
+ * surface instead of being rendered by a second, drifting implementation. */
+body[data-focus-mode="agent"] .activitybar,
+body[data-focus-mode="agent"] .sidebar,
+body[data-focus-mode="agent"] .sash-sidebar,
+body[data-focus-mode="agent"] .editor-pane,
+body[data-focus-mode="agent"] .sash-ai {
+  display: none !important;
+}
+body[data-focus-mode="agent"] .ai-pane {
+  width: 100% !important;
+  min-width: 0;
+  max-width: none;
+  border-left: 0;
+}
+body[data-focus-mode="agent"] .ai-header-row,
+body[data-focus-mode="agent"] .ai-messages > *,
+body[data-focus-mode="agent"] .approval-dock > *,
+body[data-focus-mode="agent"] .ai-composer > * {
+  width: min(100%, var(--conversation-max-width));
+  margin-inline: auto;
+}
+body[data-focus-mode="agent"] .ai-messages {
+  padding: 24px max(24px, calc((100% - var(--conversation-max-width)) / 2)) 32px;
+}
+body[data-focus-mode="agent"] .ai-composer {
+  padding: 12px max(24px, calc((100% - var(--conversation-max-width)) / 2)) 16px;
+}
+body[data-focus-mode="agent"] .tl-user-body { max-width: 92%; }
+
+@media (max-width: 700px) {
+  body[data-focus-mode="agent"] .ai-messages { padding: 14px 16px 20px; }
+  body[data-focus-mode="agent"] .ai-composer { padding: 8px 16px 10px; }
 }
 
 /* —— Utility —— */

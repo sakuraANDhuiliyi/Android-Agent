@@ -1,0 +1,31 @@
+{
+  "id": "11_ws_disconnect",
+  "title": "WS 断线重连",
+  "description": "事件 WS 中途断开，用 after_event_id 重连补齐，事件无缺口且任务正常完成",
+  "prompt": "写一个文件标记 E2E-WS-RECONNECT",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我来写入文件。",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "content": "<resources>\n    <string name=\"app_name\">E2E-WS-RECONNECT</string>\n</resources>\n"
+          }
+        }
+      ]
+    },
+    {"type": "final", "text": "文件已写入，标记 E2E-WS-RECONNECT。"}
+  ],
+  "driver": "ws_disconnect",
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["write_file"],
+    "file_contains": {"app/src/main/res/values/strings.xml": "E2E-WS-RECONNECT"},
+    "final_text_contains": "E2E-WS-RECONNECT",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "assistant_message", "turn_completed"]
+  }
+}

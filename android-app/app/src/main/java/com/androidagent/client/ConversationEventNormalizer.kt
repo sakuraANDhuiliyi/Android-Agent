@@ -24,6 +24,10 @@ object ConversationEventNormalizer {
         TEXT,
         TOOL_CALL,
         TOOL_RESULT,
+        /** 服务端结构化摘要（Domain Core）：客户端不再自行解析构建/测试日志。 */
+        BUILD_SUMMARY,
+        TEST_SUMMARY,
+        ARTIFACT,
         APPROVAL_REQUIRED,
         APPROVAL_RESOLVED,
         PLAN,
@@ -68,6 +72,9 @@ object ConversationEventNormalizer {
         "assistant_message" to Kind.ASSISTANT_MESSAGE,
         "tool_call" to Kind.TOOL_CALL,
         "tool_result" to Kind.TOOL_RESULT,
+        "build_summary" to Kind.BUILD_SUMMARY,
+        "test_summary" to Kind.TEST_SUMMARY,
+        "artifact" to Kind.ARTIFACT,
         "approval_required" to Kind.APPROVAL_REQUIRED,
         "approval_resolved" to Kind.APPROVAL_RESOLVED,
         "changes" to Kind.CHANGES,
@@ -96,6 +103,9 @@ object ConversationEventNormalizer {
         "text" to Kind.TEXT,
         "tool_call" to Kind.TOOL_CALL,
         "tool_result" to Kind.TOOL_RESULT,
+        "build_summary" to Kind.BUILD_SUMMARY,
+        "test_summary" to Kind.TEST_SUMMARY,
+        "artifact" to Kind.ARTIFACT,
         "approval_required" to Kind.APPROVAL_REQUIRED,
         "approval_resolved" to Kind.APPROVAL_RESOLVED,
         "plan" to Kind.PLAN,
@@ -205,6 +215,7 @@ object ConversationEventNormalizer {
             if (key in envelope) continue
             out.put(key, ev.get(key))
         }
+        if (ev.optString("type").startsWith("subagent_") && ev.has("role")) out.put("role", ev.get("role"))
         return out
     }
 

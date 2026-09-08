@@ -1,0 +1,22 @@
+{
+  "id": "09_cancel_job",
+  "title": "取消任务",
+  "description": "长命令执行中用户取消：进程被中断、任务终态 canceled、事件流一致",
+  "prompt": "运行一个耗时一分钟的命令",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "开始执行长命令。",
+      "calls": [{"name": "run_command", "arguments": {"argv": ["python3", "-c", "import time; time.sleep(60); print('should-never-finish')"]}}]
+    },
+    {"type": "final", "text": "不应到达此步。"}
+  ],
+  "driver": "cancel_after_tool_call",
+  "expect": {
+    "job_status": "canceled",
+    "tool_calls": ["run_command"],
+    "event_types_include": ["user_message", "tool_call", "turn_canceled"],
+    "event_types_exclude": ["turn_completed"]
+  }
+}

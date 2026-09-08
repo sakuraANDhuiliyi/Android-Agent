@@ -1,0 +1,52 @@
+{
+  "user_id": "user-alice",
+  "project_id": "demo-app",
+  "days": 30,
+  "since": 1786000000.0,
+  "totals": {
+    "turns": 42,
+    "input_tokens": 1200000,
+    "output_tokens": 210000,
+    "cached_tokens": 900000,
+    "cache_creation_tokens": 42000,
+    "total_tokens": 1410000,
+    "tool_calls": 530,
+    "cost_usd": 14.8,
+    "cost_available": true
+  },
+  "by_model": [
+    {
+      "model": "gpt-4o",
+      "provider": "openai",
+      "input_tokens": 1200000,
+      "output_tokens": 210000,
+      "cached_tokens": 900000,
+      "total_tokens": 1410000,
+      "tool_calls": 530,
+      "turns": 42,
+      "cost_usd": 14.8,
+      "cost_available": true
+    }
+  ],
+  "by_day": [
+    {
+      "date": "2026-09-05",
+      "input_tokens": 120000,
+      "output_tokens": 21000,
+      "total_tokens": 141000,
+      "cost_usd": 1.48,
+      "cost_available": true,
+      "turns": 6
+    },
+    {
+      "date": "2026-09-04",
+      "input_tokens": 108000,
+      "output_tokens": 18900,
+      "total_tokens": 126900,
+      "cost_usd": 1.33,
+      "cost_available": true,
+      "turns": 5
+    }
+  ],
+  "project_count": 1
+}

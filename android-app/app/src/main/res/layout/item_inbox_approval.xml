@@ -97,7 +97,7 @@
             android:textColor="?attr/colorOnSurfaceVariant"
             android:visibility="gone" />
 
-        <LinearLayout
+        <com.androidagent.client.AdaptiveActionLayout
             android:id="@+id/layoutApprovalActions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -107,7 +107,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnApprovalReject"
-                style="@style/Widget.Material3.Button.TextButton"
+                style="@style/Widget.AndroidAgent.Button.Text"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:minWidth="@dimen/touch_target"
@@ -116,13 +116,13 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnApprovalApprove"
-                style="@style/Widget.Material3.Button.TonalButton"
+                style="@style/Widget.AndroidAgent.Button.Tonal"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:minWidth="@dimen/touch_target"
                 android:minHeight="@dimen/touch_target"
                 android:text="@string/approve" />
-        </LinearLayout>
+        </com.androidagent.client.AdaptiveActionLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

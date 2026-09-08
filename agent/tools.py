@@ -16,9 +16,12 @@ from agent.paths import (
     build_log_path,
     ensure_local_properties,
     latest_apk_path,
+    user_builds_dir,
 )
 from agent.processes import (
+    MAX_MODEL_OUTPUT_CHARS,
     CancelToken,
+    LazyLogFile,
     cancel_process,
     run_command as _run_command,
 )
@@ -47,12 +50,14 @@ ALLOWED_READ_PREFIXES = (
 
 ALLOWED_WRITE_PREFIXES = (
     "app/src/main/java/",
+    "app/src/main/kotlin/",
+    "app/src/test/",
     "app/src/main/res/",
     "app/src/main/AndroidManifest.xml",
     "app/build.gradle.kts",
 )
 
-GRADLE_TASKS = {"assembleDebug", "clean"}
+GRADLE_TASKS = {"assembleDebug", "clean", "testDebugUnitTest", "lintDebug"}
 IGNORE_DIR_NAMES = {".git", ".gradle", "build", "node_modules", "__pycache__", ".idea"}
 
 CancelCheck = Callable[[], None]
@@ -63,6 +68,9 @@ class ToolResult:
     ok: bool
     output: Any
     error_type: str | None = None
+    # Domain Core v1: structured summary (build/test) carried on the event so
+    # clients never re-parse gradle logs themselves.
+    summary: dict[str, Any] | None = None
 
 
 def summarize_build_log(log_body: str, tail_lines: int = 120) -> str:
@@ -78,6 +86,67 @@ def summarize_build_log(log_body: str, tail_lines: int = 120) -> str:
     selected.extend(tail)
     deduped = list(dict.fromkeys(selected))
     return "\n".join(deduped) if deduped else "(构建日志为空)"
+
+
+BUILD_SUMMARY_SCHEMA_VERSION = 1
+
+_GRADLE_ERROR_LINE_RE = re.compile(
+    r"^\s*[eE]:\s+|error:\s|Manifest merger failed|resource linking failed|"
+    r"Execution failed for task|Caused by:"
+)
+_GRADLE_TEST_LINE_RE = re.compile(
+    r"(\d+)\s+tests? completed,\s*(\d+)\s+failed", re.IGNORECASE
+)
+
+
+def parse_gradle_summary(
+    task: str,
+    log_body: str,
+    *,
+    success: bool,
+    exit_code: int | None,
+    duration_ms: int,
+    build_id: str,
+    log_path: Path,
+    apk_path: Path | None = None,
+) -> dict[str, Any]:
+    """Structured BuildSummary / TestSummary parsed once, server-side."""
+    lines = log_body.splitlines()
+    errors: list[str] = []
+    for line in lines:
+        if len(errors) >= 20:
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _GRADLE_ERROR_LINE_RE.search(stripped) or "FAILED" in stripped:
+            errors.append(stripped[:300])
+    summary: dict[str, Any] = {
+        "schema_version": BUILD_SUMMARY_SCHEMA_VERSION,
+        "kind": "test" if task == "testDebugUnitTest" else "build",
+        "task": task,
+        "success": success,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "build_id": build_id,
+        "log_path": str(log_path),
+        "error_count": len(errors),
+        "errors": errors,
+    }
+    if apk_path is not None and apk_path.is_file():
+        summary["apk_path"] = str(apk_path)
+        summary["apk_size_bytes"] = apk_path.stat().st_size
+    if task == "testDebugUnitTest":
+        passed = failed = skipped = None
+        for line in lines:
+            match = _GRADLE_TEST_LINE_RE.search(line)
+            if match:
+                completed = int(match.group(1))
+                failed = int(match.group(2))
+                passed = completed - failed
+                break
+        summary["tests"] = {"passed": passed, "failed": failed, "skipped": skipped}
+    return summary
 
 
 def _normalize_rel(path: str) -> str:
@@ -902,6 +971,10 @@ def run_gradle(
         )
 
     cmd = [str(gradlew), task, "--no-daemon", "--stacktrace"]
+    if task == "testDebugUnitTest":
+        # Fresh reports distinguish this attempt from previous failed test runs.
+        cmd.append("--rerun-tasks")
+    started = time.monotonic()
     stop_event = threading.Event()
     token = _cancel_token_from_check(cancel_check, stop_event)
     try:
@@ -918,6 +991,15 @@ def run_gradle(
         )
     finally:
         stop_event.set()
+    duration_ms = round((time.monotonic() - started) * 1000)
+
+    apk_out: Path | None = None
+    if result.ok and task == "assembleDebug":
+        apk = workspace / "app/build/outputs/apk/debug/app-debug.apk"
+        if apk.is_file():
+            apk_out = latest_apk_path(user_id, project_id)
+            apk_out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(apk, apk_out)
 
     if not result.ok:
         log_body = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
@@ -926,19 +1008,37 @@ def run_gradle(
             False,
             f"Gradle 失败 (exit {result.returncode})\n日志: {log_file}\n\n--- 关键日志摘要 ---\n{tail}",
             error_type=result.error_type,
+            summary=parse_gradle_summary(
+                task,
+                log_body,
+                success=False,
+                exit_code=result.returncode,
+                duration_ms=duration_ms,
+                build_id=build_id,
+                log_path=log_file,
+            ),
         )
 
     msg = f"Gradle {task} 成功\n日志: {log_file}"
     if task == "assembleDebug":
-        apk = workspace / "app/build/outputs/apk/debug/app-debug.apk"
-        if apk.is_file():
-            out = latest_apk_path(user_id, project_id)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(apk, out)
-            msg += f"\nAPK: {out}"
+        if apk_out is not None:
+            msg += f"\nAPK: {apk_out}"
         else:
-            msg += f"\n警告: 未找到 {apk}"
-    return ToolResult(True, msg)
+            msg += f"\n警告: 未找到 {workspace / 'app/build/outputs/apk/debug/app-debug.apk'}"
+    return ToolResult(
+        True,
+        msg,
+        summary=parse_gradle_summary(
+            task,
+            log_file.read_text(encoding="utf-8") if log_file.is_file() else "",
+            success=True,
+            exit_code=result.returncode,
+            duration_ms=duration_ms,
+            build_id=build_id,
+            log_path=log_file,
+            apk_path=apk_out,
+        ),
+    )
 
 
 def _handle_run_gradle(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
@@ -962,7 +1062,7 @@ def run_command(
     combine_output: bool = False,
     timeout_seconds: float = 300.0,
     cancel_check: CancelCheck | None = None,
-    task_log_path: Path | None = None,
+    task_log_path: Path | Any | None = None,
 ) -> ToolResult:
     """Run a non-interactive command inside the workspace.
 
@@ -1008,14 +1108,31 @@ def _handle_run_command(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolRes
         return ToolResult(False, "argv 必须是字符串数组")
     if not argv:
         return ToolResult(False, "argv 不能为空")
-    return run_command(
+    # Oversized command output is persisted to a task log (lazily, only once
+    # the model-facing buffer would truncate) so the paginated log API can
+    # serve the full content afterwards.
+    lazy_log: LazyLogFile | None = None
+    task_log_arg: Path | LazyLogFile | None = None
+    if ctx.user_id and ctx.project_id:
+        log_path = (
+            user_builds_dir(ctx.user_id) / ctx.project_id / f"cmd-{new_build_id()}.log"
+        )
+        lazy_log = LazyLogFile(log_path, MAX_MODEL_OUTPUT_CHARS)
+        task_log_arg = lazy_log
+    result = run_command(
         ctx.workspace,
         argv,
         cwd=tool_input.get("cwd"),
         combine_output=bool(tool_input.get("combine_output", False)),
         timeout_seconds=float(tool_input.get("timeout_seconds", 300.0) or 300.0),
         cancel_check=ctx.cancel_check,
+        task_log_path=task_log_arg,
     )
+    if lazy_log is not None and lazy_log.materialized:
+        note = f"\n日志: {lazy_log.path}"
+        output = result.output
+        result.output = f"{output}{note}" if isinstance(output, str) else output
+    return result
 
 
 def _handle_git_status(ctx: ToolContext, tool_input: dict[str, Any]) -> ToolResult:
@@ -1228,7 +1345,7 @@ register_tool(
             "properties": {
                 "task": {
                     "type": "string",
-                    "enum": ["assembleDebug", "clean"],
+                    "enum": ["assembleDebug", "clean", "testDebugUnitTest", "lintDebug"],
                     "description": "Gradle 任务名",
                 }
             },
@@ -1422,6 +1539,7 @@ def dispatch_tool(
     recovery_replays: list[dict[str, Any]] | None = None,
     recovery_mode: bool = False,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> ToolResult:
     """Dispatch a built-in tool through the unified Tool Runtime."""
     try:
@@ -1440,6 +1558,7 @@ def dispatch_tool(
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
             run_mode=run_mode,
+            permission_profile=permission_profile,
         )
     except Exception as exc:
         if exc.__class__.__name__ in {

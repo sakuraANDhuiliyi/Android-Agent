@@ -75,6 +75,7 @@ def run_agent(
     allowed_tools: set[str] | frozenset[str] | None = None,
     extra_system_prompt: str | None = None,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
@@ -131,6 +132,7 @@ def run_agent(
                 allowed_tools=allowed_tools,
                 extra_system_prompt=extra_system_prompt,
                 run_mode=run_mode,
+                permission_profile=permission_profile,
             )
         except (CancellationRequested, PauseRequested, TaskLeaseLost):
             # Control-flow signals must reach run_task untouched; wrapping
@@ -181,6 +183,7 @@ def _run_agent_with_provider(
     allowed_tools: set[str] | frozenset[str] | None = None,
     extra_system_prompt: str | None = None,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> str:
     system_prompt, rules_bundle = build_system_prompt(
         settings,
@@ -235,6 +238,7 @@ def _run_agent_with_provider(
             get_steers=get_steers,
             allowed_tools=allowed_tools,
             run_mode=run_mode,
+            permission_profile=permission_profile,
         )
     return _run_openai_compatible(
         settings,
@@ -256,6 +260,7 @@ def _run_agent_with_provider(
         get_steers=get_steers,
         allowed_tools=allowed_tools,
         run_mode=run_mode,
+        permission_profile=permission_profile,
     )
 
 
@@ -272,6 +277,22 @@ def _emit(
         if message is not None:
             payload["message"] = message
         on_event(event_type, payload)
+
+
+def _extract_cached_tokens(usage: Any) -> int | None:
+    """Pull cached input tokens out of an OpenAI-compatible usage object."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None and isinstance(usage, dict):
+        details = usage.get("prompt_tokens_details")
+    if details is None:
+        return None
+    cached = getattr(details, "cached_tokens", None)
+    if cached is None and isinstance(details, dict):
+        cached = details.get("cached_tokens")
+    try:
+        return int(cached) if cached is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _format_tool_output(output: Any) -> str:
@@ -355,9 +376,10 @@ def _tool_result_event_payload(
     duration_ms: int,
     interrupted: bool = False,
     error_type: str | None = None,
+    summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model_output = _format_tool_output(output)
-    return {
+    payload = {
         "tool_call_id": tool_call_id,
         "name": name,
         "ok": ok,
@@ -367,6 +389,9 @@ def _tool_result_event_payload(
         "error_type": error_type if error_type else None if ok else "ToolExecutionError",
         "interrupted": interrupted,
     }
+    if summary is not None:
+        payload["summary"] = summary
+    return payload
 
 
 def dispatch_agent_tool(
@@ -386,6 +411,7 @@ def dispatch_agent_tool(
     recovery_mode: bool = False,
     allowed_tools: set[str] | frozenset[str] | None = None,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> ToolResult:
     """Dispatch a tool through the unified runtime, including recovery replay."""
     from agent.approvals import request_user_approval
@@ -457,6 +483,7 @@ def dispatch_agent_tool(
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
             run_mode=run_mode,
+            permission_profile=permission_profile,
         )
     except ProcessCancellationRequested as exc:
         raise CancellationRequested(str(exc)) from exc
@@ -624,6 +651,7 @@ def _run_openai_compatible(
     get_steers: Callable[[], list[str]] | None = None,
     allowed_tools: set[str] | frozenset[str] | None = None,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> str:
     try:
         from openai import OpenAI
@@ -704,10 +732,12 @@ def _run_openai_compatible(
         if usage:
             input_tokens = getattr(usage, "prompt_tokens", None)
             output_tokens = getattr(usage, "completion_tokens", None)
+            cached_tokens = _extract_cached_tokens(usage)
             _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": getattr(usage, "total_tokens", None),
+                "cached_tokens": cached_tokens,
             })
         message = choice.message
         turn_text = ""
@@ -954,6 +984,7 @@ def _run_openai_compatible(
                     recovery_mode=recovery_mode,
                     allowed_tools=allowed_tools,
                     run_mode=run_mode,
+                    permission_profile=permission_profile,
                 )
             except CancellationRequested as exc:
                 duration_ms = round((time.monotonic() - started) * 1000)
@@ -1004,6 +1035,7 @@ def _run_openai_compatible(
                     output=result.output,
                     duration_ms=duration_ms,
                     error_type=result.error_type,
+                    summary=getattr(result, "summary", None),
                 ),
                 input=tool_input,
                 preview=preview,
@@ -1081,6 +1113,7 @@ def _run_openai_compatible(
                         recovery_mode=recovery_mode,
                         allowed_tools=allowed_tools,
                         run_mode=run_mode,
+                        permission_profile=permission_profile,
                     )
                 except CancellationRequested as exc:
                     _emit(
@@ -1173,6 +1206,7 @@ def _run_anthropic(
     get_steers: Callable[[], list[str]] | None = None,
     allowed_tools: set[str] | frozenset[str] | None = None,
     run_mode: str = "workspace",
+    permission_profile: str | None = None,
 ) -> str:
     try:
         import anthropic
@@ -1253,10 +1287,14 @@ def _run_anthropic(
         if usage:
             input_tokens = getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None)
             output_tokens = getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None)
+            cache_read = getattr(usage, "cache_read_input_tokens", None)
+            cache_creation = getattr(usage, "cache_creation_input_tokens", None)
             _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": (input_tokens + output_tokens) if input_tokens is not None and output_tokens is not None else None,
+                "cached_tokens": cache_read,
+                "cache_creation_tokens": cache_creation,
             })
 
         assistant_content: list[dict[str, Any]] = []
@@ -1494,6 +1532,7 @@ def _run_anthropic(
                     recovery_mode=recovery_mode,
                     allowed_tools=allowed_tools,
                     run_mode=run_mode,
+                    permission_profile=permission_profile,
                 )
             except CancellationRequested as exc:
                 duration_ms = round((time.monotonic() - started) * 1000)
@@ -1543,6 +1582,7 @@ def _run_anthropic(
                     output=result.output,
                     duration_ms=duration_ms,
                     error_type=result.error_type,
+                    summary=getattr(result, "summary", None),
                 ),
                 input=tool_input,
                 preview=preview,
@@ -1612,6 +1652,7 @@ def _run_anthropic(
                         recovery_mode=recovery_mode,
                         allowed_tools=allowed_tools,
                         run_mode=run_mode,
+                        permission_profile=permission_profile,
                     )
                 except CancellationRequested as exc:
                     _emit(

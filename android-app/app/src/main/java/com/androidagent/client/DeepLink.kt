@@ -9,6 +9,8 @@ object DeepLink {
     const val EXTRA_CONVERSATION_ID = "conversation_id"
     const val EXTRA_CONVERSATION_TITLE = "conversation_title"
     const val EXTRA_JOB_ID = "job_id"
+    const val EXTRA_DRAFT = "draft"
+    const val EXTRA_CONTEXTS = "contexts"
     const val EXTRA_TAB = "tab"
     const val EXTRA_EDIT_CONNECTION = "edit_connection"
     const val EXTRA_LOGIN_REQUIRED = "login_required"
@@ -21,12 +23,14 @@ object DeepLink {
         conversationId: String,
         title: String,
         jobId: String? = null,
+        draft: String? = null,
     ): Intent =
         Intent(context, ConversationActivity::class.java)
             .putExtra(EXTRA_PROJECT_ID, projectId)
             .putExtra(EXTRA_CONVERSATION_ID, conversationId)
             .putExtra(EXTRA_CONVERSATION_TITLE, title)
             .putExtra(EXTRA_JOB_ID, jobId)
+            .putExtra(EXTRA_DRAFT, draft)
 
     fun mainNavIntent(context: Context, tab: String? = null): Intent =
         Intent(context, MainNavActivity::class.java)

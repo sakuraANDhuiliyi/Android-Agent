@@ -1,0 +1,54 @@
+{
+  "id": "04_edit_many_files",
+  "title": "一次编辑多个文件",
+  "description": "Agent 在单次模型回复中并行发起 3 个 write_file 工具调用",
+  "prompt": "帮我创建一组 E2E 测试资源文件",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "我一次性写入三个文件。",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/strings.xml",
+            "content": "<resources>\n    <string name=\"app_name\">E2E-MULTI</string>\n    <string name=\"hello_world\">Hello World!</string>\n</resources>\n"
+          }
+        },
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/res/values/colors.xml",
+            "content": "<resources>\n    <color name=\"e2e_accent\">#0366D6</color>\n</resources>\n"
+          }
+        },
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/main/java/com/example/template/E2ENote.kt",
+            "content": "package com.example.template\n\nobject E2ENote {\n    const val MARKER = \"E2E-MULTI-FILE\"\n}\n"
+          }
+        }
+      ]
+    },
+    {"type": "final", "text": "三个文件已写入：strings.xml、colors.xml 与 E2ENote.kt。"}
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["write_file", "write_file", "write_file"],
+    "files_changed": [
+      "app/src/main/res/values/strings.xml",
+      "app/src/main/res/values/colors.xml",
+      "app/src/main/java/com/example/template/E2ENote.kt"
+    ],
+    "file_contains": {
+      "app/src/main/res/values/strings.xml": "E2E-MULTI",
+      "app/src/main/res/values/colors.xml": "e2e_accent",
+      "app/src/main/java/com/example/template/E2ENote.kt": "E2E-MULTI-FILE"
+    },
+    "final_text_contains": "三个文件",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "changes", "assistant_message", "turn_completed"],
+    "event_types_exclude": ["approval_required"]
+  }
+}

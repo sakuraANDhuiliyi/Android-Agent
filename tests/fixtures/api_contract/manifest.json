@@ -68,6 +68,20 @@
       "status": 404
     },
     {
+      "id": "conversation_turns_ok",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/turns",
+      "fixture": "conversation_turns_200.json",
+      "status": 200
+    },
+    {
+      "id": "turn_trace_ok",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/turns/{turn_id}/trace",
+      "fixture": "turn_trace_200.json",
+      "status": 200
+    },
+    {
       "id": "payload_too_large",
       "method": "POST",
       "path": "/api/projects/{project_id}/ask",
@@ -87,6 +101,41 @@
       "path": "/api/conversations/{conversation_id}/events",
       "fixture": "errors/internal_error_500.json",
       "status": 500
+    },
+    {
+      "id": "project_settings_ok",
+      "method": "GET",
+      "path": "/api/projects/{project_id}/settings",
+      "fixture": "project_settings_200.json",
+      "status": 200
+    },
+    {
+      "id": "project_rules_ok",
+      "method": "GET",
+      "path": "/api/projects/{project_id}/rules",
+      "fixture": "rules_200.json",
+      "status": 200
+    },
+    {
+      "id": "project_skills_ok",
+      "method": "GET",
+      "path": "/api/projects/{project_id}/skills",
+      "fixture": "skills_200.json",
+      "status": 200
+    },
+    {
+      "id": "conversation_usage_ok",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/usage",
+      "fixture": "usage_conversation_200.json",
+      "status": 200
+    },
+    {
+      "id": "usage_summary_ok",
+      "method": "GET",
+      "path": "/api/usage/summary",
+      "fixture": "usage_summary_200.json",
+      "status": 200
     },
     {
       "id": "ws_job_event",

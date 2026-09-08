@@ -1,5 +1,6 @@
 package com.androidagent.client
 
+import com.androidagent.client.core.agent.JobEventWatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,14 +23,14 @@ class JobWatcher(
     private val onJob: (JobInfo) -> Unit,
     private val onDone: (JobInfo) -> Unit,
     private val onError: (Throwable) -> Unit,
-) {
+) : JobEventWatcher {
     private var watcherJob: Job? = null
     private var wsHandle: AgentApi.CloseableWatcher? = null
     private val closed = AtomicBoolean(false)
     private val lastEventId = AtomicLong(0)
     private val seenKeys = LinkedHashSet<String>()
 
-    fun start(jobId: String, afterEventId: Long = 0L) {
+    override fun start(jobId: String, afterEventId: Long) {
         stop()
         closed.set(false)
         lastEventId.set(afterEventId)
@@ -118,9 +119,9 @@ class JobWatcher(
         }
     }
 
-    fun currentCursor(): Long = lastEventId.get()
+    override fun currentCursor(): Long = lastEventId.get()
 
-    fun stop() {
+    override fun stop() {
         closed.set(true)
         wsHandle?.close()
         wsHandle = null

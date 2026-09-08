@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.text.Spanned
+import android.text.TextUtils
+import android.text.Layout
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -23,7 +25,7 @@ import com.androidagent.client.databinding.ItemErrorMessageBinding
 import com.androidagent.client.databinding.ItemLoadingHistoryBinding
 import com.androidagent.client.databinding.ItemStatusLineBinding
 import com.androidagent.client.databinding.ItemToolStepBinding
-import com.androidagent.client.databinding.ItemTurnResultBinding
+import com.androidagent.client.databinding.ItemToolClusterBinding
 import com.androidagent.client.databinding.ItemUserMessageBinding
 import com.androidagent.client.databinding.ItemWorkGroupBinding
 import io.noties.markwon.AbstractMarkwonPlugin
@@ -31,11 +33,12 @@ import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TablePlugin
 import org.json.JSONArray
+import org.json.JSONObject
 import java.lang.ref.WeakReference
 
 /**
  * 会话时间线适配器：ListAdapter + DiffUtil + 稳定 ID。
- * ViewType：加载历史 / 用户消息 / 工作组 / 回答 / 改动卡 / 结果卡 / 错误。
+ * ViewType：加载历史 / 用户消息 / 工作组 / 回答 / Outcome / 错误。
  */
 class ConversationTimelineAdapter(
     private val callbacks: Callbacks,
@@ -45,9 +48,12 @@ class ConversationTimelineAdapter(
         fun onToggleWork(turnKey: String, expanded: Boolean)
         fun onApprovalAction(model: ApprovalCardBinder.Model, approve: Boolean, always: Boolean = false)
         fun onViewChanges(turnKey: String)
+        fun onRevertTurn(turnKey: String) {}
+        fun onViewAgents(turnKey: String) {}
         fun onLoadEarlier()
         fun onAgentFix(message: String) {}
         fun onViewErrorDetails() {}
+        fun onOpenApk(jobId: String?) {}
     }
 
     object RowDiff : DiffUtil.ItemCallback<Row>() {
@@ -59,10 +65,17 @@ class ConversationTimelineAdapter(
 
     /** 条目级展开状态独立于数据，避免流式刷新被重置。 */
     val toolExpanded = HashMap<String, Boolean>()
+    val clusterExpanded = HashMap<String, Boolean>()
+    val statusExpanded = HashMap<String, Boolean>()
     val approvalDetailExpanded = HashSet<String>()
+
+    /** 已定稿 markdown 的 Spanned 解析缓存：滚动复用 bind 不再重复解析。 */
+    private val spannedCache = MarkdownSpannedCache()
 
     fun resetViewState() {
         toolExpanded.clear()
+        clusterExpanded.clear()
+        statusExpanded.clear()
         approvalDetailExpanded.clear()
     }
 
@@ -90,13 +103,13 @@ class ConversationTimelineAdapter(
     override fun getItemId(position: Int): Long = getItem(position).id.hashCode().toLong()
 
     companion object {
-        private const val TYPE_LOADING = 0
-        private const val TYPE_USER = 1
-        private const val TYPE_WORK = 2
-        private const val TYPE_ASSISTANT = 3
-        private const val TYPE_CHANGES = 4
-        private const val TYPE_RESULT = 5
-        private const val TYPE_ERROR = 6
+        const val TYPE_LOADING = 0
+        const val TYPE_USER = 1
+        const val TYPE_WORK = 2
+        const val TYPE_ASSISTANT = 3
+        const val TYPE_CHANGES = 4
+        const val TYPE_ERROR = 5
+        const val TYPE_AGENTS = 6
         private val PAYLOAD_CONTENT = Any()
         private const val CODE_COLLAPSE_LINES = 24
         private const val TOOL_OUTPUT_DISPLAY_LIMIT = 2000
@@ -161,14 +174,72 @@ class ConversationTimelineAdapter(
             return if (arg.isNullOrBlank()) toolLabel(name) else "${toolLabel(name)} · $arg"
         }
 
-        fun stepStatusText(step: TimelineStore.TimelineItem): String = when (step.status) {
-            "running" -> "运行中"
-            "waiting_approval" -> "待审批"
-            "success", "done" -> step.content.optLong("duration_ms", 0L).takeIf { it > 0 }
-                ?.let { formatDurationMs(it) } ?: "完成"
-            "failed" -> "失败"
-            "canceled", "interrupted" -> "已取消"
-            else -> ""
+        fun toolTarget(step: TimelineStore.TimelineItem): String {
+            val input = step.content.optJSONObject("input") ?: return ""
+            input.optJSONArray("argv")?.let { argv ->
+                return (0 until argv.length()).joinToString(" ") { argv.optString(it) }
+            }
+            for (field in listOf("command", "path", "pattern", "query", "task", "url")) {
+                val value = input.optString(field)
+                if (value.isNotBlank()) return if (field == "task") "gradle $value" else value
+            }
+            return ""
+        }
+
+        fun clusterLabel(category: String, count: Int): String = when (category) {
+            "read" -> "读取 $count 个文件"
+            "search" -> "搜索 $count 次"
+            "write" -> "修改 $count 个文件"
+            "command" -> "执行 $count 条命令"
+            else -> "$count 个操作"
+        }
+
+        fun stepStatusText(step: TimelineStore.TimelineItem): String {
+            // Domain Core：优先使用服务端结构化摘要，客户端不再解析日志
+            step.content.optJSONObject("summary")?.let { return summaryStatusText(it, step) }
+            return when (step.status) {
+                "running" -> "运行中"
+                "waiting_approval" -> "待审批"
+                "success", "done" -> step.content.optLong("duration_ms", 0L).takeIf { it > 0 }
+                    ?.let { formatDurationMs(it) } ?: "完成"
+                "failed" -> "失败"
+                "canceled", "interrupted" -> "已取消"
+                else -> ""
+            }
+        }
+
+        /** 结构化摘要状态行："成功 · APK 2.0MB · 12.3s" / "未通过 · 10 通过 · 2 失败"。 */
+        fun summaryStatusText(summary: JSONObject, step: TimelineStore.TimelineItem): String {
+            val success = if (summary.has("success") && !summary.isNull("success")) {
+                summary.optBoolean("success")
+            } else {
+                step.status != "failed"
+            }
+            val parts = ArrayList<String>()
+            if (summary.optString("kind") == "test") {
+                parts.add(if (success) "通过" else "未通过")
+                summary.optJSONObject("tests")?.let { tests ->
+                    val counts = ArrayList<String>()
+                    if (tests.has("passed") && !tests.isNull("passed")) counts.add("${tests.optInt("passed")} 通过")
+                    if (tests.has("failed") && !tests.isNull("failed")) counts.add("${tests.optInt("failed")} 失败")
+                    tests.optInt("skipped", 0).takeIf { it > 0 }?.let { counts.add("$it 跳过") }
+                    if (counts.isNotEmpty()) parts.add(counts.joinToString(" · "))
+                }
+            } else {
+                parts.add(if (success) "成功" else "失败")
+                if (!success) {
+                    summary.optInt("error_count", 0).takeIf { it > 0 }?.let { parts.add("$it 处错误") }
+                }
+                summary.optLong("apk_size_bytes", 0L).takeIf { it > 0 }?.let { parts.add("APK ${formatBytes(it)}") }
+            }
+            summary.optLong("duration_ms", 0L).takeIf { it > 0 }?.let { parts.add(formatDurationMs(it)) }
+            return parts.joinToString(" · ")
+        }
+
+        fun formatBytes(bytes: Long): String = when {
+            bytes >= 1024 * 1024 -> "%.1fMB".format(bytes / 1024.0 / 1024.0)
+            bytes >= 1024 -> "%.0fKB".format(bytes / 1024.0)
+            else -> "${bytes}B"
         }
 
         fun formatDurationMs(ms: Long): String =
@@ -192,8 +263,8 @@ class ConversationTimelineAdapter(
         is Row.WorkGroup -> TYPE_WORK
         is Row.Assistant -> TYPE_ASSISTANT
         is Row.Changes -> TYPE_CHANGES
-        is Row.Result -> TYPE_RESULT
         is Row.Error -> TYPE_ERROR
+        is Row.Agents -> TYPE_AGENTS
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -204,7 +275,10 @@ class ConversationTimelineAdapter(
             TYPE_WORK -> WorkVH(ItemWorkGroupBinding.inflate(inflater, parent, false))
             TYPE_ASSISTANT -> AssistantVH(ItemAssistantMessageBinding.inflate(inflater, parent, false))
             TYPE_CHANGES -> ChangesVH(ItemChangesSummaryBinding.inflate(inflater, parent, false))
-            TYPE_RESULT -> ResultVH(ItemTurnResultBinding.inflate(inflater, parent, false))
+            TYPE_AGENTS -> AgentsVH(com.google.android.material.button.MaterialButton(parent.context).apply {
+                layoutParams = RecyclerView.LayoutParams(-1, -2)
+                minHeight = (64 * resources.displayMetrics.density).toInt()
+            })
             else -> ErrorVH(ItemErrorMessageBinding.inflate(inflater, parent, false))
         }
     }
@@ -214,14 +288,21 @@ class ConversationTimelineAdapter(
             is Row.LoadingHistory -> (holder as LoadingVH).bind(row, callbacks)
             is Row.User -> (holder as UserVH).bind(row)
             is Row.WorkGroup -> (holder as WorkVH).bind(row, callbacks, this)
-            is Row.Assistant -> (holder as AssistantVH).bind(row, markwon(holder.itemView.context))
+            is Row.Assistant -> (holder as AssistantVH).bind(row, markwon(holder.itemView.context), spannedCache)
             is Row.Changes -> (holder as ChangesVH).bind(row, callbacks)
-            is Row.Result -> (holder as ResultVH).bind(row)
             is Row.Error -> (holder as ErrorVH).bind(row, callbacks)
+            is Row.Agents -> (holder as AgentsVH).bind(row, callbacks)
         }
     }
 
     // ---------- ViewHolders ----------
+
+    class AgentsVH(private val button: com.google.android.material.button.MaterialButton) : RecyclerView.ViewHolder(button) {
+        fun bind(row: Row.Agents, callbacks: Callbacks) {
+            button.text = row.summary + "\nView details ›"
+            button.setOnClickListener { callbacks.onViewAgents(row.turnKey) }
+        }
+    }
 
     class LoadingVH(private val binding: ItemLoadingHistoryBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(row: Row.LoadingHistory, callbacks: Callbacks) {
@@ -238,15 +319,6 @@ class ConversationTimelineAdapter(
         }
     }
 
-    class ResultVH(private val binding: ItemTurnResultBinding) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(row: Row.Result) {
-            binding.textResultStatus.text = ConversationTimelineBuilder.statusLabel(row.status)
-            binding.textResultStatus.setTextColor(statusColor(binding.root.context, row.status))
-            val duration = ConversationTimelineBuilder.formatWorked(row.durationMs)
-            binding.textResultDuration.text = if (duration.isBlank()) "" else "总耗时 $duration"
-        }
-    }
-
     class ErrorVH(private val binding: ItemErrorMessageBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(row: Row.Error, callbacks: Callbacks) {
             binding.textErrorMessage.text = row.message
@@ -259,14 +331,21 @@ class ConversationTimelineAdapter(
 
     class ChangesVH(private val binding: ItemChangesSummaryBinding) : RecyclerView.ViewHolder(binding.root) {
         fun bind(row: Row.Changes, callbacks: Callbacks) {
-            binding.textChangesCount.text =
-                binding.root.context.getString(R.string.files_changed, row.files.size)
+            val context = binding.root.context
+            // 服务端行级统计（ChangesSummary），无统计时退回文件数展示
+            val lineStats = listOfNotNull(
+                row.additions?.takeIf { it > 0 }?.let { "+$it" },
+                row.deletions?.takeIf { it > 0 }?.let { "−$it" },
+            ).joinToString(" ").takeIf { it.isNotBlank() }
+            binding.textChangesCount.text = context.getString(R.string.files_changed, row.files.size) +
+                (lineStats?.let { " · $it" } ?: "")
             bindCount(binding.textChangesAdd, row.added, "+")
             bindCount(binding.textChangesMod, row.modified, "~")
             bindCount(binding.textChangesDel, row.deleted, "−")
             binding.textChangesFiles.text = row.files.take(4).joinToString("\n") +
                 if (row.files.size > 4) "\n…" else ""
             binding.btnViewChanges.setOnClickListener { callbacks.onViewChanges(row.turnKey) }
+            binding.btnRevertTurn.setOnClickListener { callbacks.onRevertTurn(row.turnKey) }
         }
 
         private fun bindCount(view: TextView, count: Int, prefix: String) {
@@ -276,16 +355,13 @@ class ConversationTimelineAdapter(
     }
 
     class AssistantVH(private val binding: ItemAssistantMessageBinding) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(row: Row.Assistant, markwon: Markwon) {
+        fun bind(row: Row.Assistant, markwon: Markwon, cache: MarkdownSpannedCache) {
             val container = binding.layoutSegments
             binding.textStreamingHint.visibility = if (row.streaming) View.VISIBLE else View.GONE
-            if (row.streaming) {
-                // 流式快速路径：纯文本 + 光标，不做完整 Markdown 解析
-                ensureChildCount(container, 1)
-                val tv = ensureTextChild(container, 0)
-                tv.text = if (row.text.endsWith("\n")) row.text else row.text + " ▌"
-                return
-            }
+            // Rendering is already coalesced to an 80 ms cadence by the
+            // Activity. Use the same tolerant Markdown profile while streaming
+            // so finalization does not suddenly replace plain text with a
+            // differently measured layout.
             val segments = MarkdownCodec.split(row.text)
             if (segments.isEmpty()) {
                 ensureChildCount(container, 0)
@@ -296,7 +372,12 @@ class ConversationTimelineAdapter(
                 when (segment) {
                     is MarkdownCodec.Segment.Text -> {
                         val tv = ensureTextChild(container, index)
-                        markwon.setMarkdown(tv, segment.text)
+                        if (row.streaming) {
+                            // 流式文本每帧变化，缓存无法命中，直接解析
+                            markwon.setMarkdown(tv, segment.text)
+                        } else {
+                            markwon.setParsedMarkdown(tv, cache.spanned(markwon, segment.text))
+                        }
                     }
                     is MarkdownCodec.Segment.Code -> {
                         if (!ensureCodeChild(container, index)) {
@@ -320,13 +401,18 @@ class ConversationTimelineAdapter(
             TextView(container.context).apply {
                 setTextColor(resolveColor(context, com.google.android.material.R.attr.colorOnSurface))
                 setTextIsSelectable(true)
+                // Older platforms keep TextView's native line-breaking default.
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    breakStrategy = android.graphics.text.LineBreaker.BREAK_STRATEGY_HIGH_QUALITY
+                }
+                hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NORMAL
                 movementMethod = TableAwareMovementMethod.create()
                 setPadding(0, dp(context, 4), 0, dp(context, 4))
             }
 
         private fun ensureTextChild(container: ViewGroup, index: Int): TextView {
             val child = container.getChildAt(index)
-            if (child is TextView && child !is CodeBlockView) return child
+            if (child is TextView) return child
             container.removeViewAt(index)
             val tv = newTextNode(container)
             container.addView(tv, index)
@@ -394,34 +480,46 @@ class ConversationTimelineAdapter(
 
         private fun renderSteps(
             container: ViewGroup,
-            steps: List<TimelineStore.TimelineItem>,
+            steps: List<ConversationTimelineBuilder.WorkEntry>,
             callbacks: Callbacks,
             adapter: ConversationTimelineAdapter,
         ) {
             val inflater = LayoutInflater.from(container.context)
             while (container.childCount > steps.size) container.removeViewAt(container.childCount - 1)
-            steps.forEachIndexed { index, step ->
-                when (step.type) {
-                    TimelineStore.ItemType.TOOL -> {
-                        val tag = childBinder(container, index, ToolStepTag::class.java) {
-                            val b = ItemToolStepBinding.inflate(inflater, container, false)
-                            b.root to ToolStepTag(b, adapter)
+            steps.forEachIndexed { index, entry ->
+                when (entry) {
+                    is ConversationTimelineBuilder.WorkEntry.ToolCluster -> {
+                        val tag = childBinder(container, index, ToolClusterTag::class.java) {
+                            val b = ItemToolClusterBinding.inflate(inflater, container, false)
+                            b.root to ToolClusterTag(b, adapter)
                         }
-                        tag.bind(step)
+                        tag.bind(entry)
                     }
-                    TimelineStore.ItemType.APPROVAL -> {
-                        val tag = childBinder(container, index, ApprovalStepTag::class.java) {
-                            val b = ItemApprovalBinding.inflate(inflater, container, false)
-                            b.root to ApprovalStepTag(b)
+                    is ConversationTimelineBuilder.WorkEntry.Item -> {
+                        val step = entry.item
+                        when (step.type) {
+                            TimelineStore.ItemType.TOOL -> {
+                                val tag = childBinder(container, index, ToolStepTag::class.java) {
+                                    val b = ItemToolStepBinding.inflate(inflater, container, false)
+                                    b.root to ToolStepTag(b, adapter)
+                                }
+                                tag.bind(step)
+                            }
+                            TimelineStore.ItemType.APPROVAL -> {
+                                val tag = childBinder(container, index, ApprovalStepTag::class.java) {
+                                    val b = ItemApprovalBinding.inflate(inflater, container, false)
+                                    b.root to ApprovalStepTag(b)
+                                }
+                                tag.bind(step, callbacks, adapter)
+                            }
+                            else -> {
+                                val tag = childBinder(container, index, StatusStepTag::class.java) {
+                                    val b = ItemStatusLineBinding.inflate(inflater, container, false)
+                                    b.root to StatusStepTag(b, adapter)
+                                }
+                                tag.bind(step)
+                            }
                         }
-                        tag.bind(step, callbacks, adapter)
-                    }
-                    else -> {
-                        val tag = childBinder(container, index, StatusStepTag::class.java) {
-                            val b = ItemStatusLineBinding.inflate(inflater, container, false)
-                            b.root to StatusStepTag(b)
-                        }
-                        tag.bind(step)
                     }
                 }
             }
@@ -458,7 +556,9 @@ class ConversationTimelineAdapter(
             val context = binding.root.context
             val name = step.content.optString("name")
             binding.iconTool.setImageResource(toolIcon(name))
-            binding.textStepSummary.text = toolStepSummary(step)
+            binding.textStepSummary.text = toolLabel(name)
+            binding.textStepTarget.text = toolTarget(step)
+            binding.textStepTarget.visibility = if (binding.textStepTarget.text.isBlank()) View.GONE else View.VISIBLE
             binding.textStepStatus.text = stepStatusText(step)
             binding.textStepStatus.setTextColor(statusColor(context, step.status))
 
@@ -473,6 +573,12 @@ class ConversationTimelineAdapter(
             val meta = StringBuilder("工具: ${toolLabel(name)}")
             step.content.optJSONObject("input")?.let { input ->
                 meta.append('\n').append(prettyJson(input))
+            }
+            step.content.optJSONObject("summary")?.let { summary ->
+                meta.append("\n\n摘要:\n").append(prettyJson(summary))
+            }
+            step.content.optJSONObject("artifact")?.let { artifact ->
+                meta.append("\n\n产物:\n").append(prettyJson(artifact))
             }
             binding.textStepMeta.text = meta
 
@@ -489,11 +595,77 @@ class ConversationTimelineAdapter(
                 }
                 copyToClipboard(context, "tool", full)
             }
+
+            // Domain Core：构建产物（Artifact 事件）直达 APK 下载/安装页
+            val apkArtifact = step.content.optJSONObject("artifact")
+                ?.takeIf { it.optString("kind") == "apk" }
+            binding.btnApkStep.visibility = if (apkArtifact != null) View.VISIBLE else View.GONE
+            binding.btnApkStep.setOnClickListener {
+                adapter.callbacks.onOpenApk(apkArtifact?.let(::artifactJobId))
+            }
         }
 
         private fun applyExpanded(expanded: Boolean) {
             binding.layoutStepDetail.visibility = if (expanded) View.VISIBLE else View.GONE
             binding.iconStepExpand.rotation = if (expanded) 180f else 0f
+        }
+    }
+
+    class ToolClusterTag(
+        private val binding: ItemToolClusterBinding,
+        private val adapter: ConversationTimelineAdapter,
+    ) {
+        fun bind(cluster: ConversationTimelineBuilder.WorkEntry.ToolCluster) {
+            val context = binding.root.context
+            binding.iconCluster.setImageResource(
+                when (cluster.category) {
+                    "read" -> R.drawable.ic_tool_read
+                    "search" -> R.drawable.ic_tool_search
+                    "write" -> R.drawable.ic_tool_edit
+                    "command" -> R.drawable.ic_tool_command
+                    else -> R.drawable.ic_tool_generic
+                },
+            )
+            binding.textClusterTitle.text = clusterLabel(cluster.category, cluster.items.size)
+            val failed = cluster.items.count { it.status == "failed" }
+            binding.textClusterStatus.text = when {
+                failed > 0 -> "$failed 失败"
+                cluster.status == "running" -> "进行中"
+                cluster.durationMs != null -> formatDurationMs(cluster.durationMs)
+                else -> ""
+            }
+            binding.textClusterStatus.setTextColor(statusColor(context, cluster.status))
+
+            val defaultExpanded = failed > 0
+            val expanded = adapter.clusterExpanded[cluster.id] ?: defaultExpanded
+            renderExpanded(cluster, expanded)
+            binding.rowCluster.setOnClickListener {
+                val next = !(adapter.clusterExpanded[cluster.id] ?: defaultExpanded)
+                adapter.clusterExpanded[cluster.id] = next
+                renderExpanded(cluster, next)
+            }
+        }
+
+        private fun renderExpanded(cluster: ConversationTimelineBuilder.WorkEntry.ToolCluster, expanded: Boolean) {
+            binding.layoutClusterMembers.visibility = if (expanded) View.VISIBLE else View.GONE
+            binding.iconClusterExpand.rotation = if (expanded) 180f else 0f
+            if (!expanded) return
+            val inflater = LayoutInflater.from(binding.root.context)
+            val container = binding.layoutClusterMembers
+            while (container.childCount > cluster.items.size) container.removeViewAt(container.childCount - 1)
+            cluster.items.forEachIndexed { index, item ->
+                val tag = if (index < container.childCount && container.getChildAt(index).tag is ToolStepTag) {
+                    container.getChildAt(index).tag as ToolStepTag
+                } else {
+                    val child = ItemToolStepBinding.inflate(inflater, container, false)
+                    val binder = ToolStepTag(child, adapter)
+                    child.root.tag = binder
+                    if (index < container.childCount) container.removeViewAt(index)
+                    container.addView(child.root, index)
+                    binder
+                }
+                tag.bind(item)
+            }
         }
     }
 
@@ -529,11 +701,16 @@ class ConversationTimelineAdapter(
         }
     }
 
-    class StatusStepTag(private val binding: ItemStatusLineBinding) {
+    class StatusStepTag(
+        private val binding: ItemStatusLineBinding,
+        private val adapter: ConversationTimelineAdapter,
+    ) {
         fun bind(step: TimelineStore.TimelineItem) {
             binding.rowStatus.setOnClickListener(null)
             binding.rowStatus.isClickable = false
             binding.iconStatusExpand.rotation = 0f
+            binding.textStatusLine.maxLines = 1
+            binding.textStatusLine.ellipsize = TextUtils.TruncateAt.END
             binding.textStatusLine.setTextColor(
                 resolveColor(binding.root.context, com.google.android.material.R.attr.colorOnSurfaceVariant)
             )
@@ -544,23 +721,25 @@ class ConversationTimelineAdapter(
                         if (messages.length() > 0) messages.optString(messages.length() - 1) else ""
                     }
                     binding.textStatusLine.text = last
+                    val expandable = messages.length() > 1 || last.length > 80 || last.contains('\n')
                     binding.textStatusCount.visibility = if (messages.length() > 1) View.VISIBLE else View.GONE
                     binding.textStatusCount.text = "共 ${messages.length()} 条"
-                    binding.iconStatusExpand.visibility = if (messages.length() > 1) View.VISIBLE else View.GONE
-                    if (messages.length() > 1) {
+                    binding.iconStatusExpand.visibility = if (expandable) View.VISIBLE else View.GONE
+                    if (expandable) {
+                        val expanded = adapter.statusExpanded[step.key] ?: false
                         binding.rowStatus.isClickable = true
-                        binding.rowStatus.setOnClickListener { v ->
-                            val opened = v.tag == true
-                            v.tag = !opened
-                            binding.iconStatusExpand.rotation = if (opened) 0f else 180f
-                            binding.textStatusLine.text = if (opened) last else {
-                                (0 until messages.length()).joinToString("\n") { messages.optString(it) }
-                            }
+                        applyStatusExpansion(messages, last, expanded)
+                        binding.rowStatus.setOnClickListener {
+                            val next = !(adapter.statusExpanded[step.key] ?: false)
+                            adapter.statusExpanded[step.key] = next
+                            applyStatusExpansion(messages, last, next)
                         }
                     }
                 }
                 TimelineStore.ItemType.PLAN -> {
                     binding.textStatusLine.text = "计划: ${step.content.optString("text")}"
+                    binding.textStatusLine.maxLines = Int.MAX_VALUE
+                    binding.textStatusLine.ellipsize = null
                     binding.textStatusCount.visibility = View.GONE
                     binding.iconStatusExpand.visibility = View.GONE
                 }
@@ -571,6 +750,8 @@ class ConversationTimelineAdapter(
                 }
                 TimelineStore.ItemType.ERROR -> {
                     binding.textStatusLine.text = step.content.optString("message")
+                    binding.textStatusLine.maxLines = Int.MAX_VALUE
+                    binding.textStatusLine.ellipsize = null
                     binding.textStatusLine.setTextColor(statusColor(binding.root.context, "failed"))
                     binding.textStatusCount.visibility = View.GONE
                     binding.iconStatusExpand.visibility = View.GONE
@@ -582,6 +763,15 @@ class ConversationTimelineAdapter(
                 }
             }
         }
+
+        private fun applyStatusExpansion(messages: JSONArray, last: String, expanded: Boolean) {
+            binding.iconStatusExpand.rotation = if (expanded) 180f else 0f
+            binding.textStatusLine.maxLines = if (expanded) Int.MAX_VALUE else 1
+            binding.textStatusLine.ellipsize = if (expanded) null else TextUtils.TruncateAt.END
+            binding.textStatusLine.text = if (expanded) {
+                (0 until messages.length()).joinToString("\n") { messages.optString(it) }
+            } else last
+        }
     }
 }
 
@@ -589,4 +779,31 @@ fun copyToClipboard(context: Context, label: String, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText(label, text))
     Toast.makeText(context, R.string.copied, Toast.LENGTH_SHORT).show()
+}
+
+/** Artifact 事件的 url 形如 /api/jobs/{task_id}/apk，直接解析出所属任务。 */
+internal fun artifactJobId(artifact: JSONObject): String? =
+    Regex("/api/jobs/([^/]+)/apk").find(artifact.optString("url"))?.groupValues?.get(1)
+
+/**
+ * 已定稿 markdown 文本的 Spanned LRU 缓存。
+ * 滚动回收后重新 bind 时直接复用解析结果，跳过 Markwon 全文解析；
+ * 流式文本不入缓存（每帧变化无法命中）。
+ */
+class MarkdownSpannedCache(
+    maxEntries: Int = 64,
+    private val maxCacheableChars: Int = 24_000,
+) {
+    private val cache = object : android.util.LruCache<String, Spanned>(maxEntries) {}
+
+    fun spanned(markwon: Markwon, text: String): Spanned {
+        if (text.length <= maxCacheableChars) {
+            cache.get(text)?.let { return it }
+        }
+        val parsed = markwon.toMarkdown(text)
+        if (text.length <= maxCacheableChars) cache.put(text, parsed)
+        return parsed
+    }
+
+    fun clear() = cache.evictAll()
 }

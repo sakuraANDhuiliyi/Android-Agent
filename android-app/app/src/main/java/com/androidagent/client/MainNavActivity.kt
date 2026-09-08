@@ -15,7 +15,9 @@ import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.androidagent.client.core.database.AppDatabase
 import com.androidagent.client.databinding.ActivityMainNavBinding
+import com.androidagent.client.feature.conversation.ConversationRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -145,14 +147,29 @@ class MainNavActivity : AppCompatActivity() {
             return
         }
         val api = AgentApi(prefs.serverUrl, prefs.apiToken)
+        val repository = conversationRepository(api)
         lifecycleScope.launch {
+            // 缓存优先：先渲染本地会话列表，后台再同步服务端
+            if (drawerConversations.isEmpty()) {
+                try {
+                    val cached = repository.cachedConversations(DRAWER_HISTORY_LIMIT)
+                    if (cached.isNotEmpty()) {
+                        val cachedItems = cached.map { repository.cachedConversationInfo(it) }
+                        drawerConversations = cachedItems
+                        renderHistory(cachedItems)
+                    }
+                } catch (_: Exception) {
+                    /* 缓存不可用时直接走网络 */
+                }
+            }
             try {
                 val conversations = withContext(Dispatchers.IO) {
                     api.listProjects()
                         .flatMap { project -> api.listConversations(project.id) }
                         .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0.0 }
-                        .take(50)
+                        .take(DRAWER_HISTORY_LIMIT)
                 }
+                repository.replaceConversations(conversations)
                 drawerConversations = conversations
                 renderHistory(conversations)
             } catch (cancelled: CancellationException) {
@@ -161,6 +178,17 @@ class MainNavActivity : AppCompatActivity() {
                 // Drawer history is secondary; the current page shows actionable connection errors.
             }
         }
+    }
+
+    private fun conversationRepository(api: AgentApi): ConversationRepository {
+        val db = AppDatabase.get(applicationContext)
+        return ConversationRepository(
+            api = api,
+            eventDao = db.conversationEventDao(),
+            conversationDao = db.conversationDao(),
+            jobDao = db.jobDao(),
+            approvalDao = db.approvalDao(),
+        )
     }
 
     private fun renderAccount() {
@@ -261,6 +289,8 @@ class MainNavActivity : AppCompatActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val DRAWER_HISTORY_LIMIT = 50
+
         fun start(context: Context, tab: String? = null) {
             context.startActivity(DeepLink.mainNavIntent(context, tab))
         }

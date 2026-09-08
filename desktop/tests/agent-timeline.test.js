@@ -63,6 +63,30 @@ async function run() {
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load" });
   await page.waitForFunction(() => window.AgentTimeline && window.Timeline);
 
+  // Focus Agent uses the canonical timeline renderer at workspace width.
+  const focusChecks = await page.evaluate(() => {
+    const host = document.createElement("div");
+    host.className = "workbench";
+    host.style.cssText = "display:flex;width:1200px;height:700px";
+    host.innerHTML =
+      '<nav class="activitybar"></nav><aside class="sidebar"></aside>' +
+      '<div class="sash-sidebar"></div><section class="editor-pane"></section>' +
+      '<div class="sash-ai"></div><aside class="ai-pane"></aside>';
+    document.body.appendChild(host);
+    document.body.dataset.focusMode = "agent";
+    const ai = host.querySelector(".ai-pane");
+    const result = {
+      editorHidden: getComputedStyle(host.querySelector(".editor-pane")).display === "none",
+      sidebarHidden: getComputedStyle(host.querySelector(".sidebar")).display === "none",
+      agentWorkspaceWidth: Math.round(ai.getBoundingClientRect().width) === 1200,
+      agentHasNoWidthCap: getComputedStyle(ai).maxWidth === "none",
+    };
+    delete document.body.dataset.focusMode;
+    host.remove();
+    return result;
+  });
+  for (const [name, val] of Object.entries(focusChecks)) ok(val, `focus: ${name}`);
+
   // —————————————————— Markdown ——————————————————
 
   const mdChecks = await page.evaluate(() => {
@@ -305,12 +329,15 @@ async function run() {
     const sum0 = turns[0].querySelector(".tl-work-summary").textContent;
     out.summaryCounts = sum0.includes("查看 1 个文件") && sum0.includes("执行 1 条命令") && sum0.includes("修改 1 个文件");
 
-    // Expanded turn shows events in order inside the work body
+    // Expanded turn keeps tools in Work and promotes changes to Outcome.
     const body2 = bodies[2];
     const kinds = [...body2.querySelectorAll(".tl-item")].map((i) =>
       i.classList.contains("tl-tool") ? "tool" : i.classList.contains("tl-changes") ? "changes" : i.classList.contains("tl-assistant") ? "assistant" : "other",
     );
-    out.workOrder = kinds.join(",") === "tool,tool,changes";
+    out.workOrder = kinds.join(",") === "tool,tool";
+    out.changesInOutcome =
+      Boolean(turns[2].querySelector(":scope > .tl-turn-outcome .tl-changes")) &&
+      !turns[2].querySelector(":scope > .tl-work .tl-changes");
 
     // No private reasoning anywhere
     out.noPrivateCot = !container.textContent.includes("PRIVATE-COT-LEAK") && !container.textContent.includes("Thought");
@@ -503,6 +530,124 @@ async function run() {
     return out;
   });
   for (const [name, val] of Object.entries(clusterChecks)) ok(val, `cluster: ${name}`);
+
+  // —————————————————— DOM node budget (120 turns) ——————————————————
+
+  const budgetChecks = await page.evaluate(() => {
+    const AT = window.AgentTimeline;
+    const Timeline = window.Timeline;
+    const root = document.getElementById("root");
+    root.textContent = "";
+    localStorage.removeItem("agentTimeline.viewState.v1");
+    const container = document.createElement("div");
+    container.style.cssText = "width:600px;height:800px;overflow:auto;";
+    root.appendChild(container);
+
+    const store = Timeline.createStore();
+    const T0 = 1767225600;
+    let seq = 0;
+    const ev = (turnId, taskId, type, payload) => ({ seq: ++seq, event_type: type, payload, turn_id: turnId, task_id: taskId, created_at: T0 + seq * 10 });
+    const feed = (from, to) => {
+      for (let n = from; n <= to; n += 1) {
+        const turnId = `bt${n}`;
+        const taskId = `bj${n}`;
+        store.ingestConversationEvents([
+          ev(turnId, taskId, "user_message", { message_id: `bu${n}`, content: [{ type: "text", text: `第 ${n} 轮问题，包含一点长度以确保接近真实内容。` }] }),
+          ev(turnId, taskId, "tool_call", { tool_call_id: `bc${n}a`, name: "read_file", input: { path: `src/File${n}.kt` } }),
+          ev(turnId, taskId, "tool_result", { tool_call_id: `bc${n}a`, name: "read_file", ok: true, duration_ms: 4 }),
+          ev(turnId, taskId, "tool_call", { tool_call_id: `bc${n}b`, name: "run_command", input: { argv: ["./gradlew", "assembleDebug"] } }),
+          ev(turnId, taskId, "tool_result", { tool_call_id: `bc${n}b`, name: "run_command", ok: true, duration_ms: 40 }),
+          ev(turnId, taskId, "changes", { files: [{ path: `src/File${n}.kt`, change: "modified", additions: 12, deletions: 3 }] }),
+          ev(turnId, taskId, "assistant_message", { message_id: `bf${n}`, is_final: true, text_blocks: [{ type: "text", text: `第 ${n} 轮最终回答：构建完成，改动已验证。` }] }),
+        ]);
+      }
+    };
+    feed(1, 120);
+
+    const view = AT.createTimelineView(container, {});
+    view.update(store.items(), { immediate: true });
+
+    const out = {};
+    const countDom = () => container.querySelectorAll("*").length;
+    const turnNodes = () => container.querySelectorAll(".tl-turn").length;
+
+    // Windowing: 120 turns fed, only the last 40 stay in the DOM.
+    out.windowedTurns = turnNodes() === 40;
+    const earlierBtn = container.querySelector(".tl-load-earlier");
+    out.earlierBtnVisible = Boolean(earlierBtn) && /80/.test(earlierBtn.textContent || "");
+    out.hiddenTurnsGone = turnNodes() === 40 && !container.textContent.includes("第 1 轮问题");
+
+    // DOM budget: 40 visible turns must stay well below "thousands of nodes per turn".
+    const domAfter120 = countDom();
+    out.domBudget40Turns = domAfter120 < 9000;
+    out.domPerTurn = domAfter120 / 40 < 220;
+
+    // Expanding the window adds exactly one step (40 more turns).
+    earlierBtn.click();
+    view.refresh();
+    out.expandTo80 = turnNodes() === 80;
+    const domAfter80 = countDom();
+    out.domBudget80Turns = domAfter80 < 18000;
+
+    // Growing the conversation slides the 80-turn window forward: new turns appear,
+    // turns that fell out of the window have their DOM nodes removed.
+    feed(121, 160);
+    view.update(store.items(), { immediate: true });
+    out.windowSlides =
+      turnNodes() === 80 &&
+      container.textContent.includes("第 160 轮最终回答") &&
+      !container.textContent.includes("第 41 轮问题");
+
+    // A fresh view on the same 160-turn store windows back to the default 40.
+    const container2 = document.createElement("div");
+    root.appendChild(container2);
+    const view2 = AT.createTimelineView(container2, {});
+    view2.update(store.items(), { immediate: true });
+    out.defaultWindow40 = container2.querySelectorAll(".tl-turn").length === 40;
+
+    return Object.assign(out, { domAfter120, domAfter80, turnsAtEnd: turnNodes() });
+  });
+  for (const [name, val] of Object.entries(budgetChecks)) {
+    if (name === "domAfter120" || name === "domAfter80" || name === "turnsAtEnd") {
+      console.log(`  info - budget: ${name} = ${val}`);
+      continue;
+    }
+    ok(val, `budget: ${name}`);
+  }
+
+  // —————————————————— Streaming markdown block reuse ——————————————————
+
+  const mdStreamChecks = await page.evaluate(() => {
+    const AT = window.AgentTimeline;
+    const root = document.getElementById("root");
+    root.textContent = "";
+    const container = document.createElement("div");
+    root.appendChild(container);
+
+    const part1 = "第一段内容，流式到达。\n\n```kotlin\nfun a() {}\n```\n\n";
+    AT.renderMarkdown(container, part1);
+    const firstPara = container.querySelector(".md-p");
+    const childCount1 = container.children.length;
+
+    // Stream appends a new paragraph: stable prefix DOM nodes must be reused, not rebuilt.
+    AT.renderMarkdown(container, part1 + "第二段内容，稍后到达。");
+    const childCount2 = container.children.length;
+    const out = {};
+    out.stableNodeReused = container.querySelector(".md-p") === firstPara;
+    out.appendGrows = childCount2 === childCount1 + 1;
+
+    // Re-render identical text: no DOM churn at all.
+    const before = [...container.children];
+    AT.renderMarkdown(container, part1 + "第二段内容，稍后到达。");
+    out.identicalNoChurn = [...container.children].every((n, i) => n === before[i]) && container.children.length === before.length;
+
+    // Growing inside the last (paragraph) block only rebuilds that block.
+    AT.renderMarkdown(container, part1 + "第二段内容，稍后到达。追加尾句。");
+    out.tailOnlyRebuild = container.querySelector(".md-p") === firstPara && [...container.children].slice(0, childCount1).every((n, i) => n === before[i]);
+
+    return out;
+  });
+  for (const [name, val] of Object.entries(mdStreamChecks)) ok(val, `stream: ${name}`);
 
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

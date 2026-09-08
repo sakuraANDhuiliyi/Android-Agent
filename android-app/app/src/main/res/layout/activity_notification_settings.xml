@@ -103,7 +103,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLater"
-                style="@style/Widget.Material3.Button.TextButton"
+                style="@style/Widget.AndroidAgent.Button.Text"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/not_now" />

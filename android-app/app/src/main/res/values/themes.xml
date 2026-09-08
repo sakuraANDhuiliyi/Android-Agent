@@ -23,8 +23,12 @@
         <item name="android:statusBarColor">@color/signal_surface</item>
         <item name="android:navigationBarColor">@color/signal_navigation</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">@color/signal_surface</item>
+        <item name="materialButtonStyle">@style/Widget.AndroidAgent.Button</item>
+        <item name="materialButtonOutlinedStyle">@style/Widget.AndroidAgent.Button.Outlined</item>
+        <item name="materialCardViewStyle">@style/Widget.AndroidAgent.Card</item>
+        <item name="toolbarStyle">@style/Widget.AndroidAgent.Toolbar</item>
     </style>
 
     <style name="Theme.AndroidAgentClient" parent="Base.Theme.AndroidAgentClient" />
@@ -73,7 +77,10 @@
 
     <style name="Widget.AndroidAgent.DrawerRow" parent="">
         <item name="android:layout_width">match_parent</item>
-        <item name="android:layout_height">52dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">52dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
         <item name="android:background">?attr/selectableItemBackground</item>
         <item name="android:clickable">true</item>
         <item name="android:focusable">true</item>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import copy
 import shutil
 import threading
 import time
@@ -13,7 +14,7 @@ from agent.approvals import (
     reject_job_approvals,
     resolve_approval,
 )
-from agent.changes import compare_snapshots, snapshot_workspace
+from agent.changes import compare_snapshots, diff_stats, snapshot_workspace
 from agent.config import Settings, load_settings
 from agent.conversation_events import (
     ConversationEventStore,
@@ -22,6 +23,7 @@ from agent.conversation_events import (
 from agent.conversation_summary import create_semantic_checkpoint
 from agent.database import TaskStore
 from agent.honesty import sanitize_final_answer
+from agent.feedback import FeedbackStore, capture_gradle_result, run_feedback_cycle, feedback_summary
 from agent.governance import prune_old_files
 from agent.loop import CancellationRequested, dispatch_agent_tool, run_agent
 from agent.paths import latest_apk_path, user_builds_dir, workspace_path
@@ -170,6 +172,8 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(ctx, dict):
         ctx = {}
     result["run_mode"] = ctx.get("run_mode") or "workspace"
+    if ctx.get("permission_profile"):
+        result["permission_profile"] = ctx.get("permission_profile")
     task_id = result.get("id")
     # The desktop needs the turn identity to locate the Turn in the timeline
     # and to request the checkpoint-based diff review.
@@ -193,7 +197,7 @@ def resolve_job_approval(
     job = get_job(job_id, user_id=user_id)
     if not job:
         return None
-    result = resolve_approval(approval_id, user_id, approved=approved)
+    result = resolve_approval(approval_id, user_id, approved=approved, expected_job_id=job_id)
     if not result or result.get("job_id") != job_id:
         return None
     return result
@@ -383,7 +387,23 @@ def get_project_session(user_id: str, project_id: str) -> dict[str, Any]:
 def workspace_status(user_id: str, project_id: str) -> dict[str, Any]:
     meta = load_project_meta(user_id, project_id)
     repo = WorkspaceRepository(user_id, project_id, task_store=_store)
-    git = repo.git_status()
+    if repo.is_git():
+        git = repo.git_status()
+    else:
+        checkpoints = repo.list_checkpoints()
+        baseline = next((item for item in checkpoints if item.get("kind") == "before_turn"), None)
+        diff = repo.checkpoint_diff(baseline["id"]) if baseline else {"files": []}
+        files = diff.get("files") or []
+        git = {
+            "ok": True,
+            "branch": meta.get("default_branch") or "workspace",
+            "base_revision": baseline.get("id") if baseline else None,
+            "files": [
+                {"path": item.get("path"), "status": item.get("change", "modified")}
+                for item in files
+            ],
+            "dirty": bool(files),
+        }
     return {
         "user_id": user_id,
         "project_id": project_id,
@@ -407,7 +427,13 @@ def workspace_diff(
         return repo.turn_diff(turn_id)
     if checkpoint_id:
         return repo.checkpoint_diff(checkpoint_id)
-    return repo.git_diff()
+    if repo.is_git():
+        return repo.git_diff()
+    checkpoints = repo.list_checkpoints()
+    baseline = next((item for item in checkpoints if item.get("kind") == "before_turn"), None)
+    if baseline:
+        return repo.checkpoint_diff(baseline["id"])
+    return {"ok": True, "status": "empty", "files": [], "diff": "", "truncated": False}
 
 
 def workspace_diff_file(
@@ -457,7 +483,20 @@ def restore_file(
     return repo.restore_file(checkpoint_id, rel_path)
 
 
+def revert_hunk(user_id: str, project_id: str, rel_path: str, hunk: str) -> dict[str, Any]:
+    load_project_meta(user_id, project_id)
+    repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+    return repo.revert_hunk(rel_path, hunk)
+
+
 RUN_MODES = frozenset({"read_only", "workspace", "ask"})
+
+# Legacy run mode used as fallback/base when a permission profile is active.
+PROFILE_BASE_RUN_MODE = {
+    "safe": "read_only",
+    "standard": "workspace",
+    "full_access": "workspace",
+}
 
 
 def _normalize_run_mode(run_mode: str | None) -> str:
@@ -470,6 +509,24 @@ def _normalize_run_mode(run_mode: str | None) -> str:
     return value
 
 
+def _resolve_permission(
+    user_id: str,
+    project_id: str,
+    run_mode: str | None,
+) -> tuple[str, str | None]:
+    """Return (run_mode, permission_profile) for a new task.
+
+    An explicit client run_mode keeps the legacy behavior and disables the
+    profile layer; otherwise the project's configured profile drives decisions.
+    """
+    if run_mode is not None:
+        return _normalize_run_mode(run_mode), None
+    from agent.project_settings import get_permission_profile
+
+    profile = get_permission_profile(workspace_path(user_id, project_id))
+    return PROFILE_BASE_RUN_MODE.get(profile, "workspace"), profile
+
+
 def start_ask_job(
     user_id: str,
     project_id: str,
@@ -480,6 +537,8 @@ def start_ask_job(
     continue_session: bool = True,
     reset_session: bool = False,
     run_mode: str | None = None,
+    contexts: list[dict[str, Any]] | None = None,
+    feedback_requested: bool = False,
 ) -> dict[str, Any]:
     with project_operation(user_id, project_id):
         return _start_ask_job_unlocked(
@@ -491,6 +550,8 @@ def start_ask_job(
             continue_session=continue_session,
             reset_session=reset_session,
             run_mode=run_mode,
+            contexts=contexts,
+            feedback_requested=feedback_requested,
         )
 
 
@@ -504,10 +565,12 @@ def _start_ask_job_unlocked(
     continue_session: bool = True,
     reset_session: bool = False,
     run_mode: str | None = None,
+    contexts: list[dict[str, Any]] | None = None,
+    feedback_requested: bool = False,
 ) -> dict[str, Any]:
     load_project_meta(user_id, project_id)
     settings = settings or load_settings()
-    run_mode = _normalize_run_mode(run_mode)
+    run_mode, permission_profile = _resolve_permission(user_id, project_id, run_mode)
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -545,7 +608,14 @@ def _start_ask_job_unlocked(
             "model": settings.model,
             "created_at": created_at,
             "write_lock_key": write_lock_key,
-            "context": {"write_lock_key": write_lock_key, "run_mode": run_mode},
+            "context": {
+                "write_lock_key": write_lock_key,
+                "run_mode": run_mode,
+                "permission_profile": permission_profile,
+                "attachments": (contexts or [])[:20],
+                "feedback_requested": feedback_requested,
+                "feedback_options": FeedbackStore(_store.db_path).settings(user_id, project_id, bool(getattr(settings, "auto_build_after_edit", False))),
+            },
         })
         task_created = True
         turn = event_store.create_turn(
@@ -556,23 +626,28 @@ def _start_ask_job_unlocked(
             status="queued",
             provider=settings.provider,
             model=settings.model,
+            trace_id=uuid.uuid4().hex,
             created_at=created_at,
         )
         turn_id = turn["id"]
+        trace_id = turn.get("trace_id")
         message_id = uuid.uuid5(
             uuid.NAMESPACE_URL,
             f"android-agent:turn:{turn_id}:user_message",
         ).hex
+        user_payload: dict[str, Any] = {
+            "message_id": message_id,
+            "content": [{"type": "text", "text": prompt}],
+            "source": "user",
+        }
+        if trace_id:
+            user_payload["trace_id"] = trace_id
         event_store.append_event_idempotent(
             conversation_id,
             turn_id,
             EventType.USER_MESSAGE,
             f"turn:{turn_id}:user_message",
-            {
-                "message_id": message_id,
-                "content": [{"type": "text", "text": prompt}],
-                "source": "user",
-            },
+            user_payload,
             task_id=task_id,
             role="user",
             context_visible=True,
@@ -805,6 +880,15 @@ def _recovery_replay_guard(
     ]
 
 
+def _pick_task_log(logs: list[Path]) -> Path | None:
+    """Newest log to attach as the task log; gradle logs win over the
+    lazily persisted `cmd-*.log` command logs written by run_command."""
+    for path in reversed(logs):
+        if not path.name.startswith("cmd-"):
+            return path
+    return logs[-1] if logs else None
+
+
 def _run_subagent_job_wrapper(
     task_id: str,
     user_id: str,
@@ -932,6 +1016,8 @@ def _run_job(
         raise RuntimeError("任务缺少 conversation_id")
 
     task_meta = _store.get_task(task_id, user_id) or {}
+    task_context = task_meta.get("context") if isinstance(task_meta.get("context"), dict) else {}
+    feedback_options = task_context.get("feedback_options") or {"build_after_changes": bool(getattr(settings, "auto_build_after_edit", False))}
     if task_meta.get("parent_task_id") or task_meta.get("role"):
         _run_subagent_job_wrapper(
             task_id,
@@ -945,7 +1031,14 @@ def _run_job(
         return
 
     event_store = ConversationEventStore(_store)
+    _turn_row = event_store.get_turn(turn_id, user_id=user_id) or {}
+    trace_id = _turn_row.get("trace_id")
     workspace = workspace_path(user_id, project_id)
+    settings = copy.copy(settings)
+    settings.provider_fallbacks = [copy.copy(item) for item in getattr(settings, "provider_fallbacks", [])]
+    # Build once after edits instead of once per write, including fallbacks.
+    for provider_settings in [settings, *settings.provider_fallbacks]:
+        provider_settings.auto_build_after_edit = False
     before = snapshot_workspace(workspace)
     task_started = time.time()
     build_state = {"attempted": False, "succeeded": False}
@@ -1032,6 +1125,9 @@ def _run_job(
         context_visible: bool = False,
         event_key: str | None = None,
     ) -> dict[str, Any]:
+        payload = dict(payload)
+        if trace_id:
+            payload.setdefault("trace_id", trace_id)
         kwargs = {
             "task_id": task_id,
             "role": role,
@@ -1068,6 +1164,8 @@ def _run_job(
         ui_payload.setdefault("task_id", task_id)
         ui_payload.setdefault("turn_id", turn_id)
         ui_payload.setdefault("conversation_id", conversation_id)
+        if trace_id:
+            ui_payload.setdefault("trace_id", trace_id)
         _store.add_event(task_id, event_type, ui_payload)
 
         if event_type == EventType.ASSISTANT_MESSAGE:
@@ -1095,6 +1193,27 @@ def _run_job(
                 context_visible=True,
                 event_key=f"tool_result:{payload['tool_call_id']}",
             )
+            # Domain Core v1：run_gradle 的结构化结果落为独立摘要事件，
+            # 客户端不再自行解析 gradle 日志。
+            summary = payload.get("summary")
+            if (
+                payload.get("name") == "run_gradle"
+                and isinstance(summary, dict)
+                and summary.get("schema_version")
+            ):
+                summary_type = (
+                    EventType.TEST_SUMMARY
+                    if summary.get("kind") == "test"
+                    else EventType.BUILD_SUMMARY
+                )
+                summary_payload = dict(summary)
+                summary_payload["tool_call_id"] = payload["tool_call_id"]
+                append_canonical(
+                    summary_type,
+                    summary_payload,
+                    event_key=f"turn:{turn_id}:summary:{payload['tool_call_id']}",
+                )
+                _store.add_event(task_id, summary_type, summary_payload)
         elif (
             event_type == EventType.MALFORMED_TOOL_CALL
             and payload.get("tool_call_id")
@@ -1135,6 +1254,13 @@ def _run_job(
             EventType.MODEL_SWITCH,
         }:
             append_canonical(event_type, payload)
+        elif event_type in {"subagent_spawned", "subagent_completed"} and payload.get("child_task_id"):
+            append_canonical(
+                EventType.SYSTEM_NOTE,
+                {**payload, "agent_event": event_type},
+                context_visible=False,
+                event_key=f"subagent:{payload['child_task_id']}:{event_type}",
+            )
         elif event_type == EventType.SYSTEM_NOTE:
             kind = payload.get("kind") or "note"
             append_canonical(
@@ -1163,6 +1289,10 @@ def _run_job(
             if task_name == "assembleDebug":
                 build_state["attempted"] = True
                 build_state["succeeded"] = bool(payload.get("ok"))
+            try:
+                capture_gradle_result(_store, user_id, project_id, task_id, payload, task_started)
+            except (OSError, ValueError) as exc:
+                logger.warning("Build report unavailable for %s: %s", task_id, exc)
         usage = payload.get("usage")
         if isinstance(usage, dict):
             for key in token_usage:
@@ -1184,14 +1314,15 @@ def _run_job(
         after = snapshot_workspace(workspace)
         changed, diff = compare_snapshots(workspace, before, after)
         _store.update_task(task_id, changed_files=changed, diff=diff)
+        stats = diff_stats(diff)
         _store.add_event(
             task_id,
             EventType.CHANGES,
-            {"message": f"改动 {len(changed)} 个文件", "files": changed},
+            {"message": f"改动 {len(changed)} 个文件", "files": changed, **stats},
         )
         append_canonical(
             EventType.CHANGES,
-            {"files": changed},
+            {"files": changed, **stats},
             event_key=f"turn:{turn_id}:changes",
         )
         changes_recorded = True
@@ -1361,7 +1492,54 @@ def _run_job(
         )
         check_cancel()
         check_pause()
-        answer = run_agent(
+        from agent.explicit_context import build_context_bundle
+
+        context_budget_chars = int(getattr(settings, "max_prompt_chars", 100_000))
+        try:
+            context_bundle = build_context_bundle(
+                user_id,
+                project_id,
+                prompt,
+                task_context.get("attachments") or [],
+                _store,
+                include_automatic=True,
+                task_id=task_id,
+                budget_chars=context_budget_chars,
+            )
+        except Exception as context_exc:
+            logger.warning("Context planning skipped for %s: %s", task_id, context_exc)
+            context_bundle = {
+                "explicit": [],
+                "automatic": [],
+                "memory": [],
+                "memory_count": 0,
+                "symbol_count": 0,
+                "total_tokens": 0,
+                "budget_tokens": max(1, context_budget_chars // 4),
+                "model_context": "",
+            }
+        context_summary = {
+            key: context_bundle[key]
+            for key in (
+                "explicit",
+                "automatic",
+                "memory",
+                "memory_count",
+                "symbol_count",
+                "total_tokens",
+                "budget_tokens",
+            )
+        }
+        _store.update_task(task_id, context={**task_context, "summary": context_summary})
+        _store.add_event(
+            task_id,
+            "context_plan",
+            {
+                "message": f"上下文 {context_bundle['total_tokens']} / {context_bundle['budget_tokens']} tokens",
+                **context_summary,
+            },
+        )
+        answer = "构建验证完成" if task_context.get("feedback_requested") else run_agent(
             settings,
             workspace,
             user_id,
@@ -1378,14 +1556,17 @@ def _run_job(
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
             run_mode=run_mode,
+            extra_system_prompt=context_bundle.get("model_context") or None,
         )
         check_cancel()
         check_pause()
 
-        if settings.auto_build_after_edit and not build_state["attempted"]:
+        def automatic_gradle(gradle_task: str) -> bool:
+            check_cancel()
+            check_pause()
             message_id = uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"android-agent:turn:{turn_id}:job_auto_build",
+                f"android-agent:turn:{turn_id}:feedback:{uuid.uuid4().hex}",
             ).hex
             tool_call_id = f"call_{message_id[:24]}"
             on_event(
@@ -1409,7 +1590,7 @@ def _run_job(
                     "tool_call_id": tool_call_id,
                     "block_index": 0,
                     "name": "run_gradle",
-                    "input": {"task": "assembleDebug", "auto": True},
+                    "input": {"task": gradle_task, "auto": True},
                 },
             )
             auto_started = time.monotonic()
@@ -1419,7 +1600,7 @@ def _run_job(
                     user_id,
                     project_id,
                     "run_gradle",
-                    {"task": "assembleDebug"},
+                    {"task": gradle_task},
                     cancel_check=check_cancel,
                     settings=settings,
                     on_event=on_event,
@@ -1428,6 +1609,7 @@ def _run_job(
                     set_status=set_status,
                     recovery_replays=recovery_replays,
                     recovery_mode=recovery_mode,
+                    run_mode=run_mode,
                 )
             except CancellationRequested as exc:
                 on_event(
@@ -1444,12 +1626,12 @@ def _run_job(
                         ),
                         "error_type": exc.__class__.__name__,
                         "interrupted": True,
-                        "input": {"task": "assembleDebug", "auto": True},
+                        "input": {"task": gradle_task, "auto": True},
                         "preview": str(exc),
                     },
                 )
                 raise
-            except ApprovalEventPersistenceError:
+            except (ApprovalEventPersistenceError, PauseRequested, TaskLeaseLost):
                 raise
             except Exception as exc:
                 result = ToolResult(
@@ -1457,8 +1639,6 @@ def _run_job(
                     f"工具 run_gradle 执行异常: {exc}",
                     error_type=exc.__class__.__name__,
                 )
-            build_state["attempted"] = True
-            build_state["succeeded"] = result.ok
             model_output = (
                 result.output
                 if isinstance(result.output, str)
@@ -1486,10 +1666,46 @@ def _run_job(
                         else None if result.ok else "ToolExecutionError"
                     ),
                     "interrupted": False,
-                    "input": {"task": "assembleDebug", "auto": True},
+                    "input": {"task": gradle_task, "auto": True},
                     "preview": model_output[:2000],
                 },
             )
+
+            if result.error_type in {"ApprovalDenied", "ApprovalCanceled", "PermissionDenied", "HookDenied", "PermissionError"}:
+                raise RuntimeError(model_output)
+            return result.ok
+
+        options = feedback_options
+        changes_now, _ = compare_snapshots(workspace, before, snapshot_workspace(workspace))
+
+        def fix_feedback(attempt: int, failed_task: str) -> None:
+            nonlocal answer
+            current_context = (_store.get_task(task_id, user_id) or {}).get("context") or {}
+            attempt = int(current_context.get("feedback_fix_attempts") or 0) + 1
+            if attempt > 2:
+                raise RuntimeError("已达到本轮自动修复上限 2 次，请查看 Problems")
+            _store.update_task(task_id, context={**current_context, "feedback_fix_attempts": attempt})
+            _store.add_event(task_id, "feedback", {"message": f"自动修复 {attempt}/2 · {failed_task}", "attempt": attempt})
+            report = feedback_summary(_store, user_id, project_id, task_id)
+            failures = "\n".join(p["message"] for p in report["problems"])[:24_000]
+            answer = run_agent(
+                settings, workspace, user_id, project_id,
+                f"修复本轮 {failed_task} 失败（第 {attempt}/2 轮）。保留用户改动，只修复失败原因。\n{failures}",
+                on_event=on_event, cancel_check=check_cancel, check_pause=check_pause,
+                get_steers=get_steers, task_id=task_id, set_status=set_status,
+                conversation_events=event_store.list_events(conversation_id, user_id=user_id),
+                # run_agent uses this value to namespace deterministic message IDs;
+                # on_event still persists every event under the original turn.
+                turn_id=f"{turn_id}:feedback:{attempt}", recovery_replays=recovery_replays,
+                recovery_mode=recovery_mode, run_mode=run_mode,
+                extra_system_prompt=context_bundle.get("model_context") or None,
+            )
+
+        if (task_context.get("feedback_requested")
+                or (options.get("build_after_changes") and changes_now)
+                or (build_state["succeeded"] and options.get("run_tests"))
+                or (build_state["attempted"] and not build_state["succeeded"] and options.get("fix_failures"))):
+            run_feedback_cycle(options, automatic_gradle, fix_feedback, check_cancel)
 
         # Relaxed gate: only fail if gradle was attempted and failed
         if build_state["attempted"] and not build_state["succeeded"]:
@@ -1506,6 +1722,20 @@ def _run_job(
                     temp_apk.replace(task_apk)
                 finally:
                     temp_apk.unlink(missing_ok=True)
+        if task_apk is not None and task_apk.is_file():
+            artifact_payload: dict[str, Any] = {
+                "kind": "apk",
+                "path": task_apk.name,
+                "size_bytes": task_apk.stat().st_size,
+                "url": f"/api/jobs/{task_id}/apk",
+                "schema_version": 1,
+            }
+            _store.add_event(task_id, EventType.ARTIFACT, artifact_payload)
+            append_canonical(
+                EventType.ARTIFACT,
+                artifact_payload,
+                event_key=f"turn:{turn_id}:artifact:apk",
+            )
 
         logs = sorted(
             (user_builds_dir(user_id) / project_id).glob("*.log"),
@@ -1586,6 +1816,8 @@ def _run_job(
                 )
         except Exception as mem_exc:
             logger.warning("Memory candidate generation failed: %s", mem_exc)
+        recent_logs = [p for p in logs if p.stat().st_mtime >= task_started]
+        attached_log = _pick_task_log(recent_logs)
         event_store.finalize_lifecycle(
             conversation_id=conversation_id,
             turn_id=turn_id,
@@ -1598,7 +1830,7 @@ def _run_job(
             finished_at=completed_at,
             final_message=answer,
             apk_path=str(task_apk) if task_apk else None,
-            build_log_path=str(logs[-1]) if logs and logs[-1].stat().st_mtime >= task_started else None,
+            build_log_path=str(attached_log) if attached_log else None,
             task_event_type="completed",
             task_event_payload={"message": "本轮完成", "result": answer, **diff_state},
         )
@@ -1679,8 +1911,10 @@ def _run_job(
                 (user_builds_dir(user_id) / project_id).glob("*.log"),
                 key=lambda path: path.stat().st_mtime,
             )
-            if logs and logs[-1].stat().st_mtime >= task_started:
-                _store.update_task(task_id, build_log_path=str(logs[-1]))
+            recent = [p for p in logs if p.stat().st_mtime >= task_started]
+            chosen = _pick_task_log(recent)
+            if chosen:
+                _store.update_task(task_id, build_log_path=str(chosen))
             keep = int(
                 getattr(settings, "max_build_artifacts_per_project", 50)
             )

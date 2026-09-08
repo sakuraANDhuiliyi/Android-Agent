@@ -7,6 +7,13 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
+import android.widget.PopupMenu
+import androidx.core.widget.doAfterTextChanged
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
@@ -37,6 +44,19 @@ class FileBrowserActivity : AppCompatActivity() {
     private var isWritable: Boolean = false
     private var isTruncated: Boolean = false
     private var suppressTextWatch: Boolean = false
+    private var revision: String? = null
+    private var editMode = false
+    private var loadingFile = false
+    private val history = EditHistory()
+    private val openFiles = linkedMapOf<String, FileEntry>()
+    private val expanded = mutableSetOf("app", "app/manifests", "app/kotlin", "app/res")
+    private var allFiles = emptyList<FileEntry>()
+    private var fileKind = "all"
+    private var modifiedOnly = false
+    private var openOnly = false
+    private var searchJob: Job? = null
+    private var fileLoadVersion = 0
+    private var saving = false
 
     private val textWatcher = object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -46,6 +66,9 @@ class FileBrowserActivity : AppCompatActivity() {
                 return
             }
             val dirty = s?.toString() != loadedContent
+            history.record(s?.toString().orEmpty(), android.os.SystemClock.uptimeMillis())
+            binding.btnUndo.isEnabled = history.canUndo
+            binding.btnRedo.isEnabled = history.canRedo
             if (dirty != isDirty) {
                 isDirty = dirty
                 refreshEditorChrome()
@@ -83,7 +106,36 @@ class FileBrowserActivity : AppCompatActivity() {
         }
         binding.btnParentDir.setOnClickListener { navigateUp() }
         binding.btnSave.setOnClickListener { saveCurrentFile() }
+        binding.btnEdit.setOnClickListener { editMode = !editMode; refreshEditorChrome() }
+        binding.btnUndo.setOnClickListener { applyHistory(history.undo()) }
+        binding.btnRedo.setOnClickListener { applyHistory(history.redo()) }
+        binding.btnCodeAgent.setOnClickListener { showAgentActions() }
+        binding.btnOpenTabs.setOnClickListener {
+            val entries = openFiles.values.toList()
+            AlertDialog.Builder(this).setTitle(R.string.explorer_open_files)
+                .setItems(entries.map { it.path }.toTypedArray()) { _, index -> openFile(entries[index]) }
+                .setNegativeButton(R.string.cancel, null).show()
+        }
+        binding.btnFileFilter.setOnClickListener { showFilters() }
+        binding.editSearchFiles.doAfterTextChanged { refreshFiles() }
+        binding.editFileContent.customSelectionActionModeCallback = object : ActionMode.Callback {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                listOf("Explain", "Fix", "Refactor", "Add tests", "Ask Agent").forEachIndexed { index, title ->
+                    menu.add(0, 200 + index, index, title).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
+                }
+                return true
+            }
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+            override fun onDestroyActionMode(mode: ActionMode) = Unit
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                if (item.itemId !in 200..204) return false
+                sendSelectionToAgent(item.title.toString()); mode.finish(); return true
+            }
+        }
         binding.editFileContent.addTextChangedListener(textWatcher)
+        binding.editFileContent.onRangeSelected = { _, _ ->
+            binding.editFileContent.post { renderSelectionActions(binding.editFileContent.selectionStart, binding.editFileContent.selectionEnd) }
+        }
         binding.editFileContent.isEnabled = false
 
         onBackPressedDispatcher.addCallback(
@@ -96,8 +148,14 @@ class FileBrowserActivity : AppCompatActivity() {
         )
 
         refreshEditorChrome()
-        loadDirectory(currentPath)
-        binding.drawerLayout.openDrawer(GravityCompat.START)
+        savedInstanceState?.getStringArrayList("open_files")?.forEach { path -> openFiles[path] = FileEntry(path.substringAfterLast('/'), path, "file") }
+        savedInstanceState?.getStringArrayList("expanded")?.let { expanded.clear(); expanded.addAll(it) }
+        refreshFiles()
+        val initialPath = savedInstanceState?.getString("open_path") ?: intent.getStringExtra("file_path")
+        if (initialPath != null) {
+            restoreDraft = savedInstanceState
+            actuallyOpenFile(FileEntry(initialPath.substringAfterLast('/'), initialPath, "file"))
+        } else binding.drawerLayout.openDrawer(GravityCompat.START)
     }
 
     private fun handleBack() {
@@ -111,6 +169,11 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun onEntryClick(entry: FileEntry) {
+        if (entry.type == "group") {
+            if (!expanded.add(entry.path)) expanded.remove(entry.path)
+            renderFiles()
+            return
+        }
         if (entry.type == "dir") {
             loadDirectory(entry.path)
             return
@@ -153,6 +216,10 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun actuallyOpenFile(entry: FileEntry) {
+        if (saving) return
+        val version = ++fileLoadVersion
+        loadingFile = true
+        refreshEditorChrome()
         binding.drawerLayout.closeDrawer(GravityCompat.START)
         binding.textOpenFile.text = entry.path
         binding.textEditorStatus.text = getString(R.string.loading_file)
@@ -163,8 +230,11 @@ class FileBrowserActivity : AppCompatActivity() {
                 val content = withContext(Dispatchers.IO) {
                     api.readFile(projectId, entry.path)
                 }
+                if (version != fileLoadVersion) return@launch
                 openFilePath = content.path
+                openFiles[content.path] = entry
                 loadedContent = content.content
+                revision = content.revision
                 isWritable = content.writable && !content.truncated
                 isTruncated = content.truncated
                 isDirty = false
@@ -172,11 +242,42 @@ class FileBrowserActivity : AppCompatActivity() {
                 suppressTextWatch = true
                 binding.editFileContent.setText(content.content)
                 suppressTextWatch = false
-                binding.editFileContent.isEnabled = isWritable
+                history.reset(content.content)
+                editMode = false
+                loadingFile = false
+                binding.editFileContent.isEnabled = true
+                binding.editFileContent.setTextIsSelectable(false)
+                binding.editFileContent.setTextIsSelectable(true)
                 binding.editFileContent.setSelection(0)
+                restoreDraft?.takeIf { it.getString("open_path") == content.path }?.let { saved ->
+                    loadedContent = saved.getString("loaded", content.content)
+                    revision = saved.getString("revision") ?: content.revision
+                    history.reset(loadedContent)
+                    val draft = saved.getString("buffer", loadedContent)
+                    history.record(draft, android.os.SystemClock.uptimeMillis())
+                    applyHistory(draft)
+                    editMode = saved.getBoolean("edit_mode")
+                }
+                val line = intent.getIntExtra("file_line", 1).coerceAtLeast(1)
+                intent.removeExtra("file_line")
+                val offset = binding.editFileContent.text.toString().lineSequence().take(line - 1).sumOf { it.length + 1 }.coerceAtMost(binding.editFileContent.length())
+                binding.editFileContent.setSelection(offset)
+                if (line > 1) {
+                    val end = binding.editFileContent.text.toString().indexOf('\n', offset).let { if (it < 0) binding.editFileContent.length() else it }
+                    binding.editFileContent.setSelection(offset, end)
+                }
+                restoreDraft?.let { saved ->
+                    binding.editFileContent.setSelection(saved.getInt("selection_start").coerceIn(0, binding.editFileContent.length()), saved.getInt("selection_end").coerceIn(0, binding.editFileContent.length()))
+                }
+                restoreDraft = null
+                binding.editFileContent.post { binding.editFileContent.layout?.let { layout ->
+                    binding.scrollEditor.smoothScrollTo(0, layout.getLineTop(layout.getLineForOffset(offset)))
+                } }
                 adapter.setSelectedPath(openFilePath)
                 refreshEditorChrome()
             } catch (e: Exception) {
+                if (version != fileLoadVersion) return@launch
+                loadingFile = false
                 openFilePath = null
                 loadedContent = ""
                 isDirty = false
@@ -191,24 +292,32 @@ class FileBrowserActivity : AppCompatActivity() {
         }
     }
 
-    private fun saveCurrentFile() {
+    private fun saveCurrentFile(onSuccess: (() -> Unit)? = null) {
         val path = openFilePath ?: return
+        if (saving || loadingFile) return
         if (!isWritable) {
             toast(getString(R.string.file_readonly))
             return
         }
         val content = binding.editFileContent.text?.toString().orEmpty()
+        saving = true
+        refreshEditorChrome()
         binding.btnSave.isEnabled = false
         lifecycleScope.launch {
             try {
                 val message = withContext(Dispatchers.IO) {
-                    api.writeFile(projectId, path, content)
+                    api.writeFile(projectId, path, content, revision)
                 }
                 loadedContent = content
-                isDirty = false
+                revision = java.security.MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+                isDirty = binding.editFileContent.text?.toString() != content
+                saving = false
                 refreshEditorChrome()
                 toast(message)
+                refreshFiles()
+                if (!isDirty) onSuccess?.invoke()
             } catch (e: Exception) {
+                saving = false
                 toast("保存失败: ${e.message}")
                 refreshEditorChrome()
             }
@@ -216,39 +325,154 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun confirmDiscardOrSave(onContinue: () -> Unit) {
+        if (saving) return
         AlertDialog.Builder(this)
             .setTitle(R.string.unsaved_changes_title)
             .setMessage(R.string.unsaved_changes_message)
-            .setPositiveButton(R.string.save) { _, _ ->
-                val path = openFilePath
-                if (path == null || !isWritable) {
-                    onContinue()
-                    return@setPositiveButton
+            .setPositiveButton(R.string.save) { _, _ -> saveCurrentFile(onContinue) }
+            .setNegativeButton(R.string.discard) { _, _ -> isDirty = false; onContinue() }
+            .setNeutralButton(R.string.cancel, null).show()
+    }
+
+    private var restoreDraft: Bundle? = null
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("open_path", openFilePath)
+        outState.putString("buffer", binding.editFileContent.text.toString())
+        outState.putString("loaded", loadedContent)
+        outState.putString("revision", revision)
+        outState.putBoolean("edit_mode", editMode)
+        outState.putStringArrayList("open_files", ArrayList(openFiles.keys))
+        outState.putStringArrayList("expanded", ArrayList(expanded))
+        outState.putInt("selection_start", binding.editFileContent.selectionStart)
+        outState.putInt("selection_end", binding.editFileContent.selectionEnd)
+    }
+
+    private fun applyHistory(text: String) {
+        suppressTextWatch = true
+        binding.editFileContent.setText(text)
+        binding.editFileContent.setSelection(text.length)
+        suppressTextWatch = false
+        isDirty = text != loadedContent
+        refreshEditorChrome()
+    }
+
+    private fun showFilters() {
+        PopupMenu(this, binding.btnFileFilter).apply {
+            menu.add(0, 1, 0, "All files")
+            menu.add(0, 2, 1, "Code · Kotlin / Java")
+            menu.add(0, 3, 2, "Resources")
+            menu.add(0, 4, 3, "Modified only").apply { isCheckable = true; isChecked = modifiedOnly }
+            menu.add(0, 5, 4, getString(R.string.explorer_open_files)).apply { isCheckable = true; isChecked = openOnly }
+            setOnMenuItemClickListener {
+                when (it.itemId) {
+                    1 -> { fileKind = "all"; modifiedOnly = false; openOnly = false }
+                    2 -> fileKind = "code"
+                    3 -> fileKind = "resources"
+                    4 -> modifiedOnly = !modifiedOnly
+                    5 -> openOnly = !openOnly
                 }
-                lifecycleScope.launch {
-                    try {
-                        val content = binding.editFileContent.text?.toString().orEmpty()
-                        withContext(Dispatchers.IO) {
-                            api.writeFile(projectId, path, content)
-                        }
-                        loadedContent = content
-                        isDirty = false
-                        refreshEditorChrome()
-                        onContinue()
-                    } catch (e: Exception) {
-                        toast("保存失败: ${e.message}")
-                    }
+                refreshFiles(); true
+            }
+        }.show()
+    }
+
+    private fun refreshFiles() {
+        searchJob?.cancel()
+        val query = binding.editSearchFiles.text.toString()
+        searchJob = lifecycleScope.launch {
+            delay(180)
+            try {
+                val (files, truncated) = withContext(Dispatchers.IO) { api.searchFiles(projectId, query, fileKind, modifiedOnly) }
+                allFiles = files
+                binding.textCurrentPath.text = if (truncated) getString(R.string.explorer_more_results) else "${files.size} files"
+                binding.btnFileFilter.text = listOfNotNull(fileKind, if (modifiedOnly) "Modified" else null, if (openOnly) "Open" else null).joinToString(" · ")
+                binding.btnParentDir.text = getString(R.string.explorer_collapse)
+                binding.btnParentDir.isEnabled = true
+                binding.btnParentDir.setOnClickListener { expanded.clear(); renderFiles() }
+                renderFiles()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { binding.textCurrentPath.text = e.message; toast(e.message.orEmpty()) }
+        }
+    }
+
+    private fun renderFiles() {
+        val files = allFiles.filter { !openOnly || openFiles.containsKey(it.path) }
+        adapter.submitList(
+            if (binding.editSearchFiles.text.isNullOrBlank() && !modifiedOnly && !openOnly) CodeExplorer.tree(files, expanded) else files,
+            openFilePath,
+        )
+    }
+
+    private fun showAgentActions() {
+        val actions = arrayOf("Copy", "Explain", "Fix", "Refactor", "Add tests", "Ask Agent")
+        AlertDialog.Builder(this).setTitle(R.string.explorer_code_actions)
+            .setItems(actions) { _, index ->
+                if (index == 0) {
+                    val editor = binding.editFileContent
+                    val text = editor.text.toString()
+                    val start = minOf(editor.selectionStart, editor.selectionEnd).coerceAtLeast(0)
+                    val end = maxOf(editor.selectionStart, editor.selectionEnd).coerceAtLeast(0)
+                    val value = if (end > start) text.substring(start, end) else text
+                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText(openFilePath, value))
+                    toast(getString(R.string.copied))
+                } else sendSelectionToAgent(actions[index])
+            }
+            .setNegativeButton(R.string.cancel, null).show()
+    }
+
+    private fun renderSelectionActions(start: Int, end: Int) {
+        val active = !loadingFile && openFilePath != null && start >= 0 && end >= 0 && start != end
+        binding.selectionActions.visibility = if (active) android.view.View.VISIBLE else android.view.View.GONE
+        if (!active) return
+        val text = binding.editFileContent.text.toString()
+        if (maxOf(start, end) > text.length) return
+        val selection = CodeExplorer.selectedContext(openFilePath!!, text, start, end)
+        binding.selectionMenu.removeAllViews()
+        binding.selectionMenu.addView(android.widget.TextView(this).apply { this.text = "Ln ${selection.lineStart}–${selection.lineEnd}"; setPadding(16, 0, 16, 0) })
+        listOf("Copy", "Explain", "Fix", "Refactor", "Add tests", "Ask Agent").forEach { action ->
+            binding.selectionMenu.addView(com.google.android.material.button.MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+                this.text = action
+                setOnClickListener {
+                    if (action == "Copy") {
+                        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText(selection.label, selection.text))
+                        toast(getString(R.string.copied))
+                    } else sendSelectionToAgent(action)
                 }
-            }
-            .setNegativeButton(R.string.discard) { _, _ ->
-                isDirty = false
-                onContinue()
-            }
-            .setNeutralButton(R.string.cancel, null)
-            .show()
+            })
+        }
+    }
+
+    private fun sendSelectionToAgent(action: String) {
+        val path = openFilePath ?: return
+        val editor = binding.editFileContent
+        val text = editor.text.toString()
+        val selected = editor.selectionStart >= 0 && editor.selectionEnd >= 0 && editor.selectionEnd != editor.selectionStart
+        val item = if (selected) CodeExplorer.selectedContext(path, text, editor.selectionStart, editor.selectionEnd)
+            else if (isDirty) CodeExplorer.selectedContext(path, text, 0, text.length)
+            else ContextAttachment("file", path.substringAfterLast('/'), path = path)
+        if ((item.text?.length ?: 0) > 24_000) { toast(getString(R.string.explorer_selection_large)); return }
+        val prompt = "$action: ${item.label}" + if (isDirty) "\n以下选区包含尚未保存的本地修改；请以附带选区为准，保留其他改动。" else ""
+        lifecycleScope.launch {
+            binding.btnCodeAgent.isEnabled = false
+            try {
+                val conversation = withContext(Dispatchers.IO) { api.createConversation(projectId, "$action · ${item.label}") }
+                ConversationActivity.start(this@FileBrowserActivity, projectId, conversation.id, conversation.title, draft = prompt, contexts = listOf(item))
+            } catch (e: Exception) { toast(e.message.orEmpty()) }
+            finally { binding.btnCodeAgent.isEnabled = true }
+        }
     }
 
     private fun refreshEditorChrome() {
+        binding.btnEdit.isEnabled = isWritable && !loadingFile && !saving
+        binding.btnEdit.text = getString(if (editMode) R.string.explorer_view else R.string.explorer_edit)
+        binding.btnUndo.isEnabled = history.canUndo && editMode && !saving && !loadingFile
+        binding.btnRedo.isEnabled = history.canRedo && editMode && !saving && !loadingFile
+        binding.btnCodeAgent.isEnabled = openFilePath != null && !loadingFile
+        binding.editFileContent.keyListener = if (editMode && isWritable && !saving && !loadingFile) android.text.method.TextKeyListener.getInstance() else null
+        binding.editFileContent.setTextIsSelectable(true)
+        if (editMode) binding.editFileContent.setRawInputType(android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
         val path = openFilePath
         if (path == null) {
             binding.textOpenFile.text = getString(R.string.no_file_open)
@@ -265,14 +489,14 @@ class FileBrowserActivity : AppCompatActivity() {
         val statusParts = mutableListOf<String>()
         when {
             isTruncated -> statusParts.add(getString(R.string.file_truncated_readonly))
-            isWritable -> statusParts.add(getString(R.string.file_editable))
+            isWritable -> statusParts.add(getString(if (editMode) R.string.file_editable else R.string.explorer_selection_hint))
             else -> statusParts.add(getString(R.string.file_readonly))
         }
         if (isDirty) {
             statusParts.add(getString(R.string.file_dirty))
         }
         binding.textEditorStatus.text = statusParts.joinToString(" · ")
-        binding.btnSave.isEnabled = isDirty && isWritable
+        binding.btnSave.isEnabled = isDirty && isWritable && !saving && !loadingFile
     }
 
     private fun toast(message: String) {
@@ -290,12 +514,16 @@ class FileBrowserActivity : AppCompatActivity() {
             project: ProjectInfo,
             serverUrl: String,
             apiToken: String,
+            filePath: String? = null,
+            line: Int = 1,
         ) {
             val intent = Intent(context, FileBrowserActivity::class.java).apply {
                 putExtra(EXTRA_PROJECT_ID, project.id)
                 putExtra(EXTRA_PROJECT_NAME, project.name)
                 putExtra(EXTRA_SERVER_URL, serverUrl)
                 putExtra(EXTRA_API_TOKEN, apiToken)
+                putExtra("file_path", filePath)
+                putExtra("file_line", line)
             }
             context.startActivity(intent)
         }
@@ -341,7 +569,7 @@ private class FileEntryAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(entry: FileEntry) {
-            binding.textFileIcon.text = if (entry.type == "dir") "📁" else "📄"
+            binding.textFileIcon.text = if (entry.type in setOf("dir", "group")) "📁" else "📄"
             binding.textFileName.text = entry.name
             binding.textFilePath.text = entry.path
             binding.root.isSelected = entry.path == selectedPath
