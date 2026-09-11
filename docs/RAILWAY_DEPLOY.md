@@ -45,7 +45,7 @@ Railway 从 GitHub 构建时只能看到已经推送的提交。确认以下文�
 
 SQLite + Volume 模式不要开启多副本或跨区域部署。需要水平扩容时再迁移到 Railway PostgreSQL、Redis 和对象存储。
 
-镜像现在以 UID/GID `10001` 运行。挂载已有 Volume 时，须先由运维确认 `/data` 及已有数据允许该用户读写；镜像构建阶段的 `chown` 不会改变挂载卷的所有者。执行工具还要求宿主允许 bubblewrap 使用非特权用户命名空间；若平台不支持，可使用账号与只读文件 API，但进程与 Git 操作会明确失败。具体检查见 [安全执行配置](SECURITY_EXECUTION.md)。
+应用进程以 UID/GID `10001` 运行。容器入口会先修正已挂载 `/data` Volume 的所有权，再立即通过 `gosu` 降权启动应用，兼容早期由 root 创建的卷和数据库文件。执行工具还要求宿主允许 bubblewrap 使用非特权用户命名空间；若平台不支持，可使用账号与只读文件 API，但进程与 Git 操作会明确失败。具体检查见 [安全执行配置](SECURITY_EXECUTION.md)。
 
 当前 Free/Trial 部署使用 500 MB Volume，`minimum_free_disk_bytes` 因此设置为
 `268435456`（256 MiB），仅适合账号、登录和轻量接口测试。实际运行 Android

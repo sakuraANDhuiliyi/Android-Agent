@@ -21,6 +21,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        gosu \
         openjdk-17-jdk-headless \
         unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -53,8 +54,6 @@ RUN groupadd --gid 10001 agent \
     && mkdir -p /data/data /data/workspaces /data/builds /data/gradle-cache \
     && chown -R agent:agent /data
 
-USER agent
-
 EXPOSE 8000
 
-CMD ["sh", "-c", "exec python -m agent serve --host 0.0.0.0 --port \"${PORT:-8000}\""]
+CMD ["sh", "-c", "chown -R agent:agent /data && exec gosu agent python -m agent serve --host 0.0.0.0 --port \"${PORT:-8000}\""]
