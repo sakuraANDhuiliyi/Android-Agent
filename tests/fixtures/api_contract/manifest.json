@@ -4,6 +4,21 @@
   "error_statuses": [401, 404, 409, 413, 422, 429, 500],
   "endpoints": [
     {
+      "id": "creative_author_ok",
+      "method": "GET",
+      "path": "/api/me/creative/items/{item_id}",
+      "fixture": "creative_author_200.json",
+      "status": 200,
+      "requires_auth": true
+    },
+    {
+      "id": "creative_catalog_ok",
+      "method": "GET",
+      "path": "/api/creative/items",
+      "fixture": "creative_catalog_200.json",
+      "status": 200
+    },
+    {
       "id": "health_ok",
       "method": "GET",
       "path": "/api/health",
@@ -168,6 +183,10 @@
   ],
   "client_tests": [
     "desktop/tests/api-contract.test.js",
-    "android-app/app/src/test/java/com/androidagent/client/ApiContractTest.kt"
+    "android-app/app/src/test/java/com/androidagent/client/ApiContractTest.kt",
+    "android-app/app/src/test/java/com/androidagent/client/CreativeRemoteRepositoryTest.kt",
+    "desktop/tests/creative-live.test.js",
+    "android-app/app/src/test/java/com/androidagent/client/CreativeAuthorTest.kt",
+    "desktop/tests/creative-community-live.test.js"
   ]
 }

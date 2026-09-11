@@ -449,7 +449,7 @@
     if (!els.headerTitle) return;
     const project = selectedProject();
     const job = selectedJob();
-    els.headerTitle.textContent = job ? titleFor(job) : (project?.name || "Agent Windows");
+    els.headerTitle.textContent = job ? titleFor(job) : (project?.name || "智能工作台");
     els.headerTitle.title = project?.workspace || els.headerTitle.textContent;
   }
 
@@ -461,7 +461,7 @@
     const card = document.createElement("div");
     card.className = "cx-approval-card";
     const title = document.createElement("strong");
-    title.textContent = event.reason || event.intent || "Agent needs approval";
+    title.textContent = event.reason || event.intent || "需要你的审批";
     const detail = document.createElement("pre");
     detail.textContent = event.command || event.path || eventText(event) || JSON.stringify(event.payload || event.input || {}, null, 2);
     const actions = document.createElement("div");
@@ -500,12 +500,12 @@
     cardToolbar.className = "cx-thread-card-toolbar";
     const status = document.createElement("span");
     status.className = `cx-job-status ${job.statusClass}`;
-    status.textContent = job.displayStatus.replaceAll("_", " ");
+    status.textContent = window.DeliveryUI?.describe(job).label || job.displayStatus.replaceAll("_", " ");
     const title = document.createElement("span");
     title.textContent = titleFor(job);
     title.title = titleFor(job);
     const pin = button(`cx-pin-job${state.pinnedIds.has(job.id) ? " active" : ""}`, state.pinnedIds.has(job.id) ? "★" : "☆");
-    pin.title = state.pinnedIds.has(job.id) ? "Unpin Agent" : "Pin Agent";
+    pin.title = state.pinnedIds.has(job.id) ? "取消置顶" : "置顶任务";
     pin.addEventListener("click", (event) => {
       event.stopPropagation();
       if (state.pinnedIds.has(job.id)) state.pinnedIds.delete(job.id);
@@ -519,7 +519,7 @@
     if (!events.length) {
       const empty = document.createElement("div");
       empty.className = "cx-thread-empty";
-      empty.textContent = "Start a new chat to open an Agent window.";
+      empty.textContent = "发起新对话，开始构建你的 Android 应用。";
       body.appendChild(empty);
     }
     for (const event of events) {
@@ -556,6 +556,7 @@
       body.appendChild(message);
     }
     card.appendChild(body);
+    if (window.DeliveryUI) card.appendChild(window.DeliveryUI.render(job));
     const project = job.project || selectedProject();
     if (project?.workspace) {
       const workspace = document.createElement("button");
@@ -815,7 +816,7 @@
   }
 
   function renderRunMode() {
-    const labels = { workspace: "▣  Approval for me", ask: "◉  Ask every time", read_only: "◇  Read only" };
+    const labels = { workspace: "▣  操作前审批", ask: "◉  每次询问", read_only: "◇  只读" };
     els.approvalMode.textContent = labels[state.runMode];
   }
 
@@ -832,7 +833,7 @@
     els.modelSelect.textContent = "";
     const fallback = document.createElement("option");
     fallback.value = "";
-    fallback.textContent = "Default model";
+    fallback.textContent = "默认模型";
     els.modelSelect.appendChild(fallback);
     for (const model of state.models) {
       const option = document.createElement("option");
@@ -865,7 +866,7 @@
       }
       row.addEventListener("click", () => { state.selectedCategoryId = id; renderTodos(); });
       if (id) {
-        row.title = "Double-click to rename · right-click to delete";
+        row.title = "双击重命名 · 右键删除";
         row.addEventListener("dblclick", (event) => {
           event.preventDefault();
           const category = state.categories.find((item) => item.id === id);
@@ -906,7 +907,7 @@
       const row = document.createElement("div");
       row.className = `cx-todo-row${todo.isDone ? " done" : ""}`;
       const check = button("cx-todo-check");
-      check.title = todo.isDone ? "Mark as not done" : "Mark as done";
+      check.title = todo.isDone ? "标为未完成" : "标为已完成";
       check.addEventListener("click", () => {
         todo.isDone = !todo.isDone;
         persistTodos();
@@ -923,14 +924,14 @@
         }
       });
       const pin = button(`cx-todo-action${todo.pinnedAt ? " active" : ""}`, todo.pinnedAt ? "★" : "☆");
-      pin.title = todo.pinnedAt ? "Unpin" : "Pin";
+      pin.title = todo.pinnedAt ? "取消置顶" : "置顶";
       pin.addEventListener("click", () => {
         todo.pinnedAt = todo.pinnedAt ? null : Date.now();
         persistTodos();
         renderTodos();
       });
       const remove = button("cx-todo-action", "×");
-      remove.title = "Delete";
+      remove.title = "删除";
       remove.addEventListener("click", () => {
         state.todos = state.todos.filter((item) => item.id !== todo.id);
         persistTodos();

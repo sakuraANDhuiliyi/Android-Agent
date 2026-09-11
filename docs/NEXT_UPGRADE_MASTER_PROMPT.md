@@ -1,5 +1,9 @@
 # Android Agent 后续升级总计划与完整执行提示词
 
+> 2026-09-09 状态：本文件已由 [统一升级计划](/Users/mac/Android-Agent/docs/UNIFIED_UPGRADE_PLAN.md) 取代。
+> 下文保留 2026-08-16 的历史方案；旧阶段 0–8、旧项目路径和执行提示词不再作为当前执行依据。
+> 当前阶段、工作单、验收条件和可复制实施入口均以统一升级计划为准。
+
 > 更新日期：2026-08-16
 > 项目路径：`/Users/sakura/Android Agent`
 > 适用范围：Python/FastAPI Agent 服务、Electron 桌面端、原生 Android 客户端、测试、发布与运维

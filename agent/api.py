@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import hashlib
 import hmac
 import json
@@ -640,7 +641,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Registration-Token"],
     )
     app.add_middleware(
@@ -688,6 +689,9 @@ def create_app(
                 headers={"Retry-After": "60"},
             )
         response = await call_next(request)
+        if request.url.path.startswith("/api/me/creative/") or (request.method == "POST" and request.url.path.startswith("/api/creative/items/") and request.url.path.endswith("/reports")):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Authorization"
         if request.url.path == "/admin" or request.url.path.startswith(("/admin/", "/api/admin/")):
             response.headers["Cache-Control"] = "no-store"
             response.headers["Content-Security-Policy"] = (
@@ -715,7 +719,27 @@ def create_app(
     def current_identity(authorization: Optional[str] = Header(default=None)) -> AuthIdentity:
         return authenticated_identity(authorization)
 
-    def current_user(identity: AuthIdentity = Depends(current_identity)) -> str:
+    def current_user(request: Request, identity: AuthIdentity = Depends(current_identity)) -> str:
+        if app.state.user_store.is_guest(identity.user_id):
+            if not settings.guest_sessions_enabled:
+                raise HTTPException(status_code=403, detail="游客体验未启用，请登录账号")
+            path = request.scope["path"]
+            if "/mcp/" in path or "/terminals" in path or path.endswith("/settings") or path.endswith("/recover"):
+                raise HTTPException(status_code=403, detail="此操作需要登录账号")
+            route = getattr(request.scope.get("route"), "path", "")
+            guest_writes = {
+                ("POST", "/api/projects"),
+                ("POST", "/api/projects/{project_id}/ask"),
+                ("POST", "/api/projects/{project_id}/conversations"),
+                ("POST", "/api/conversations/{conversation_id}/ask"),
+                ("POST", "/api/jobs/{job_id}/cancel"),
+                ("POST", "/api/ws/tickets"),
+                ("DELETE", "/api/projects/{project_id}"),
+                ("DELETE", "/api/projects/{project_id}/session"),
+                ("DELETE", "/api/conversations/{conversation_id}"),
+            }
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and (request.method, route) not in guest_writes:
+                raise HTTPException(status_code=403, detail="游客体验仅支持只读操作，请登录账号")
         return identity.user_id
 
     def current_admin(
@@ -779,10 +803,10 @@ def create_app(
     def reserve_guest_turn(user_id: str) -> int | None:
         try:
             return app.state.user_store.consume_guest_message(
-                user_id, limit=settings.guest_message_limit
+                user_id, limit=settings.guest_message_limit, daily_limit=settings.max_guest_turns_per_day
             )
         except UserStoreError as exc:
-            status = 403 if exc.code == "guest_quota_exhausted" else 400
+            status = 429 if exc.code == "guest_global_quota_exhausted" else 403 if exc.code == "guest_quota_exhausted" else 400
             raise account_error(exc, status) from exc
 
     @app.get("/healthz", include_in_schema=False)
@@ -909,19 +933,40 @@ def create_app(
             raise account_error(exc, 401) from exc
 
     @app.post("/api/auth/guest", status_code=201)
-    def create_guest_session(body: GuestSessionRequest) -> dict[str, Any]:
+    def create_guest_session(body: GuestSessionRequest, request: Request,
+                             authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+        if not settings.guest_sessions_enabled or not settings.registration_enabled or settings.email_verification_required:
+            raise HTTPException(status_code=404, detail="游客体验未启用，请登录账号")
+        try:
+            host = request.client.host if request.client else "unknown"
+            reg_limiter.check(f"guest-register:{host}", limit=settings.max_registration_per_hour, window_seconds=3600)
+            reg_limiter.check("guest-register:global", limit=settings.max_registration_per_hour, window_seconds=3600)
+        except QuotaExceededError as exc:
+            raise HTTPException(status_code=429, detail="游客会话创建过于频繁，请稍后再试") from exc
         ensure_write_budget()
         try:
-            result = app.state.user_store.guest_session(device=_device_dict(body.device))
+            result = app.state.user_store.guest_session(device=_device_dict(body.device), token=_bearer_token(authorization))
             user_id = result["account"]["user_id"]
             user_workspaces_dir(user_id).mkdir(parents=True, exist_ok=True)
             user_builds_dir(user_id).mkdir(parents=True, exist_ok=True)
             return _auth_payload(result)
         except UserStoreError as exc:
-            raise account_error(exc, 400) from exc
+            raise account_error(exc, 401 if exc.code == "guest_auth_required" else 400) from exc
+
+    def limit_email_code(request: Request, email: str, *, sending: bool = False) -> None:
+        host = request.client.host if request.client else "unknown"
+        digest = hashlib.sha256(email.strip().lower().encode()).hexdigest()
+        kind = "send" if sending else "verify"
+        try:
+            http_limiter.check(f"code:{kind}:email:{digest}", limit=1 if sending else 15,
+                               window_seconds=60 if sending else 900)
+            http_limiter.check(f"code:{kind}:ip:{host}", limit=10 if sending else 60, window_seconds=900)
+        except QuotaExceededError as exc:
+            raise HTTPException(status_code=429, detail="验证码操作过于频繁，请稍后再试") from exc
 
     @app.post("/api/auth/email-code/request", status_code=202)
-    def request_email_login_code(body: EmailRequest) -> dict[str, bool]:
+    def request_email_login_code(body: EmailRequest, request: Request) -> dict[str, bool]:
+        limit_email_code(request, body.email, sending=True)
         if not settings.smtp_host or not settings.smtp_from:
             raise HTTPException(status_code=503, detail="服务端尚未配置邮箱发送服务")
         try:
@@ -933,12 +978,13 @@ def create_app(
             try:
                 code = app.state.user_store.create_code(account["user_id"], "login_email")
                 _send_account_code(settings, body.email, code, "login_email")
-            except (OSError, smtplib.SMTPException, RuntimeError):
+            except (OSError, smtplib.SMTPException, RuntimeError, UserStoreError):
                 pass
         return {"accepted": True}
 
     @app.post("/api/auth/email-code/login")
-    def login_with_email_code(body: EmailCodeLoginRequest) -> dict[str, Any]:
+    def login_with_email_code(body: EmailCodeLoginRequest, request: Request) -> dict[str, Any]:
+        limit_email_code(request, body.email, sending=False)
         try:
             return _auth_payload(
                 app.state.user_store.login_with_email_code(
@@ -951,7 +997,8 @@ def create_app(
             raise account_error(exc, 401) from exc
 
     @app.post("/api/auth/verify-email")
-    def verify_email(body: VerifyEmailRequest) -> dict[str, Any]:
+    def verify_email(body: VerifyEmailRequest, request: Request) -> dict[str, Any]:
+        limit_email_code(request, body.email, sending=False)
         try:
             result = app.state.user_store.verify_email_and_login(
                 body.email,
@@ -963,7 +1010,8 @@ def create_app(
             raise account_error(exc, 400) from exc
 
     @app.post("/api/auth/resend-verification", status_code=202)
-    def resend_verification(body: EmailRequest) -> dict[str, bool]:
+    def resend_verification(body: EmailRequest, request: Request) -> dict[str, bool]:
+        limit_email_code(request, body.email, sending=True)
         # Do not reveal whether an address exists.
         try:
             account = app.state.user_store.account_for_email(body.email)
@@ -973,12 +1021,13 @@ def create_app(
             try:
                 code = app.state.user_store.create_code(account["user_id"], "verify_email")
                 _send_account_code(settings, body.email, code, "verify_email")
-            except (OSError, smtplib.SMTPException, RuntimeError):
+            except (OSError, smtplib.SMTPException, RuntimeError, UserStoreError):
                 pass
         return {"accepted": True}
 
     @app.post("/api/auth/forgot-password", status_code=202)
-    def forgot_password(body: EmailRequest) -> dict[str, bool]:
+    def forgot_password(body: EmailRequest, request: Request) -> dict[str, bool]:
+        limit_email_code(request, body.email, sending=True)
         try:
             account = app.state.user_store.account_for_email(body.email)
         except UserStoreError:
@@ -987,12 +1036,13 @@ def create_app(
             try:
                 code = app.state.user_store.create_code(account["user_id"], "reset_password")
                 _send_account_code(settings, body.email, code, "reset_password")
-            except (OSError, smtplib.SMTPException, RuntimeError):
+            except (OSError, smtplib.SMTPException, RuntimeError, UserStoreError):
                 pass
         return {"accepted": True}
 
     @app.post("/api/auth/reset-password", status_code=204)
-    def reset_password(body: ResetPasswordRequest) -> None:
+    def reset_password(body: ResetPasswordRequest, request: Request) -> None:
+        limit_email_code(request, body.email, sending=False)
         try:
             app.state.user_store.reset_password(body.email, body.code, body.new_password)
         except UserStoreError as exc:
@@ -1248,6 +1298,8 @@ def create_app(
                 raise HTTPException(status_code=404, detail="任务不存在")
         else:
             require_terminal_enabled()
+            if app.state.user_store.is_guest(user_id):
+                raise HTTPException(status_code=403, detail="终端需要登录账号")
             if not get_terminal(body.resource_id, user_id):
                 raise HTTPException(status_code=404, detail="终端不存在")
         ticket, expires_at = app.state.ws_tickets.issue(
@@ -1275,7 +1327,8 @@ def create_app(
         body: CreateProjectRequest,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
-        if len(list_projects(user_id)) >= settings.max_projects_per_user:
+        project_limit = min(settings.max_projects_per_user, 3) if app.state.user_store.is_guest(user_id) else settings.max_projects_per_user
+        if len(list_projects(user_id)) >= project_limit:
             raise HTTPException(
                 status_code=429,
                 detail=f"项目数量达到上限 ({settings.max_projects_per_user})",
@@ -1327,6 +1380,10 @@ def create_app(
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
 
         guest_remaining = reserve_guest_turn(user_id)
+        if guest_remaining is not None:
+            body.run_mode = "read_only"
+            body.feedback_requested = False
+            job_settings = replace(job_settings, max_auto_continuations=0, auto_build_after_edit=False, max_turns=min(job_settings.max_turns, 3))
         try:
             job = start_ask_job(
                 user_id,
@@ -1548,6 +1605,10 @@ def create_app(
         if not job_settings.api_key:
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
         guest_remaining = reserve_guest_turn(user_id)
+        if guest_remaining is not None:
+            body.run_mode = "read_only"
+            body.feedback_requested = False
+            job_settings = replace(job_settings, max_auto_continuations=0, auto_build_after_edit=False, max_turns=min(job_settings.max_turns, 3))
         try:
             job = start_ask_job(
                 user_id,
@@ -3269,6 +3330,9 @@ def create_app(
                 await websocket.close(code=4401)
                 return
 
+        if app.state.user_store.is_guest(user_id):
+            await websocket.close(code=4403)
+            return
         info = get_terminal(terminal_id, user_id)
         if not info:
             await websocket.close(code=4404)
@@ -3348,6 +3412,9 @@ def create_app(
                 await asyncio.sleep(0.05)
         except WebSocketDisconnect:
             return
+
+    from agent.creative.api import install_creative_routes
+    install_creative_routes(app, settings, current_admin, current_identity)
 
     web_dir = Path(__file__).resolve().parent / "web"
     admin_dir = Path(__file__).resolve().parent / "admin"

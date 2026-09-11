@@ -6,6 +6,13 @@ enum class CreativeCategory(val label: String) {
     MOTION("动效"),
     FEEDBACK("反馈"),
     DATA("数据"),
+    LAYOUT("布局"),
+    NAVIGATION("导航"),
+    INPUT("输入"),
+    COMMERCE("电商"),
+    SOCIAL("社交"),
+    MEDIA("媒体"),
+    LIFESTYLE("生活"),
 }
 
 enum class CreativePreview {
@@ -15,19 +22,29 @@ enum class CreativePreview {
     ANIMATED_COUNTER,
     LOADING_DOTS,
     PROGRESS_REVEAL,
+    STYLE,
 }
 
-data class CreativeRecipe(
+class CreativeRecipe(
     val id: String,
     val title: String,
     val summary: String,
     val category: CreativeCategory,
     val preview: CreativePreview,
     val tags: Set<String>,
-    val source: String,
+    source: String = "",
     val dependencies: List<String> = emptyList(),
     val minSdk: Int = 24,
+    val style: com.androidagent.client.creative.styles.CreativeStyleSpec? = null,
+    val pattern: com.androidagent.client.creative.styles.CreativePattern? = null,
+    val references: List<CreativeReference> = emptyList(),
+    private val sourceBuilder: (() -> String)? = null,
 ) {
+    val source: String by lazy {
+        sourceBuilder?.invoke() ?: if (source.contains("import androidx.compose.")) source
+            else "$COMPOSE_IMPORTS\n\n$source"
+    }
+
     fun buildAgentPrompt(): String = """
         请把 Android Agent 创意广场中的 UI Recipe「$title」应用到当前项目。
 
@@ -36,6 +53,9 @@ data class CreativeRecipe(
         最低 SDK: $minSdk
         Recipe 额外依赖（Compose 基础依赖之外）:
         ${if (dependencies.isEmpty()) "- 无额外依赖" else dependencies.joinToString("\n") { "- $it" }}
+
+        设计参考（原创 Compose 演示，非第三方源码）：
+        ${references.joinToString("\n") { "- ${it.title}: ${it.url}" }}
 
         参考实现：
         ```kotlin
@@ -51,3 +71,21 @@ data class CreativeRecipe(
         6. 最后汇报改动文件、使用方式和验证结果。
     """.trimIndent()
 }
+
+data class CreativeReference(val title: String, val url: String)
+
+private val COMPOSE_IMPORTS = """
+    import androidx.compose.animation.*
+    import androidx.compose.animation.core.*
+    import androidx.compose.foundation.*
+    import androidx.compose.foundation.layout.*
+    import androidx.compose.foundation.shape.*
+    import androidx.compose.material3.*
+    import androidx.compose.runtime.*
+    import androidx.compose.runtime.saveable.rememberSaveable
+    import androidx.compose.ui.Modifier
+    import androidx.compose.ui.graphics.graphicsLayer
+    import androidx.compose.ui.unit.dp
+    import androidx.compose.ui.unit.sp
+    import kotlin.math.roundToInt
+""".trimIndent()

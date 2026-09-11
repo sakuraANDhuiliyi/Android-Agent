@@ -630,7 +630,7 @@ async function run() {
   }));
   assert.strictEqual(lightTheme.attr, "light");
   assert.strictEqual(lightTheme.stored, "light");
-  assert.strictEqual(lightTheme.background, "rgb(251, 252, 255)", "shared light surface applied");
+  assert.strictEqual(lightTheme.background, "rgb(247, 248, 250)", "shared light surface applied");
   await page.screenshot({ path: path.join(__dirname, "screenshot-settings-light-1440x900.png"), fullPage: false });
   await page.selectOption("#themeSelect", "dark");
   await page.evaluate(() => document.getElementById("settingsDialog").close("test"));
@@ -1188,7 +1188,7 @@ async function run() {
       });
       assert.ok(layout.inViewport, `Agent Windows fits ${theme}/${width}`);
       assert.ok(layout.noOverlap, `composer never overlays content ${theme}/${width}`);
-      assert.strictEqual(layout.surface, theme === "light" ? "rgb(251, 252, 255)" : "rgb(14, 20, 29)");
+      assert.strictEqual(layout.surface, theme === "light" ? "rgb(247, 248, 250)" : "rgb(16, 19, 24)");
       await page.screenshot({ path: path.join(__dirname, `screenshot-workbench-${theme}-${width}.png`) });
       if (width === 700) {
         await page.click("#cxSidebarRestore");

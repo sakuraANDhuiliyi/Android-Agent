@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 import tempfile
+from agent.git_runner import run_git
 from typing import Any
 
 from agent.workspace import WorkspaceRepository, _capture_manifest, _load_blob
@@ -104,17 +103,17 @@ def branch_snapshot(repo: WorkspaceRepository, checkpoint_id: str, name: str) ->
         raise ValueError("Invalid branch name")
     root = repo.repo_root
     def git(*args: str, data: bytes | None = None, env=None) -> bytes:
-        result = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True, env=env, timeout=30)
+        result = run_git(root, *args, input_data=data, env=env, text=False)
         if result.returncode:
             raise ValueError(result.stderr.decode(errors="replace")[:1000])
         return result.stdout.strip()
     git("check-ref-format", "refs/heads/" + name)
-    with tempfile.TemporaryDirectory(prefix="agent-snapshot-index-") as temporary:
-        env = {**os.environ, "GIT_INDEX_FILE": temporary + "/index",
+    with tempfile.TemporaryDirectory(prefix="agent-snapshot-index-", dir=root) as temporary:
+        env = {"GIT_INDEX_FILE": temporary + "/index",
                "GIT_AUTHOR_NAME": "Android Agent", "GIT_AUTHOR_EMAIL": "agent@localhost",
                "GIT_COMMITTER_NAME": "Android Agent", "GIT_COMMITTER_EMAIL": "agent@localhost"}
         git("read-tree", cp["base_revision"], env=env)
-        prefix = repo.workspace.relative_to(root).as_posix()
+        prefix = repo.workspace.resolve().relative_to(root.resolve()).as_posix()
         prefix = "" if prefix == "." else prefix + "/"
         target = {f["path"]: f for f in cp["files"]}
         for raw in git("ls-files", "-z", env=env).split(b"\0"):

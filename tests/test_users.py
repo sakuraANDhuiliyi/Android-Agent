@@ -108,7 +108,7 @@ class UserTokenTests(unittest.TestCase):
             )
             self.assertTrue(verified["account"]["email_verified"])
             self.assertEqual(store.authenticate(verified["token"]), pending["account"]["user_id"])
-            with self.assertRaisesRegex(ValueError, "无效或已过期"):
+            with self.assertRaisesRegex(ValueError, "验证码无效"):
                 store.verify_email_and_login(
                     "verify@example.com",
                     code,

@@ -334,11 +334,9 @@ class TerminalSession:
             logger.debug("ioctl resize failed: %s", exc)
 
     def _make_env(self, workspace: Path) -> dict[str, str]:
+        from agent.processes import prepare_workspace_env
         env = build_minimal_env(self.env, DEFAULT_ALLOWED_ENV_VARS)
-        home = workspace.resolve() / ".agent-home"
-        home.mkdir(parents=True, exist_ok=True)
-        env["HOME"] = str(home)
-        env.setdefault("GRADLE_USER_HOME", str(workspace.resolve() / ".gradle"))
+        prepare_workspace_env(workspace, env)
         return env
 
     def start(self) -> dict[str, Any]:

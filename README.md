@@ -4,16 +4,28 @@ Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 使�
 
 ## 创意广场（Android）
 
-Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。现有项目、对话和审批页面继续使用 View/XML；底部导航中的“创意”页面使用 Compose，提供可运行的 UI/动画 Recipe。
+Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。底部导航中的“创意”默认读取服务端目录，支持搜索、动态分类、分页、详情、封面和源码复制。后台编辑与上下架可在客户端刷新后生效，无需重新发布 APK。
+
+- 管理员进入 `/admin/` → **创意目录**，可以新建、编辑草稿、发布指定版本、回滚历史版本、上下架、归档、设置推荐与排序，并管理分类和查看审计记录。
+- 首次使用可点击 **导入内置创意**。默认只导入草稿，勾选“同时上架本次新增条目”才会发布；重复导入跳过已有条目，保留后台修改和下架状态。
+- 线上版本与编辑草稿隔离。后台下架后，公开目录、详情和该条目独占的公开封面不可再读取；已被用户下载或复制的内容无法远程撤回。
+- 目录缓存按服务地址隔离，网络失败时明确标注离线。成功返回空目录会清空旧目录，不会用本地示例补回已下架条目。
+- 已接通用户草稿、源码/封面上传、后台审核和审核消息。正式账号进入 **我的创意**，保存本机草稿 → 同步云端 → 确认公开清单 → 提交审核；管理员在 **审核队列** 查看版本差异、退修、拒绝或批准发布，其他用户随后可在广场浏览。
+- 正式账号可在公开详情收藏或举报；收藏按服务地址和账号隔离。管理员通过 **举报处理** 核对问题、填写公开处理结果和内部备注，必要时用版本检查原子下架；举报人和社区作者分别收到不含内部备注的消息。
+- 新投稿默认暂停。启用 `admin_ui_enabled: true`、配置独立管理员凭据后，设置 `creative_submissions_enabled: true` 或 `AGENT_CREATIVE_SUBMISSIONS_ENABLED=true` 并重启服务。暂停新投稿仍保留草稿、撤回、已有审核和消息访问；`creative_catalog_enabled: false` 会关闭整个创意 API。
+- 社区内容的受管应用和隔离构建验证仍未开放；功能状态以 `/api/creative/capabilities` 为准，人工审核通过不会标成构建验证通过。
+
+独立的 **内置示例** 入口保留原有 500 个示例及离线预览：
 
 - 点击卡片查看实时效果和完整 Compose 源码。
 - “复制代码”把核心 `@Composable` 写入系统剪贴板。
 - “应用到项目”选择已有项目后创建独立对话，把 Recipe 源码、兼容要求和构建验证要求发送给 Agent；Agent 会根据目标项目是 Compose 还是 XML/View 做适配。
 - Recipe 目录位于 `android-app/app/src/main/java/com/androidagent/client/creative/CreativeCatalog.kt`。新增条目时应提供唯一 ID、分类、预览类型、可复制源码和最低 SDK。
+- 当前包含 500 个示例（26 个视觉系列、48 套布局及原有组件），支持分类与风格组合筛选；收录规则、参考来源与生成方式见 [创意广场样式目录](docs/CREATIVE_SQUARE_CATALOG.md)。
 
 Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有 Activity/Fragment。
 
-未登录用户可以在登录页选择“暂不登录，浏览创意广场”进入游客模式。游客状态会保留到下次启动；创意预览与源码复制离线可用，项目、任务、审批以及“应用到项目”会显示登录或服务连接引导。
+未登录用户可以在登录页选择“暂不登录，浏览创意广场”进入游客模式。公开目录无需账号；内置示例的预览与源码复制离线可用，项目、任务、审批以及内置示例的“应用到项目”会显示登录或服务连接引导。目录管理的历史验收见 [C1 实施记录](docs/CREATIVE_SQUARE_IMPLEMENTATION_STATUS.md)，本次投稿能力、配置、额度与备份恢复见 [C2 实施记录](docs/CREATIVE_SQUARE_C2_IMPLEMENTATION_STATUS.md)。
 
 ## 第一阶段能力
 
@@ -111,8 +123,12 @@ Android 客户端也支持邮箱密码账号。设置 `registration_enabled: tru
 
 ## 启动服务
 
+本地服务使用 Python 3.12（见 `.python-version`）；Android 构建使用 JDK 17 和 SDK 36，JDK 通过 `JAVA_HOME` 或本机 Gradle 配置指定。仓库不再固定某台 Mac 的 Android Studio 路径。Node 版本要求见 `desktop/package.json`。
+
 ```bash
-python3 -m pip install -r requirements.txt
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --require-hashes -r requirements.lock
 cp config.yaml.example config.yaml
 python3 -m agent register-user
 python3 -m agent serve
@@ -184,7 +200,15 @@ npm start
 ```bash
 # Python（带 hash 的发布依赖锁 + 全量测试）
 python3 -m pip install --require-hashes -r requirements.lock
-python3 -m unittest discover -s tests -v
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests -q
+
+# 创意种子与共享 API 契约
+python3 scripts/export_creative_seed.py --check
+python3 scripts/check_api_contract.py
+
+# 创意后台：真实浏览器连接临时服务，不使用生产数据
+CREATIVE_TEST_PYTHON=python3 node desktop/tests/creative-live.test.js
 
 # Desktop
 cd desktop && npm run check && npm run test:unit && npm run test:screenshot
@@ -207,8 +231,12 @@ PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for
 [`docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md`](docs/DESKTOP_ANDROID_UI_DESIGN_SYSTEM_AND_PROMPTS.md)，
 会话节点身份、Tool Cluster、流式归类与响应式排版见
 [`docs/CONVERSATION_TIMELINE_V2.md`](docs/CONVERSATION_TIMELINE_V2.md)，
-后续升级顺序与可直接执行的完整提示词见
-[`docs/NEXT_UPGRADE_MASTER_PROMPT.md`](docs/NEXT_UPGRADE_MASTER_PROMPT.md)。
+后续升级顺序、工作单、验收标准与实施提示词见
+[`docs/UNIFIED_UPGRADE_PLAN.md`](docs/UNIFIED_UPGRADE_PLAN.md)，
+源码参考依据见 [`docs/CLAUDE_CODE_REFERENCE_ANALYSIS.md`](docs/CLAUDE_CODE_REFERENCE_ANALYSIS.md)。
+
+创意广场后台管理、用户投稿、审核发布与版本化应用的专项方案见
+[`docs/CREATIVE_SQUARE_PLATFORM_UPGRADE.md`](docs/CREATIVE_SQUARE_PLATFORM_UPGRADE.md)。
 
 ## 权限模式与 Workspace trust
 
@@ -311,9 +339,10 @@ Authorization: Bearer <token>
 
 ## 安全边界与已知限制
 
-- 路径解析拒绝前缀和符号链接越界；macOS 子进程额外使用 `sandbox-exec` 禁止网络和用户目录任意读取，并设置资源上限与隔离 HOME。
+- 路径解析拒绝前缀和符号链接越界。工具、终端、MCP 与 Git 使用操作系统隔离：Linux 必须提供 bubblewrap 和非特权用户命名空间，macOS 使用 `sandbox-exec`；只开放当前工作区和指定运行时，禁止网络，HOME、临时文件与 Gradle 缓存均在工作区内。缺少沙箱时拒绝执行，`AGENT_CMD_SANDBOX=0` 不再关闭隔离。
+- 游客默认关闭；启用后只提供限额只读问答，恢复既有游客会话必须携带有效 Token。验证码有发送冷却、失败次数限制和原子消费。配置及迁移说明见 [安全执行与凭据配置](docs/SECURITY_EXECUTION.md)。
 - 下载会校验每次 DNS 结果、拒绝私网/混合地址、限制重定向与大小并原子落盘。部署到不受信网络时仍应使用 HTTPS 和出口代理做最终 egress 控制。
-- Android Token 由 Keystore 加密保存，WebSocket 使用 Authorization 头；APK 下载校验服务端 SHA-256，安装前展示包名、版本、文件和签名摘要。
+- Android Token 由 Keystore 加密保存，WebSocket 使用 Authorization 头；APK 缓存按服务器、账号、项目和任务隔离，退出时清理。下载校验服务端 SHA-256，安装前展示包名、版本、文件和签名摘要；任务产物不可用时不会退回其他构建。
 - 已知限制：密钥自由文本检测非完备；审批超时下限 30s；索引/记忆为单机 SQLite；WS ticket 和速率窗口为单进程内存状态；真实 Gradle 构建依赖本机 SDK/JDK 17；Eval 中构建步骤为 mock。
 
 ## 迁移到云服务器

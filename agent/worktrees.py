@@ -71,12 +71,21 @@ def worktrees_root(user_id: str, project_id: str) -> Path:
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-    )
+    from agent.git_runner import run_git
+    writable = []
+    # Only server-selected paths below this tenant's worktree storage are mounted.
+    if args and args[0] == "worktree":
+        for arg in args[1:]:
+            candidate = Path(arg)
+            if candidate.is_absolute():
+                rel = candidate.resolve().relative_to((paths.DATA_DIR / "users").resolve())
+                if len(rel.parts) != 4 or rel.parts[1] != "worktrees":
+                    raise PermissionError("Invalid managed worktree path")
+                expected = paths.workspace_path(rel.parts[0], rel.parts[2]).resolve()
+                if expected != repo.resolve():
+                    raise PermissionError("Cross-project worktree path")
+                writable.append(candidate.parent)
+    proc = run_git(repo, *args, writable_paths=tuple(writable))
     if check and proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"git {' '.join(args)} failed")
     return proc
@@ -192,7 +201,7 @@ def list_worktrees(user_id: str, project_id: str) -> list[WorktreeInfo]:
 def worktree_has_changes(info: WorktreeInfo) -> bool:
     if not info.path.is_dir():
         return False
-    proc = _git(info.path, "status", "--porcelain=v1", check=False)
+    proc = _git(info.path, "status", "--porcelain=v1")
     return bool(proc.stdout.strip())
 
 

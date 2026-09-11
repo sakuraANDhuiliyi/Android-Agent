@@ -2,5 +2,5 @@
 <paths>
     <cache-path
         name="apk_cache"
-        path="apk/" />
+        path="apk-v2/" />
 </paths>

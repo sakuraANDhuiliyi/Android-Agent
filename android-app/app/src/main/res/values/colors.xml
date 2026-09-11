@@ -12,12 +12,12 @@
     <color name="signal_tertiary">#FF087F78</color>
     <color name="signal_on_tertiary">#FFFFFFFF</color>
     <color name="signal_surface_dim">#FFF0F2F5</color>
-    <color name="signal_surface">#FFFBFCFF</color>
-    <color name="signal_surface_variant">#FFF0F3F8</color>
-    <color name="signal_on_surface">#FF172033</color>
-    <color name="signal_on_surface_variant">#FF667085</color>
+    <color name="signal_surface">#FFF7F8FA</color>
+    <color name="signal_surface_variant">#FFEEF1F5</color>
+    <color name="signal_on_surface">#FF202735</color>
+    <color name="signal_on_surface_variant">#FF606D80</color>
     <color name="signal_outline">#FFD0D7E2</color>
-    <color name="signal_outline_variant">#FFE2E7EF</color>
+    <color name="signal_outline_variant">#FFE1E5EB</color>
     <color name="signal_navigation">#FFF1F4FA</color>
     <color name="signal_error">#FFD93025</color>
     <color name="signal_on_error">#FFFFFFFF</color>
@@ -52,8 +52,8 @@
 
     <!-- Authentication surfaces -->
     <color name="auth_background_start">#FFF1F6FF</color>
-    <color name="auth_background_center">#FFFBFCFF</color>
-    <color name="auth_background_end">#FFFBFCFF</color>
+    <color name="auth_background_center">#FFF7F8FA</color>
+    <color name="auth_background_end">#FFF7F8FA</color>
     <color name="auth_card_surface">#F7FFFFFF</color>
     <color name="auth_input_surface">#FFF8FAFD</color>
     <color name="auth_chip_surface">#DDEAF1FF</color>
@@ -63,11 +63,11 @@
     <color name="auth_divider">#FFDCE3EE</color>
 
     <!-- Projects dashboard -->
-    <color name="projects_hero_start">#FF2459D3</color>
-    <color name="projects_hero_end">#FF3B6CDA</color>
+    <color name="projects_hero_start">#FF223956</color>
+    <color name="projects_hero_end">#FF304D70</color>
     <color name="projects_hero_muted">#D9FFFFFF</color>
     <color name="projects_hero_stat">#26FFFFFF</color>
     <color name="projects_card_surface">#FFFFFFFF</color>
     <color name="projects_icon_surface">#FFEAF1FF</color>
-    <color name="projects_page_surface">#FFF7F9FD</color>
+    <color name="projects_page_surface">#FFF7F8FA</color>
 </resources>

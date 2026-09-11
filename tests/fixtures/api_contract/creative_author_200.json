@@ -1,0 +1,47 @@
+{
+  "id": "cccccccccccccccccccccccccccccccc",
+  "origin": "community",
+  "author_name": "契约作者",
+  "distribution_state": "unpublished",
+  "row_version": 1,
+  "published_revision_id": null,
+  "revision_id": "dddddddddddddddddddddddddddddddd",
+  "content": {
+    "schema_version": 1,
+    "title": "投稿契约",
+    "summary": "",
+    "description": "",
+    "category_id": "component",
+    "tags": [],
+    "ui_stack": "compose",
+    "min_sdk": 24,
+    "dependencies": [],
+    "integration": "",
+    "license": "MIT",
+    "attribution": "",
+    "references": [],
+    "files": [
+      {
+        "path": "Card.kt",
+        "content": "@Composable fun Card() {}"
+      },
+      {
+        "path": "strings.xml",
+        "content": "<resources />"
+      }
+    ],
+    "cover_asset_id": null,
+    "native_preview_id": null
+  },
+  "revisions": [
+    {
+      "id": "dddddddddddddddddddddddddddddddd",
+      "version_no": 1,
+      "state": "draft",
+      "content_hash": "35d0117f09a3c74d6e2977b6288bb2e0cf99a56c84c464ca2d5e06473942cb84",
+      "created_at": 1000.0,
+      "published_at": null
+    }
+  ],
+  "feedback": []
+}

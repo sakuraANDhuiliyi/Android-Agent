@@ -18,7 +18,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-venv openjdk-17-jdk caddy rsync
+sudo apt install -y bubblewrap git python3 python3-venv openjdk-17-jdk caddy rsync
 sudo useradd --system --create-home --home-dir /var/lib/android-agent --shell /usr/sbin/nologin android-agent
 sudo git clone YOUR_REPOSITORY_URL /opt/android-agent
 sudo chown -R android-agent:android-agent /opt/android-agent /var/lib/android-agent
@@ -27,6 +27,8 @@ sudo -u android-agent /opt/android-agent/.venv/bin/pip install --upgrade pip
 sudo -u android-agent /opt/android-agent/.venv/bin/pip install -r /opt/android-agent/requirements.txt
 sudo -u android-agent mkdir -p /opt/android-agent/workspaces /opt/android-agent/builds /var/lib/android-agent/data
 ```
+
+Linux 子进程还要求主机允许非特权用户命名空间。安装后按 [安全执行配置](SECURITY_EXECUTION.md) 验证；若宿主平台禁止命名空间，工具、Git、MCP 和终端会拒绝执行，不会回退到无隔离模式。
 
 如果云端要执行 Android 构建，再安装 Android SDK command-line tools，并在环境文件加入：
 

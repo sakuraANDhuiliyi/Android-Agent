@@ -569,17 +569,21 @@ def scenario_12_mcp_crash() -> EvalResult:
     from agent.mcp_client import McpTransportError, StdioMcpTransport
     from agent.mcp_config import McpServerConfig
 
+    temporary = tempfile.TemporaryDirectory(prefix="agent-eval-mcp-")
+    workspace = Path(temporary.name)
+    fixture = workspace / "fake_mcp_server.py"
+    fixture.write_bytes(FAKE_MCP.read_bytes())
     cfg = McpServerConfig(
         name="fake-crash",
         transport="stdio",
         command=sys.executable,
-        args=[str(FAKE_MCP)],
+        args=[str(fixture)],
         env_refs={"FAKE_MCP_MODE": "crash"},
         enabled=True,
         timeout_seconds=5.0,
         scope="user",
     )
-    transport = StdioMcpTransport(cfg, workspace=Path(tempfile.mkdtemp()))
+    transport = StdioMcpTransport(cfg, workspace=workspace)
     try:
         transport.start()
         transport.list_tools()
@@ -601,6 +605,7 @@ def scenario_12_mcp_crash() -> EvalResult:
             transport.close()
         except Exception as close_exc:
             metrics.notes.append(f"close: {close_exc}")
+        temporary.cleanup()
     metrics.tool_calls = 1
     metrics.wall_time_ms = timer.ms()
     if not metrics.goal_completed:

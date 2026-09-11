@@ -213,7 +213,8 @@ def _run_agent_with_provider(
             _Path(workspace),
             on_event=on_event,
         )
-        mcp_mgr.start_enabled()
+        if run_mode != "read_only":
+            mcp_mgr.start_enabled()
     except Exception as exc:
         _emit(on_event, "mcp_status", f"MCP 启动跳过: {exc}", error=str(exc))
 

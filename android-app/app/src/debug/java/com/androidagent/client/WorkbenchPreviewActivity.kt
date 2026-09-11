@@ -1,6 +1,9 @@
 package com.androidagent.client
 
 import android.os.Bundle
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.*
+import com.androidagent.client.creative.*
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
@@ -19,6 +22,21 @@ class WorkbenchPreviewActivity : AppCompatActivity() {
             androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES else androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("screen") ?: "activity_project_detail"
+        if (name.startsWith("creative-")) {
+            setContent {
+                CreativeSquareTheme {
+                    val example = CreativeDraft("preview", title = "灵动底部导航", summary = "为常用页面提供清晰、流畅的导航体验。", source = "@Composable fun Navigation() {}", integration = "在主页面底部接入 Navigation。", license = "MIT")
+                    var selected by remember { mutableStateOf(if (name == "creative-editor") example else null) }
+                    if (name == "creative-square") {
+                        CreativeSquareScreen(CreativeCatalog.recipes, null, {}, {})
+                    } else CreativeStudioScreen(listOf(example), selected, true,
+                        "离线界面预览 · 社区投稿尚未开放，草稿仅保存在本机。",
+                        onBack = { finish() }, onLogin = {}, onCreate = { selected = CreativeDraft("new") },
+                        onSelect = { selected = it }, onUpdate = { selected = it }, onImport = {})
+                }
+            }
+            return
+        }
         val layouts = mapOf(
             "activity_project_detail" to R.layout.activity_project_detail,
             "activity_conversation" to R.layout.activity_conversation,

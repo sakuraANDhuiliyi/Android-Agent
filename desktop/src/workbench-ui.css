@@ -1,16 +1,16 @@
 /* Shared Workbench visual language. Loaded after legacy view-specific styles. */
 :root {
-  --primary: #6b8cff;
-  --primary-glow: #8eabff;
+  --primary: #7598ff;
+  --primary-glow: #9bb4ff;
   --primary-deep: #456bea;
-  --primary-foreground: #101f40;
-  --background: #0e141d;
-  --foreground: #e9edf5;
-  --card: #171e28;
-  --secondary: #1a222d;
-  --muted-foreground: #aab5c5;
-  --border: #2c3542;
-  --ring: #8eabff;
+  --primary-foreground: #101b35;
+  --background: #101318;
+  --foreground: #e8ecf2;
+  --card: #171b22;
+  --secondary: #1e242e;
+  --muted-foreground: #a5afbf;
+  --border: #2b3340;
+  --ring: #9bb4ff;
   --radius: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -26,12 +26,12 @@
   --primary-glow: #2563eb;
   --primary-deep: #1d4ed8;
   --primary-foreground: #fff;
-  --background: #fbfcff;
-  --foreground: #172033;
+  --background: #f7f8fa;
+  --foreground: #202735;
   --card: #fff;
-  --secondary: #f0f3f8;
-  --muted-foreground: #59677b;
-  --border: #e2e7ef;
+  --secondary: #eef1f5;
+  --muted-foreground: #606d80;
+  --border: #e1e5eb;
   --ring: #2563eb;
 }
 body { line-height: 1.5; }
@@ -206,3 +206,67 @@ button svg { flex-shrink: 0; }
   .ai-composer textarea { max-height: 100px; }
   .approval-dock { max-height: 35dvh; overflow-y: auto; }
 }
+
+/* V4: quieter chrome and a consistent hierarchy across both workbench modes. */
+:root {
+  --font-ui: "Geist", "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  --success: #61c9a0;
+  --warning: #e7b86a;
+  --destructive: #ee8590;
+  --bg-sidebar: var(--card);
+}
+[data-theme="light"] { --success: #18805b; --warning: #986112; --destructive: #c13e50; }
+.titlebar { border-bottom: 1px solid var(--line); }
+.cx-sidebar { padding-inline: 10px; }
+.cx-sidebar-brand { padding-inline: 10px; font-size: 14px; letter-spacing: -.02em; }
+.cx-primary-nav { gap: 4px; }
+.cx-primary-nav button { padding-inline: 12px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.cx-primary-nav button.active { color: var(--accent); background: var(--bg-selection); }
+.cx-sidebar-section-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; padding-inline: 10px; }
+.cx-project-row { border-radius: 8px; }
+.cx-project-row.selected, .cx-project-task.active { background: var(--bg-selection); }
+.cx-agent-header { min-height: 56px; background: var(--bg); }
+.cx-scene { padding: 24px 24px 16px; }
+.cx-thread-card-toolbar { padding-bottom: 14px; gap: 10px; }
+.cx-thread-card-toolbar > span:nth-child(2) { font-size: 12px; color: var(--muted); }
+.cx-thread-message { font-size: 14px; line-height: 1.8; }
+.cx-thread-message.user { padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px 14px 4px 14px; }
+.cx-job-status { padding: 4px 8px; font-size: 11px; border-radius: 6px; white-space: nowrap; }
+.cx-job-status.running { color: var(--accent); background: var(--bg-selection); }
+.cx-job-status.pending { color: var(--warning); background: color-mix(in srgb,var(--warning) 12%,transparent); }
+.cx-job-status.failed { color: var(--destructive); background: var(--diff-del-bg); }
+.cx-agent-composer { margin: 12px 24px 20px; }
+.cx-composer-shell { border-radius: 16px; box-shadow: 0 4px 18px #0000000a; padding: 14px; }
+.cx-composer-bar { gap: 6px; }
+.cx-composer-shell textarea { font-size: 14px; line-height: 1.6; }
+.cx-avatar { color: var(--btn-primary-fg); background: var(--primary); }
+.cx-right-panel { background: var(--card); }
+.cx-right-content { background: transparent; }
+.cx-launcher { align-items: stretch; justify-content: center; padding: 28px; }
+.cx-launcher-list { display: grid; width: 100%; max-width: 400px; margin-inline: auto; gap: 8px; }
+.cx-launcher-list::before { content: "项目工具"; display: block; margin: 0 4px 8px; color: var(--muted); font-size: 12px; }
+.cx-launcher-list button { min-height: 50px; border: 1px solid var(--line); background: var(--bg); padding: 10px 14px; }
+.cx-launcher-list button svg { color: var(--accent); width: 18px; height: 18px; }
+.cx-workspace-card, .cx-changes-card { border-radius: 12px; box-shadow: none; }
+.cx-task-controls { gap: 6px; }
+.cx-task-controls button { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.cx-task-controls #cxStopTask { color: var(--destructive); }
+.cx-plux { display: none; } /* Upstream promotional placeholder has no product action. */
+.tl-plan, .tl-work, .tl-changes { border-color: var(--line); }
+.tl-plan-head { padding-block: 10px; }
+.delivery-card { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-elevated); }
+.delivery-card header { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.delivery-card header strong { font-size: 13px; }
+.delivery-card .delivery-id { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.delivery-checks { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 12px 0; }
+.delivery-check { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 7px; background: var(--bg-panel); font-size: 12px; }
+.delivery-check[data-state="available"] { color: var(--accent); }
+.delivery-check[data-state="unknown"] { color: var(--muted); }
+.delivery-check b { font-weight: 500; flex: 1; }
+.delivery-check small { font-size: 10px; }
+.delivery-card p { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.run-phase { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+.run-phase::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+@media(max-width:1050px) { .cx-scene { padding-inline: 18px; } .cx-agent-composer { margin-inline: 16px; } .cx-launcher { padding: 18px; } }
+@media(max-width:720px) { .cx-scene { padding: 16px 12px; } .cx-agent-composer { margin: 8px 12px 12px; } .delivery-card { padding: 12px; } .delivery-checks { grid-template-columns: 1fr; } }
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

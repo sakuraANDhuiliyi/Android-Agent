@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -122,6 +122,7 @@ class McpManager:
                 if name not in keep:
                     self._stop_locked(name)
             for cfg in merged:
+                cfg = replace(cfg, credential_user_id=self.user_id)
                 override = self._enabled_overrides.get(cfg.name)
                 if override is not None:
                     cfg = McpServerConfig(**{**cfg.__dict__, "enabled": override})

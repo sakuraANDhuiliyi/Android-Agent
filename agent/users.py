@@ -109,6 +109,7 @@ class UserStore:
         self.db_path = db_path or DATA_DIR / "users.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS guest_daily_usage (day TEXT PRIMARY KEY, turn_count INTEGER NOT NULL DEFAULT 0)")
             db.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)""")
             existing = {str(row[1]) for row in db.execute("PRAGMA table_info(users)")}
@@ -146,6 +147,9 @@ class UserStore:
                 code_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, purpose TEXT NOT NULL,
                 code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT, created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)""")
+            code_columns = {row[1] for row in db.execute("PRAGMA table_info(account_codes)")}
+            if "failed_attempts" not in code_columns:
+                db.execute("ALTER TABLE account_codes ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0")
             db.execute("CREATE INDEX IF NOT EXISTS idx_codes_user ON account_codes(user_id, purpose, created_at DESC)")
             db.execute("INSERT OR IGNORE INTO user_tokens SELECT token_hash,user_id,created_at FROM users")
             for row in db.execute("""SELECT t.* FROM user_tokens t LEFT JOIN user_sessions s
@@ -240,16 +244,16 @@ class UserStore:
             account = self.get_account(user_id, db=db)
         return {"account": account, "token": token, "session_id": session_id}
 
-    def guest_session(self, *, device: dict[str, str]) -> dict[str, Any]:
+    def guest_session(self, *, device: dict[str, str], token: str = "") -> dict[str, Any]:
         """Return a stable, server-backed guest identity for one app installation."""
         device_id = (device.get("device_id") or "").strip()[:128]
         if not device_id:
             raise UserStoreError("缺少设备标识", code="invalid_device")
         created = _iso()
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT * FROM users WHERE account_type='guest' AND guest_device_id=? "
-                "AND deleted_at IS NULL",
+                "SELECT * FROM users WHERE account_type='guest' AND guest_device_id=? ",
                 (device_id,),
             ).fetchone()
             if row is None:
@@ -271,11 +275,23 @@ class UserStore:
                 )
             else:
                 user_id = str(row["user_id"])
+                session = db.execute(
+                    "SELECT 1 FROM user_sessions WHERE user_id=? AND device_id=? "
+                    "AND token_hash=? AND revoked_at IS NULL",
+                    (user_id, device_id, self._token_hash(token)),
+                ).fetchone()
+                if not session or row["deleted_at"] or row["disabled_at"]:
+                    raise UserStoreError("恢复游客会话需要有效凭据，请登录账号", code="guest_auth_required")
             token, session_id = self._new_session(db, user_id, **device)
             account = self.get_account(user_id, db=db)
         return {"account": account, "token": token, "session_id": session_id}
 
-    def consume_guest_message(self, user_id: str, *, limit: int = 3) -> int | None:
+    def is_guest(self, user_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute("SELECT account_type FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return bool(row and row[0] == "guest")
+
+    def consume_guest_message(self, user_id: str, *, limit: int = 3, daily_limit: int | None = None) -> int | None:
         """Atomically reserve one guest turn and return the remaining allowance."""
         user_id = validate_id(user_id, kind="user_id")
         with self._connect() as db:
@@ -297,6 +313,12 @@ class UserStore:
                     "游客体验次数已用完，请登录后继续",
                     code="guest_quota_exhausted",
                 )
+            if daily_limit is not None:
+                day = _now().date().isoformat()
+                db.execute("INSERT OR IGNORE INTO guest_daily_usage(day) VALUES(?)", (day,))
+                reserved = db.execute("UPDATE guest_daily_usage SET turn_count=turn_count+1 WHERE day=? AND turn_count<?", (day, max(0, daily_limit)))
+                if reserved.rowcount != 1:
+                    raise UserStoreError("今日游客体验额度已用完，请登录账号", code="guest_global_quota_exhausted")
             used += 1
             db.execute(
                 "UPDATE users SET guest_message_count=?,updated_at=? WHERE user_id=?",
@@ -568,6 +590,11 @@ class UserStore:
         code = f"{secrets.randbelow(1_000_000):06d}"
         user_id = validate_id(user_id, kind="user_id")
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            recent = db.execute("SELECT 1 FROM account_codes WHERE user_id=? AND purpose=? AND created_at>?",
+                                (user_id, purpose, _iso(_now() - timedelta(seconds=60)))).fetchone()
+            if recent:
+                raise UserStoreError("验证码发送过于频繁，请稍后再试", code="code_rate_limited")
             db.execute("UPDATE account_codes SET consumed_at=? WHERE user_id=? AND purpose=? AND consumed_at IS NULL", (_iso(), user_id, purpose))
             db.execute("INSERT INTO account_codes(code_id,user_id,purpose,code_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)", (
                 f"code_{uuid.uuid4().hex}", user_id, purpose, self._token_hash(code),
@@ -576,17 +603,30 @@ class UserStore:
 
     def verify_code(self, email: str, code: str, purpose: str) -> str:
         now = _iso()
+        user_id = None
         with self._connect() as db:
-            row = db.execute("""SELECT c.code_id,c.user_id,c.code_hash FROM account_codes c JOIN users u ON u.user_id=c.user_id
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT c.code_id,c.user_id,c.code_hash,c.failed_attempts
+                FROM account_codes c JOIN users u ON u.user_id=c.user_id
                 WHERE u.email=? AND u.deleted_at IS NULL AND u.disabled_at IS NULL
                   AND c.purpose=? AND c.consumed_at IS NULL AND c.expires_at>?
                 ORDER BY c.created_at DESC LIMIT 1""", (_email(email), purpose, now)).fetchone()
-            if row is None or not hmac.compare_digest(str(row["code_hash"]), self._token_hash(code.strip())):
-                raise UserStoreError("验证码无效或已过期", code="invalid_code")
-            db.execute("UPDATE account_codes SET consumed_at=? WHERE code_id=?", (now, row["code_id"]))
-            if purpose == "verify_email":
-                db.execute("UPDATE users SET email_verified_at=?,updated_at=? WHERE user_id=?", (now, now, row["user_id"]))
-            return str(row["user_id"])
+            if row and row["failed_attempts"] < 5:
+                if hmac.compare_digest(str(row["code_hash"]), self._token_hash(code.strip())):
+                    updated = db.execute("UPDATE account_codes SET consumed_at=? WHERE code_id=? AND consumed_at IS NULL",
+                                         (now, row["code_id"]))
+                    if updated.rowcount == 1:
+                        user_id = str(row["user_id"])
+                        if purpose == "verify_email":
+                            db.execute("UPDATE users SET email_verified_at=?,updated_at=? WHERE user_id=?", (now, now, user_id))
+                else:
+                    db.execute("""UPDATE account_codes SET failed_attempts=failed_attempts+1,
+                        consumed_at=CASE WHEN failed_attempts>=4 THEN ? ELSE consumed_at END WHERE code_id=?""",
+                               (now, row["code_id"]))
+        # Raise after commit: failed attempts must not roll back.
+        if user_id is None:
+            raise UserStoreError("验证码无效、尝试次数过多或已过期", code="invalid_code")
+        return user_id
 
     def verify_email_and_login(self, email: str, code: str, *, device: dict[str, str]) -> dict[str, Any]:
         user_id = self.verify_code(email, code, "verify_email")

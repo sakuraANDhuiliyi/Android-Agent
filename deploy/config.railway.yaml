@@ -13,6 +13,7 @@ server_port: 8000
 
 # 首次创建账号时通过 Railway Variables 临时覆盖为 true；完成后关闭。
 registration_enabled: false
+guest_sessions_enabled: false
 email_verification_required: false
 
 terminal_enabled: false

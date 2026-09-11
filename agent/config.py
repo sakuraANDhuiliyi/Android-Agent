@@ -104,6 +104,8 @@ class Settings:
     debug_web_ui_enabled: bool = True
     admin_ui_enabled: bool = False
     admin_token: str = ""
+    creative_catalog_enabled: bool = True
+    creative_submissions_enabled: bool = False
     ws_ticket_ttl_seconds: int = 30
     max_request_bytes: int = 2 * 1024 * 1024
     max_prompt_chars: int = 100_000
@@ -114,6 +116,8 @@ class Settings:
     max_registration_per_hour: int = 20
     max_requests_per_minute: int = 600
     guest_message_limit: int = 3
+    guest_sessions_enabled: bool = False
+    max_guest_turns_per_day: int = 30
     minimum_free_disk_bytes: int = 512 * 1024 * 1024
     max_build_artifacts_per_project: int = 50
     max_terminals_per_project: int = 5
@@ -234,6 +238,8 @@ def _build_settings(
         tavily_api_key=str(shared.get("tavily_api_key", "") or ""),
         users=list(shared["users"]),
         provider_fallbacks=[],
+        guest_sessions_enabled=bool(shared.get("guest_sessions_enabled", False)),
+        max_guest_turns_per_day=int(shared.get("max_guest_turns_per_day", 30)),
         registration_enabled=bool(shared.get("registration_enabled", False)),
         registration_token=str(shared.get("registration_token", "") or ""),
         email_verification_required=bool(
@@ -248,6 +254,8 @@ def _build_settings(
         terminal_enabled=bool(shared.get("terminal_enabled", False)),
         debug_web_ui_enabled=bool(shared.get("debug_web_ui_enabled", True)),
         admin_ui_enabled=bool(shared.get("admin_ui_enabled", False)),
+        creative_catalog_enabled=bool(shared.get("creative_catalog_enabled", True)),
+        creative_submissions_enabled=bool(shared.get("creative_submissions_enabled", False)),
         admin_token=str(shared.get("admin_token", "") or ""),
         ws_ticket_ttl_seconds=int(shared.get("ws_ticket_ttl_seconds", 30)),
         max_request_bytes=int(shared.get("max_request_bytes", 2 * 1024 * 1024)),
@@ -466,6 +474,8 @@ def load_settings() -> Settings:
             file_data.get("debug_web_ui_enabled", True),
             name="debug_web_ui_enabled",
         ),
+        "creative_catalog_enabled": _env_bool("AGENT_CREATIVE_CATALOG_ENABLED", _as_bool(file_data.get("creative_catalog_enabled", True), name="creative_catalog_enabled")),
+        "creative_submissions_enabled": _env_bool("AGENT_CREATIVE_SUBMISSIONS_ENABLED", _as_bool(file_data.get("creative_submissions_enabled", False), name="creative_submissions_enabled")),
         "admin_ui_enabled": _env_bool(
             "AGENT_ADMIN_UI_ENABLED",
             _as_bool(file_data.get("admin_ui_enabled", False), name="admin_ui_enabled"),
@@ -504,6 +514,9 @@ def load_settings() -> Settings:
                 or file_data.get("max_requests_per_minute", 600)
             ),
         ),
+        "guest_sessions_enabled": _env_bool("AGENT_GUEST_SESSIONS_ENABLED",
+            _as_bool(file_data.get("guest_sessions_enabled", False), name="guest_sessions_enabled")),
+        "max_guest_turns_per_day": max(1, int(os.environ.get("AGENT_MAX_GUEST_TURNS_PER_DAY") or file_data.get("max_guest_turns_per_day", 30))),
         "guest_message_limit": max(
             0,
             int(

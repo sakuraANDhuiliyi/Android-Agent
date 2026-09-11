@@ -88,6 +88,8 @@ class McpHooksFixture(unittest.TestCase):
         self._workspaces.mkdir()
         self.workspace = temp / "ws"
         self.workspace.mkdir()
+        self.fake_server = self.workspace / "fake_mcp_server.py"
+        self.fake_server.write_bytes(FAKE_SERVER.read_bytes())
         self.user_id = "mcp_user"
         self.project_id = "mcp_proj"
         self.patches = [
@@ -112,7 +114,7 @@ class McpHooksFixture(unittest.TestCase):
             name=name,
             transport="stdio",
             command=sys.executable,
-            args=[str(FAKE_SERVER)],
+            args=[str(self.fake_server)],
             env_refs=dict(env),
             enabled=True,
             timeout_seconds=5.0,
@@ -164,7 +166,7 @@ class FakeStdioMcpTests(McpHooksFixture):
             "mcpServers": {
                 "fake": {
                     "command": sys.executable,
-                    "args": [str(FAKE_SERVER)],
+                    "args": [str(self.fake_server)],
                     "env": {"FAKE_MCP_MODE": "normal"},
                     "timeout_seconds": 5,
                 }
@@ -210,7 +212,7 @@ class FakeStdioMcpTests(McpHooksFixture):
                     "mcpServers": {
                         "proj": {
                             "command": sys.executable,
-                            "args": [str(FAKE_SERVER)],
+                            "args": [str(self.fake_server)],
                         }
                     }
                 }
@@ -236,7 +238,10 @@ class FakeStdioMcpTests(McpHooksFixture):
         os.environ["MCP_TEST_SECRET"] = "sk-super-secret-value-xyz"
         try:
             refs = {"TOKEN": "${MCP_TEST_SECRET}"}
-            resolved = resolve_env_secrets(refs)
+            secret_path = self._data / "users" / self.user_id / "mcp-secrets.json"
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            secret_path.write_text(json.dumps({"servers": {"sec": {"MCP_TEST_SECRET": "sk-super-secret-value-xyz"}}}))
+            resolved = resolve_env_secrets(refs, user_id=self.user_id, server_name="sec")
             self.assertEqual(resolved["TOKEN"], "sk-super-secret-value-xyz")
             preview = public_env_preview(refs)
             self.assertNotIn("sk-super-secret-value-xyz", json.dumps(preview))
@@ -254,7 +259,7 @@ class FakeStdioMcpTests(McpHooksFixture):
                         "mcpServers": {
                             "sec": {
                                 "command": sys.executable,
-                                "args": [str(FAKE_SERVER)],
+                                "args": [str(self.fake_server)],
                                 "env": {
                                     "FAKE_MCP_MODE": "secret",
                                     "FAKE_MCP_SECRET": "${MCP_TEST_SECRET}",
@@ -285,7 +290,7 @@ class FakeStdioMcpTests(McpHooksFixture):
                     "mcpServers": {
                         "fake": {
                             "command": sys.executable,
-                            "args": [str(FAKE_SERVER)],
+                            "args": [str(self.fake_server)],
                         }
                     }
                 }
@@ -478,6 +483,8 @@ class McpApiTests(McpHooksFixture):
             "mcp-api", package="com.example.mcp", user_id=self.uid
         )
         self.ws = self._workspaces / self.uid / self.project_id
+        self.fake_server = self.ws / "fake_mcp_server.py"
+        self.fake_server.write_bytes(FAKE_SERVER.read_bytes())
         cfg = user_mcp_config_path(self.uid)
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(
@@ -486,7 +493,7 @@ class McpApiTests(McpHooksFixture):
                     "mcpServers": {
                         "fake": {
                             "command": sys.executable,
-                            "args": [str(FAKE_SERVER)],
+                            "args": [str(self.fake_server)],
                             "env": {"TOKEN": "sk-should-not-leak-abcdef"},
                         }
                     }
@@ -538,7 +545,7 @@ class McpApiTests(McpHooksFixture):
                     "mcpServers": {
                         "proj": {
                             "command": sys.executable,
-                            "args": [str(FAKE_SERVER)],
+                            "args": [str(self.fake_server)],
                             "env": {
                                 "TOKEN": "sk-literal-secret-xyz",
                                 "MODE": "${FAKE_MODE}",
@@ -569,7 +576,7 @@ class McpApiTests(McpHooksFixture):
                     "mcpServers": {
                         "proj": {
                             "command": sys.executable,
-                            "args": [str(FAKE_SERVER)],
+                            "args": [str(self.fake_server)],
                             "env": {"TOKEN": "${PROJ_TOKEN}"},
                         }
                     }

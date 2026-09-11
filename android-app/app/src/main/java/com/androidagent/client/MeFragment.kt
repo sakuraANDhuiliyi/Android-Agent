@@ -32,6 +32,7 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
         super.onViewCreated(view, savedInstanceState)
         prefs = AgentPrefs(requireContext())
         bindRows()
+        binding.rowCreativeStudio.root.setOnClickListener { startActivity(android.content.Intent(requireContext(), CreativeStudioActivity::class.java)) }
         binding.cardModelApi.setOnClickListener { ModelApiActivity.start(requireContext()) }
         binding.cardUsage.setOnClickListener { TokenUsageActivity.start(requireContext()) }
         binding.rowAccount.root.setOnClickListener { AccountSecurityActivity.start(requireContext()) }
@@ -101,6 +102,7 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
     }
 
     private fun bindRows() {
+        binding.rowCreativeStudio.textRowTitle.setText(R.string.row_creative_studio)
         binding.rowAccount.textRowTitle.setText(R.string.row_account_security)
         binding.rowModelApi.textRowTitle.setText(R.string.row_model_api)
         binding.rowUsage.textRowTitle.setText(R.string.row_token_usage)

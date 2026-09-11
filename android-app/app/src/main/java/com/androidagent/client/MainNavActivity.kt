@@ -98,6 +98,7 @@ class MainNavActivity : AppCompatActivity() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
+                if (e is ApiException && e.isNotFound) return@launch
                 Toast.makeText(
                     this@MainNavActivity,
                     getString(R.string.guest_session_failed),

@@ -430,12 +430,26 @@ class ApiContractTests(unittest.TestCase):
             "/api/register",
         }
         checked = 0
+        creative_public = {
+            "/api/creative/capabilities": 200,
+            "/api/creative/categories": 200,
+            "/api/creative/items": 200,
+            "/api/creative/items/{item_id}": 404,
+            "/api/creative/assets/{asset_id}": 404,
+        }
         for row in openapi_path_index(spec):
             method, path = row.split(" ", 1)
             if method != "GET" or path in skipped:
                 continue
             concrete = path.replace("{", "").replace("}", "")
             response = self.client.get(concrete)
+            if path in creative_public:
+                self.assertEqual(response.status_code, creative_public[path], row)
+                continue
+            if path.startswith("/api/admin/creative/"):
+                # This fixture has the admin feature disabled. Enabled-admin auth is checked below.
+                self.assertEqual(response.status_code, 404, row)
+                continue
             self.assertEqual(response.status_code, 401, row)
             body = response.json()
             self.assertEqual(body["error"]["code"], "unauthorized")
@@ -443,6 +457,18 @@ class ApiContractTests(unittest.TestCase):
             self.assertEqual(body["error"]["schema_version"], ERROR_SCHEMA_VERSION)
             checked += 1
         self.assertGreaterEqual(checked, 8)
+
+    def test_enabled_creative_admin_get_paths_require_credentials(self) -> None:
+        app = create_app(settings=replace(api_settings(), admin_ui_enabled=True, admin_token="isolated-contract-admin-token-32"),
+                         user_store=self.user_store, task_store=self.task_store)
+        with TestClient(app) as client:
+            for row in openapi_path_index(dump_openapi(app)):
+                method, path = row.split(" ", 1)
+                if method != "GET" or not path.startswith("/api/admin/creative/"):
+                    continue
+                response = client.get(path.replace("{", "").replace("}", ""))
+                self.assertEqual(response.status_code, 401, row)
+                self.assertEqual(response.json()["error"]["code"], "unauthorized")
 
     def test_websocket_helpers_match_shared_fixtures(self) -> None:
         event = public_job_ws_event(

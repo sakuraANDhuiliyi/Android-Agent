@@ -5,6 +5,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -143,44 +144,90 @@ def build_sandboxed_command(
     allow_network: bool = False,
     env: dict[str, str] | None = None,
     extra_read_paths: list[Path] | None = None,
+    extra_write_paths: list[Path] | None = None,
 ) -> list[str]:
-    """Wrap a command in the host OS sandbox when a supported backend exists."""
-    sandbox_exec = shutil.which("sandbox-exec")
-    if platform.system() != "Darwin" or not sandbox_exec:
-        return list(argv)
-    if os.environ.get("AGENT_CMD_SANDBOX", "1").strip().lower() in {"0", "false", "no", "off"}:
-        # Explicit opt-out for hosts where sandbox_apply is blocked (hardened
-        # runners report "sandbox-exec: sandbox_apply: Operation not permitted").
-        return list(argv)
+    """Fail closed unless the host provides filesystem/process isolation.
 
+    Only operator-selected runtimes and this workspace are visible. Arguments
+    from tools/MCP must never create additional host read permissions.
+    """
     root = workspace.resolve()
-    read_paths = {str(root)}
+    if not root.is_dir() or root == Path(root.anchor):
+        raise ProcessStartError("有效的独立工作区是启动进程的前提")
+    runtime_paths = {
+        Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib64",
+                         "/System/Library", "/Library/Developer/CommandLineTools",
+                         "/private/etc/ssl", "/etc/ssl", "/etc/ld.so.cache")
+        if Path(p).exists()
+    }
+    runtime_paths.update({Path(sys.base_prefix).resolve(), Path(sys.prefix).resolve()})
+    from agent.paths import STUDIO_JBR, find_android_sdk
+    if STUDIO_JBR.is_dir():
+        runtime_paths.add(STUDIO_JBR.resolve())
+    sdk = find_android_sdk()
+    if sdk:
+        runtime_paths.add(sdk.resolve())
+    # Runtime roots come from the service environment, never MCP/tool env.
     for key in ("JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT"):
-        value = (env or {}).get(key)
-        if value:
-            read_paths.add(str(Path(value).resolve()))
+        if os.environ.get(key):
+            runtime_paths.add(Path(os.environ[key]).resolve())
+    write_paths = {root, *(p.resolve() for p in (extra_write_paths or []))}
+    read_paths = runtime_paths | write_paths
     for item in extra_read_paths or []:
-        if item.exists():
-            read_paths.add(str(item.resolve()))
+        resolved = item.resolve()
+        if not any(resolved == base or base in resolved.parents for base in read_paths):
+            raise ProcessStartError("进程参数不能授权读取工作区外的文件")
+    if any(p == Path(p.anchor) or p == Path.home().resolve() for p in runtime_paths):
+        raise ProcessStartError("运行时目录不能是文件系统根目录或用户主目录")
 
-    def subpath_rule(action: str, path: str) -> str:
-        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
-        return f'({action} (subpath "{escaped}"))'
+    system = platform.system()
+    if system == "Linux":
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise ProcessStartError("Linux 执行需要 bubblewrap；未配置沙箱，已拒绝运行")
+        command = [bwrap, "--unshare-all", "--unshare-user", "--die-with-parent",
+                   "--new-session", "--cap-drop", "ALL", "--proc", "/proc",
+                   "--dev", "/dev", "--tmpfs", "/tmp"]
+        if allow_network:
+            command.append("--share-net")
+        for path in sorted(runtime_paths, key=str):
+            command.extend(["--ro-bind", str(path), str(path)])
+        for path in sorted(write_paths, key=str):
+            command.extend(["--bind", str(path), str(path)])
+        command.extend(["--chdir", str(root), "--", *argv])
+        return command
+    if system != "Darwin" or not shutil.which("sandbox-exec"):
+        raise ProcessStartError("当前平台没有可用的安全执行器，已拒绝运行")
 
-    home = str(Path.home().resolve())
-    profile_lines = [
-        "(version 1)",
-        "(allow default)",
-        "(deny network*)",
-        subpath_rule("deny file-read*", home),
-        subpath_rule("deny file-write*", home),
-    ]
-    profile_lines.extend(subpath_rule("allow file-read*", path) for path in sorted(read_paths))
-    profile_lines.append(subpath_rule("allow file-write*", str(root)))
+    def rule(action: str, path: Path, kind: str = "subpath") -> str:
+        escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
+        return f'({action} ({kind} "{escaped}"))'
+
+    profile = ["(version 1)", "(deny default)", "(allow process-exec process-fork sysctl-read)",
+               "(allow signal (target self) (target same-sandbox))",
+               "(allow process-info* (target self))",
+               "(allow file-read-metadata)", '(allow file-read* (literal "/"))',
+               '(allow file-read* (literal "/System/Volumes/Preboot/Cryptexes/OS"))']
+    profile.extend(rule("allow file-read*", path) for path in sorted(read_paths, key=str))
+    profile.extend(rule("allow file-write*", path) for path in sorted(write_paths, key=str))
+    for name in ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"):
+        profile.append(rule("allow file-read* file-write*", Path(name), "literal"))
     if allow_network:
-        profile_lines.append("(allow network*)")
-    profile = "\n".join(profile_lines)
-    return [sandbox_exec, "-p", profile, *argv]
+        profile.append("(allow network*)")
+    return [shutil.which("sandbox-exec"), "-p", "\n".join(profile), *argv]
+
+
+def prepare_workspace_env(workspace: Path, env: dict[str, str]) -> None:
+    """Keep home, temporary files and build caches inside the same boundary."""
+    from agent.safe_paths import resolve_workspace_path
+    home = resolve_workspace_path(workspace, ".agent-home")
+    temporary = resolve_workspace_path(workspace, ".agent-home/tmp")
+    temporary.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(home)
+    env["TMPDIR"] = str(temporary)
+    env["TMP"] = str(temporary)
+    env["TEMP"] = str(temporary)
+    env["GRADLE_USER_HOME"] = str(resolve_workspace_path(workspace, ".gradle"))
 
 
 _NPROC_COUNT_CACHE_SECONDS = 5.0
@@ -411,8 +458,8 @@ class _StreamReader:
                 pass
             self._closed.set()
 
-    def join(self) -> None:
-        self._closed.wait()
+    def join(self, timeout: float | None = None) -> bool:
+        return self._closed.wait(timeout)
 
     def value(self) -> str:
         return "".join(self.buffer)
@@ -479,10 +526,7 @@ def run_command(
         ) is not None
     if not executable_exists:
         raise ProcessStartError(f"无法启动进程: 找不到可执行文件 {executable}")
-    child_home = workspace.resolve() / ".agent-home"
-    child_home.mkdir(parents=True, exist_ok=True)
-    minimal_env["HOME"] = str(child_home)
-    minimal_env.setdefault("GRADLE_USER_HOME", str(workspace.resolve() / ".gradle"))
+    prepare_workspace_env(workspace, minimal_env)
     command = build_sandboxed_command(
         argv,
         workspace,
@@ -546,10 +590,15 @@ def run_command(
 
         _wait_for_process(proc, cancel_token, timeout_seconds, started_at)
 
-        if stdout_reader:
-            stdout_reader.join()
-        if stderr_reader:
-            stderr_reader.join()
+        # Descendants may retain pipe handles after the parent exits.
+        # Drain under the same deadline/cancellation budget as process execution.
+        for reader in (stdout_reader, stderr_reader):
+            while reader and not reader.join(timeout=0.05):
+                if cancel_token and cancel_token.is_cancelled():
+                    raise CancellationRequested("进程输出等待已取消")
+                if time.monotonic() >= started_at + timeout_seconds:
+                    raise ProcessTimeoutError("进程输出等待超时")
+        _kill_process_group(proc)
 
         try:
             returncode = proc.wait(timeout=5)
@@ -591,8 +640,8 @@ def run_command(
                 stderr_reader.join(timeout=2)
         except Exception:
             pass
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
+        for stream, reader in ((proc.stdout, stdout_reader), (proc.stderr, stderr_reader)):
+            if stream is not None and (reader is None or reader.join(timeout=0)):
                 try:
                     stream.close()
                 except Exception:

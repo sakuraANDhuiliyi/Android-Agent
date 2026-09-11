@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,6 +56,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -66,6 +69,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.key
+import com.androidagent.client.creative.styles.CreativeStyleContent
+import com.androidagent.client.creative.styles.CreativeStyleThumbnail
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -79,26 +87,27 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
-private val LightCreativeColors = lightColorScheme(
-    primary = Color(0xFF6750A4),
-    secondary = Color(0xFF625B71),
-    tertiary = Color(0xFF7D5260),
-    surface = Color(0xFFFFF8FF),
-    surfaceVariant = Color(0xFFE7E0EC),
-)
-
-private val DarkCreativeColors = darkColorScheme(
-    primary = Color(0xFFD0BCFF),
-    secondary = Color(0xFFCCC2DC),
-    tertiary = Color(0xFFEFB8C8),
-    surface = Color(0xFF141218),
-    surfaceVariant = Color(0xFF49454F),
-)
-
 @Composable
 fun CreativeSquareTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
-    MaterialTheme(colorScheme = if (dark) DarkCreativeColors else LightCreativeColors, content = content)
+    val colors = if (dark) darkColorScheme() else lightColorScheme()
+    MaterialTheme(colorScheme = colors.copy(
+        primary = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_primary),
+        onPrimary = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_primary),
+        primaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_primary_container),
+        onPrimaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_primary_container),
+        secondary = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_secondary),
+        secondaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_secondary_container),
+        onSecondaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_secondary_container),
+        surface = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface),
+        onSurface = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_surface),
+        surfaceVariant = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface_variant),
+        onSurfaceVariant = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_surface_variant),
+        outline = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_outline),
+        outlineVariant = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_outline_variant),
+        background = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface),
+        onBackground = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_surface),
+    ), content = content)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,25 +120,23 @@ fun CreativeSquareScreen(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf(CreativeCategory.ALL) }
+    var styleId by rememberSaveable { mutableStateOf<String?>(null) }
+    val styles = remember(recipes) { recipes.mapNotNull { it.style }.distinctBy { it.id } }
     var selectedRecipe by remember { mutableStateOf<CreativeRecipe?>(null) }
-    val visibleRecipes = remember(recipes, query, category) {
-        val normalized = query.trim()
-        recipes.filter { recipe ->
-            (category == CreativeCategory.ALL || recipe.category == category) &&
-                (normalized.isBlank() || recipe.title.contains(normalized, ignoreCase = true) ||
-                    recipe.summary.contains(normalized, ignoreCase = true) ||
-                    recipe.tags.any { it.contains(normalized, ignoreCase = true) })
-        }
+    val visibleRecipes = remember(recipes, query, category, styleId) {
+        CreativeCatalog.filter(recipes, query, category, styleId)
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column {
+            CreativeStudioHeader()
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 singleLine = true,
-                label = { Text("搜索 UI、动画或标签") },
+                shape = RoundedCornerShape(14.dp),
+                label = { Text("搜索风格、布局或标签") },
                 leadingIcon = { Text("⌕", fontSize = 22.sp) },
             )
             LazyRow(
@@ -143,6 +150,29 @@ fun CreativeSquareScreen(
                         onClick = { category = item },
                         label = { Text(item.label) },
                     )
+                }
+            }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    FilterChip(selected = styleId == null, onClick = { styleId = null }, label = { Text("所有风格") })
+                }
+                items(styles.size, key = { styles[it].id }) { index ->
+                    val style = styles[index]
+                    FilterChip(selected = styleId == style.id, onClick = { styleId = style.id }, label = { Text(style.label) })
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("${visibleRecipes.size} / ${recipes.size} 个示例 · ${styles.size} 种风格",
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (query.isNotBlank() || category != CreativeCategory.ALL || styleId != null) {
+                    TextButton(onClick = { query = ""; category = CreativeCategory.ALL; styleId = null }) { Text("重置") }
                 }
             }
             if (visibleRecipes.isEmpty()) {
@@ -166,7 +196,10 @@ fun CreativeSquareScreen(
     }
 
     selectedRecipe?.let { recipe ->
-        ModalBottomSheet(onDismissRequest = { selectedRecipe = null }) {
+        ModalBottomSheet(
+            onDismissRequest = { selectedRecipe = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
             RecipeDetails(
                 recipe = recipe,
                 applying = applyingRecipeId == recipe.id,
@@ -181,17 +214,26 @@ fun CreativeSquareScreen(
 private fun RecipeCard(recipe: CreativeRecipe, onClick: () -> Unit) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth().height(132.dp)
+            modifier = Modifier.fillMaxWidth().height(176.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
             contentAlignment = Alignment.Center,
         ) {
-            RecipePreview(recipe.preview)
+            if (recipe.style != null && recipe.pattern != null) {
+                CreativeStyleThumbnail(recipe.style, recipe.pattern)
+            } else {
+                RecipePreview(recipe.preview)
+            }
+            // The thumbnail is a picture of the real UI; its controls must not swallow card taps.
+            Box(Modifier.matchParentSize().clickable(onClick = onClick))
         }
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(recipe.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(recipe.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(
                 recipe.summary,
                 style = MaterialTheme.typography.bodySmall,
@@ -215,38 +257,67 @@ private fun RecipeDetails(
     onCopy: () -> Unit,
     onApply: () -> Unit,
 ) {
-    Column(
-        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(recipe.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(recipe.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            Box(Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
-                RecipePreview(recipe.preview)
+    var showCode by rememberSaveable(recipe.id) { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(recipe.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(recipe.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("实时预览 · 可点击体验", style = MaterialTheme.typography.labelLarge)
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                key(recipe.id) {
+                    if (recipe.style != null && recipe.pattern != null) {
+                        CreativeStyleContent(recipe.style, recipe.pattern, interactive = true)
+                    } else {
+                        Box(Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) { RecipePreview(recipe.preview) }
+                    }
+                }
             }
+            Text("Kotlin / Jetpack Compose · 最低 API ${recipe.minSdk}",
+                style = MaterialTheme.typography.labelMedium)
+            if (recipe.references.isNotEmpty()) {
+                Text("设计参考", style = MaterialTheme.typography.titleSmall)
+                Text("根据公开设计语言编写的原创演示，可离线预览与复制。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                recipe.references.forEach { reference ->
+                    TextButton(onClick = { uriHandler.openUri(reference.url) }) {
+                        Text("${reference.title} ↗")
+                    }
+                }
+            }
+            OutlinedButton(onClick = { showCode = !showCode }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (showCode) "收起源码" else "查看完整源码")
+            }
+            if (showCode) {
+                Box(
+                    Modifier.fillMaxWidth().heightIn(max = 340.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1D1B20)).padding(14.dp)
+                        .verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()),
+                ) {
+                    Text(recipe.source, color = Color(0xFFE6E1E5), fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp, lineHeight = 18.sp)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = onCopy, modifier = Modifier.weight(1f)) { Text("复制代码") }
             Button(onClick = onApply, enabled = !applying, modifier = Modifier.weight(1f)) {
                 Text(if (applying) "正在创建任务…" else "应用到项目")
             }
         }
-        Text("Kotlin / Jetpack Compose", style = MaterialTheme.typography.labelLarge)
-        Box(
-            Modifier.fillMaxWidth().heightIn(max = 310.dp).clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF1D1B20)).padding(14.dp)
-                .verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()),
-        ) {
-            Text(
-                recipe.source,
-                color = Color(0xFFE6E1E5),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-            )
-        }
     }
+}
+
+@Composable
+internal fun CreativeCatalogPreview(recipe: CreativeRecipe, interactive: Boolean) {
+    if (recipe.style != null && recipe.pattern != null) {
+        if (interactive) CreativeStyleContent(recipe.style, recipe.pattern, interactive = true)
+        else CreativeStyleThumbnail(recipe.style, recipe.pattern)
+    } else RecipePreview(recipe.preview)
 }
 
 @Composable
@@ -258,6 +329,7 @@ private fun RecipePreview(kind: CreativePreview) {
         CreativePreview.ANIMATED_COUNTER -> CounterPreview()
         CreativePreview.LOADING_DOTS -> LoadingDotsPreview()
         CreativePreview.PROGRESS_REVEAL -> ProgressPreview()
+        CreativePreview.STYLE -> Unit // Style recipes are rendered with their own style and layout above.
     }
 }
 

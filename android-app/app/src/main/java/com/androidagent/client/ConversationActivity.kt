@@ -308,6 +308,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     // ---------- 任务渲染 ----------
 
     private fun renderJobChrome(job: JobInfo?) {
+        binding.textDeliveryStatus.isVisible = job != null
+        binding.textDeliveryStatus.text = job?.let {
+            val status = it.resolvedStatus()
+            if (status in setOf("succeeded", "failed", "canceled", "interrupted")) {
+                val apk = if (it.hasApk) "APK 已生成" else "APK 未验证"
+                val changes = if (it.changedFiles.isNotEmpty()) "${it.changedFiles.size} 个文件可审阅" else "文件改动未确认"
+                "$changes · $apk\n测试、安装和当前代码版本关联尚待验证"
+            } else if (it.cancelRequested) "正在停止 · 等待执行进程退出"
+            else it.statusLabel ?: ConversationTimelineBuilder.statusLabel(status)
+        }.orEmpty()
         updateToolbarStatus(job)
         updateComposer(job)
         updateMenuVisibility(job)

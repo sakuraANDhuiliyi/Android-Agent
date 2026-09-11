@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -14,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None) -> dict:
+def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None, env: dict | None = None) -> dict:
     started = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -23,6 +24,7 @@ def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None) 
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         return {
             "cmd": cmd,
@@ -59,6 +61,7 @@ def main() -> int:
 
     steps.append(run([sys.executable, str(ROOT / "scripts" / "scan_secrets.py")]))
     steps.append(run([sys.executable, str(ROOT / "scripts" / "check_api_contract.py")]))
+    steps.append(run([sys.executable, str(ROOT / "scripts" / "export_creative_seed.py"), "--check"]))
     steps.append(run(["git", "diff", "--check"], timeout=60))
     steps.append(
         run(
@@ -69,8 +72,13 @@ def main() -> int:
     if not args.skip_desktop:
         steps.append(run(["npm", "run", "check"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:unit"], cwd=ROOT / "desktop", timeout=120))
+        steps.append(run(["npm", "run", "test:studio"], cwd=ROOT / "desktop", timeout=120))
+        steps.append(run(["npm", "run", "test:creative-live"], cwd=ROOT / "desktop", timeout=180,
+                         env={**os.environ, "CREATIVE_TEST_PYTHON": sys.executable}))
+        steps.append(run(["npm", "run", "test:creative-community"], cwd=ROOT / "desktop", timeout=180,
+                         env={**os.environ, "CREATIVE_TEST_PYTHON": sys.executable}))
         steps.append(
-            run(["npm", "audit", "--omit=dev"], cwd=ROOT / "desktop", timeout=120)
+            run(["npm", "audit"], cwd=ROOT / "desktop", timeout=120)
         )
         steps.append(
             run(["npm", "run", "test:screenshot"], cwd=ROOT / "desktop", timeout=300)

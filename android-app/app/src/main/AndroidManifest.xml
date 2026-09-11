@@ -18,6 +18,7 @@
         android:theme="@style/Theme.AndroidAgentClient"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <receiver android:name=".ApprovalActionReceiver" android:exported="false" />
+        <activity android:name=".CreativeStudioActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ProjectHistoryActivity" android:exported="false" />
         <activity android:name=".RemoteTerminalActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".AgentsActivity" android:exported="false" />

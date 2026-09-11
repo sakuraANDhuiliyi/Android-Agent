@@ -1,0 +1,2 @@
+# Install the hash-locked runtime first; these are test-only dependencies.
+pytest==9.1.1

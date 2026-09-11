@@ -53,7 +53,7 @@ Hooks cannot weaken a hard permission denial. Destructive tools remain ask/deny 
 
 - Rules: `AGENTS.md`, `.android-agent/rules`, user global rules — budgeted into the system prompt.
 - Skills: discoverable skill packs with optional resources (path-bound).
-- MCP: stdio servers; secrets via env refs at spawn time only; crash/reconnect supported.
+- MCP: stdio servers; env refs resolve only operator-provisioned credentials scoped to the user and server, never the service environment; crash/reconnect supported. See [execution configuration](SECURITY_EXECUTION.md).
 - Hooks: PreToolUse / PostToolUse / TurnCompleted style actions; cannot elevate privileges.
 
 ## Subagents and worktrees
@@ -66,7 +66,7 @@ Long-term project/user/local memories are **not** conversation checkpoints. Auto
 
 ## Security boundaries
 
-- Workspace path sandbox + symlink resolve checks.
+- Workspace path sandbox + symlink resolve checks; Git/tools/MCP/terminals require macOS sandbox-exec or Linux bubblewrap and fail closed if unavailable.
 - Process runner: argv only (`shell=False`), cwd inside workspace, filtered env (no API keys).
 - Download URL validation blocks `file://`, localhost, private IPs, embedded credentials; redirects re-validated per hop.
 - Event/API/log redaction for common secret patterns.

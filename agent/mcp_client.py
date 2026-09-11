@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.mcp_config import McpServerConfig, resolve_env_secrets
-from agent.processes import build_minimal_env, build_sandboxed_command
+from agent.processes import build_minimal_env, build_sandboxed_command, prepare_workspace_env
 from agent.redaction import redact_sensitive_text, redact_sensitive_value
 
 
@@ -134,36 +134,25 @@ class StdioMcpTransport(McpTransport):
     def start(self) -> dict[str, Any]:
         if not self.config.command:
             raise McpTransportError(f"stdio server {self.config.name} 缺少 command")
+        if self.workspace is None:
+            raise McpTransportError("MCP 执行必须绑定独立工作区")
         base = build_minimal_env()
         # Secrets from config env_refs are injected only into the child process
         # at spawn time and must never be written to events/logs.
-        resolved_secrets = resolve_env_secrets(self.config.env_refs)
+        resolved_secrets = resolve_env_secrets(self.config.env_refs, user_id=self.config.credential_user_id, server_name=self.config.name)
         env = {**base, **self.extra_env, **resolved_secrets}
         # Never log resolved secrets — env for process only.
         cwd = self.config.cwd or (str(self.workspace) if self.workspace else None)
         command = [self.config.command, *self.config.args]
         if self.workspace is not None:
-            declared_files: list[Path] = []
-            command_path = Path(self.config.command)
-            resolved_command = (
-                command_path
-                if command_path.is_absolute()
-                else Path(cwd or self.workspace) / command_path
-            )
-            if resolved_command.is_file():
-                declared_files.append(resolved_command)
-            for arg in self.config.args:
-                candidate = Path(arg)
-                if not candidate.is_absolute():
-                    candidate = Path(cwd or self.workspace) / candidate
-                if candidate.is_file():
-                    declared_files.append(candidate)
+            from agent.processes import _resolve_cwd
+            cwd = str(_resolve_cwd(cwd, self.workspace))
+            prepare_workspace_env(self.workspace, env)
             command = build_sandboxed_command(
                 command,
                 self.workspace,
                 allow_network=False,
                 env=env,
-                extra_read_paths=declared_files,
             )
         try:
             self._proc = subprocess.Popen(

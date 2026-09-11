@@ -14,6 +14,7 @@ import java.util.UUID
 
 class AgentPrefs(context: Context) : ConversationSessionPrefs {
 
+    private val cacheRoot = context.cacheDir
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var serverUrl: String
@@ -66,6 +67,7 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
     }
 
     fun clearAuth() {
+        ApkCache.clearAccount(cacheRoot, serverUrl, userId)
         apiToken = ""
         guestMode = true
         userId = ""

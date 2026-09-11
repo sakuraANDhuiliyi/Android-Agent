@@ -83,6 +83,13 @@ android {
     }
 }
 
+// Repository tests read these shared files directly; changes must invalidate cached test results.
+tasks.withType<Test>().configureEach {
+    inputs.file(rootProject.file("../agent/creative/builtin_catalog.json.gz"))
+    inputs.file(rootProject.file("../tests/fixtures/api_contract/creative_catalog_200.json"))
+    inputs.file(rootProject.file("../tests/fixtures/api_contract/creative_author_200.json"))
+}
+
 tasks.register("verifyReleaseSigning") {
     doLast {
         check(hasReleaseSigning) {

@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 
 /**
- * TheoKit design tokens (Violet Forge), migrated from @theokit/ui tokens.css.
+ * TheoKit design tokens (Signal Workbench), migrated from @theokit/ui tokens.css.
  * Light/dark palettes resolve from the current night mode.
  */
 class TheoPalette(
@@ -57,21 +57,21 @@ object TheoTokens {
     val LIGHT = TheoPalette(
         dark = false,
         background = 0xFFFFFFFF.toInt(),
-        foreground = 0xFF0A0A0A.toInt(),
+        foreground = 0xFF202735.toInt(),
         card = 0xFFFFFFFF.toInt(),
-        cardForeground = 0xFF0A0A0A.toInt(),
+        cardForeground = 0xFF202735.toInt(),
         popover = 0xFFFFFFFF.toInt(),
-        primary = 0xFF6F49B1.toInt(),
+        primary = 0xFF2563EB.toInt(),
         primaryForeground = 0xFFFFFFFF.toInt(),
-        secondary = 0xFFF5F5F5.toInt(),
-        secondaryForeground = 0xFF0A0A0A.toInt(),
-        accent = 0xFFC96442.toInt(),
+        secondary = 0xFFEEF1F5.toInt(),
+        secondaryForeground = 0xFF202735.toInt(),
+        accent = 0xFF087F78.toInt(),
         accentForeground = 0xFFFFFFFF.toInt(),
-        muted = 0xFFF5F5F5.toInt(),
-        mutedForeground = 0xFF737373.toInt(),
-        border = 0xFFE8E8E8.toInt(),
-        input = 0xFFE8E8E8.toInt(),
-        ring = 0xFF6F49B1.toInt(),
+        muted = 0xFFEEF1F5.toInt(),
+        mutedForeground = 0xFF606D80.toInt(),
+        border = 0xFFE1E5EB.toInt(),
+        input = 0xFFE1E5EB.toInt(),
+        ring = 0xFF2563EB.toInt(),
         success = 0xFF16A34A.toInt(),
         successForeground = 0xFFFFFFFF.toInt(),
         warning = 0xFFD97706.toInt(),
@@ -82,28 +82,28 @@ object TheoTokens {
 
     val DARK = TheoPalette(
         dark = true,
-        background = 0xFF0A0A0A.toInt(),
-        foreground = 0xFFF5F5F5.toInt(),
-        card = 0xFF121212.toInt(),
-        cardForeground = 0xFFF5F5F5.toInt(),
-        popover = 0xFF121212.toInt(),
-        primary = 0xFF6F49B1.toInt(),
-        primaryForeground = 0xFFFFFFFF.toInt(),
-        secondary = 0xFF1C1C1C.toInt(),
-        secondaryForeground = 0xFFF5F5F5.toInt(),
-        accent = 0xFFC96442.toInt(),
-        accentForeground = 0xFFFFFFFF.toInt(),
-        muted = 0xFF1C1C1C.toInt(),
-        mutedForeground = 0xFF999999.toInt(),
-        border = 0xFF292929.toInt(),
+        background = 0xFF101318.toInt(),
+        foreground = 0xFFE8ECF2.toInt(),
+        card = 0xFF171B22.toInt(),
+        cardForeground = 0xFFE8ECF2.toInt(),
+        popover = 0xFF171B22.toInt(),
+        primary = 0xFF7598FF.toInt(),
+        primaryForeground = 0xFF101B35.toInt(),
+        secondary = 0xFF1E242E.toInt(),
+        secondaryForeground = 0xFFE8ECF2.toInt(),
+        accent = 0xFF56D6C9.toInt(),
+        accentForeground = 0xFF101B35.toInt(),
+        muted = 0xFF1E242E.toInt(),
+        mutedForeground = 0xFFA5AFBF.toInt(),
+        border = 0xFF2B3340.toInt(),
         input = 0xFF3A3A3A.toInt(),
-        ring = 0xFF6F49B1.toInt(),
+        ring = 0xFF7598FF.toInt(),
         success = 0xFF22E58C.toInt(),
-        successForeground = 0xFF0A0A0A.toInt(),
+        successForeground = 0xFF101318.toInt(),
         warning = 0xFFF59E0B.toInt(),
-        warningForeground = 0xFF0A0A0A.toInt(),
+        warningForeground = 0xFF101318.toInt(),
         destructive = 0xFFFF4F6D.toInt(),
-        destructiveForeground = 0xFF0A0A0A.toInt(),
+        destructiveForeground = 0xFF101318.toInt(),
     )
 
     fun of(context: Context): TheoPalette {

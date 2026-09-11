@@ -1,0 +1,14 @@
+// Optional local QA only. No changes to the app's normal sources or dependencies.
+// 1) ./gradlew testDebugUnitTest --tests '*CreativeCatalogTest' -I ../tools/creative/validate-recipes.init.gradle -PcreativeExportDir=/tmp/creative-recipes
+// 2) ./gradlew compileDebugKotlin -I ../tools/creative/validate-recipes.init.gradle -PcreativeValidationSources=/tmp/creative-recipes
+gradle.projectsEvaluated {
+    def app = gradle.rootProject.project(':app')
+    def exportDir = app.findProperty('creativeExportDir')
+    if (exportDir) {
+        app.tasks.withType(Test).configureEach { systemProperty 'creative.exportDir', exportDir }
+    }
+    def validationSources = app.findProperty('creativeValidationSources')
+    if (validationSources) {
+        app.android.sourceSets.debug.java.srcDir(validationSources)
+    }
+}

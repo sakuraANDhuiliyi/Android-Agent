@@ -1,0 +1,1748 @@
+{
+  "schemaVersion": 1,
+  "researchedOn": "2026-09-09",
+  "limit": 500,
+  "note": "26 个视觉系列，494 个风格与布局组合，加上原有 6 个互动组件。设计语言参考公开页面，Compose 代码为本项目原创；没有将第三方作品或源码打包进 App。",
+  "patternReference": {
+    "title": "Atlassian Design · 组件基础规范",
+    "url": "https://atlassian.design/components/"
+  },
+  "styles": [
+    {
+      "id": "minimal",
+      "label": "留白极简",
+      "background": "FAFAF8",
+      "surface": "FFFFFF",
+      "ink": "202420",
+      "accent": "315D43",
+      "secondary": "D6E5C6",
+      "radius": 12,
+      "border": 0,
+      "finish": "flat",
+      "typography": "sans",
+      "summary": "大留白、轻分隔与克制层级，适合阅读和日常工具",
+      "reference": {
+        "title": "Dribbble · minimal-ui",
+        "url": "https://dribbble.com/tags/minimal-ui"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "calendar",
+        "timeline",
+        "checklist",
+        "stats",
+        "sparkline",
+        "search",
+        "settings",
+        "tabs",
+        "login",
+        "form",
+        "product",
+        "receipt",
+        "timer",
+        "rating",
+        "accordion",
+        "onboarding",
+        "grid"
+      ]
+    },
+    {
+      "id": "material",
+      "label": "Material 色块",
+      "background": "FFF8FF",
+      "surface": "F1EAF7",
+      "ink": "241B2C",
+      "accent": "6750A4",
+      "secondary": "D9A7CB",
+      "radius": 28,
+      "border": 0,
+      "finish": "elevated",
+      "typography": "sans",
+      "summary": "圆角容器、色调层级与明确行动区，适合通用 App",
+      "reference": {
+        "title": "Material Design · Components",
+        "url": "https://m3.material.io/components"
+      },
+      "patterns": [
+        "bento",
+        "profile",
+        "pricing",
+        "music",
+        "calendar",
+        "checklist",
+        "stats",
+        "ring",
+        "notification",
+        "empty",
+        "search",
+        "settings",
+        "slider",
+        "stepper",
+        "tabs",
+        "dock",
+        "form",
+        "product",
+        "onboarding"
+      ]
+    },
+    {
+      "id": "glass",
+      "label": "通透玻璃",
+      "background": "14233E",
+      "surface": "243651",
+      "ink": "F0F5FF",
+      "accent": "A7C7FF",
+      "secondary": "D8B5FF",
+      "radius": 22,
+      "border": 1,
+      "finish": "glass",
+      "typography": "sans",
+      "summary": "透明叠层、细描边与背景光斑营造玻璃感，兼容旧版 Android",
+      "reference": {
+        "title": "Dribbble · glassmorphism",
+        "url": "https://dribbble.com/tags/glassmorphism"
+      },
+      "patterns": [
+        "bento",
+        "profile",
+        "pricing",
+        "boarding",
+        "music",
+        "equalizer",
+        "stats",
+        "sparkline",
+        "ring",
+        "gauge",
+        "notification",
+        "search",
+        "command",
+        "slider",
+        "dock",
+        "otp",
+        "weather",
+        "timer",
+        "swatches"
+      ]
+    },
+    {
+      "id": "brutal",
+      "label": "新粗野主义",
+      "background": "FFF6D8",
+      "surface": "FFFBEF",
+      "ink": "242116",
+      "accent": "B4E342",
+      "secondary": "FFAD85",
+      "radius": 3,
+      "border": 3,
+      "finish": "hard",
+      "typography": "sans",
+      "summary": "粗黑边框、硬偏移投影和醒目标记构成直接的视觉表达",
+      "reference": {
+        "title": "Agoy Wardhana · Neubrutalism Mobile App Design Exploration",
+        "url": "https://dribbble.com/shots/25960693-Neubrutalism-Mobile-App-Design-Exploration"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "pricing",
+        "ticket",
+        "podcast",
+        "kanban",
+        "stats",
+        "bars",
+        "leaderboard",
+        "comparison",
+        "notification",
+        "empty",
+        "command",
+        "tabs",
+        "form",
+        "product",
+        "cart",
+        "poll",
+        "onboarding"
+      ]
+    },
+    {
+      "id": "soft",
+      "label": "柔和拟物",
+      "background": "E9EEF4",
+      "surface": "E9EEF4",
+      "ink": "34415B",
+      "accent": "51699C",
+      "secondary": "B8C8E0",
+      "radius": 22,
+      "border": 0,
+      "finish": "soft",
+      "typography": "sans",
+      "summary": "同色背景与柔软投影强调控件的轻微浮起感",
+      "reference": {
+        "title": "Dribbble · neumorphism",
+        "url": "https://dribbble.com/tags/neumorphism"
+      },
+      "patterns": [
+        "profile",
+        "music",
+        "equalizer",
+        "calendar",
+        "checklist",
+        "stats",
+        "ring",
+        "gauge",
+        "settings",
+        "slider",
+        "stepper",
+        "dock",
+        "login",
+        "otp",
+        "cart",
+        "weather",
+        "timer",
+        "rating",
+        "accordion"
+      ]
+    },
+    {
+      "id": "clay",
+      "label": "黏土圆润",
+      "background": "EEE6F8",
+      "surface": "F8F1FF",
+      "ink": "423452",
+      "accent": "8254BA",
+      "secondary": "E4B1D4",
+      "radius": 32,
+      "border": 1,
+      "finish": "clay",
+      "typography": "sans",
+      "summary": "膨润圆角、柔软体积和糖果色块，适合轻松的引导界面",
+      "reference": {
+        "title": "Dribbble · claymorphism",
+        "url": "https://dribbble.com/tags/claymorphism"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "pricing",
+        "music",
+        "checklist",
+        "ring",
+        "leaderboard",
+        "chat",
+        "notification",
+        "empty",
+        "settings",
+        "slider",
+        "form",
+        "product",
+        "weather",
+        "rating",
+        "poll",
+        "onboarding"
+      ]
+    },
+    {
+      "id": "editorial",
+      "label": "杂志编辑",
+      "background": "F5F1E8",
+      "surface": "FBF8F1",
+      "ink": "29251E",
+      "accent": "8A392A",
+      "secondary": "CFBA8E",
+      "radius": 0,
+      "border": 0,
+      "finish": "editorial",
+      "typography": "serif",
+      "summary": "衬线标题、纸色底板和细横线突出阅读节奏",
+      "reference": {
+        "title": "Dribbble · editorial-design",
+        "url": "https://dribbble.com/tags/editorial-design"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "ticket",
+        "boarding",
+        "podcast",
+        "timeline",
+        "stats",
+        "sparkline",
+        "comparison",
+        "chat",
+        "notification",
+        "search",
+        "product",
+        "receipt",
+        "weather",
+        "rating",
+        "accordion",
+        "story",
+        "grid"
+      ]
+    },
+    {
+      "id": "swiss",
+      "label": "瑞士网格",
+      "background": "F4F4F0",
+      "surface": "FFFFFF",
+      "ink": "171717",
+      "accent": "BA2727",
+      "secondary": "F3C75E",
+      "radius": 0,
+      "border": 1,
+      "finish": "swiss",
+      "typography": "sans",
+      "summary": "强对齐、直角模块和红色强调让信息呈现理性秩序",
+      "reference": {
+        "title": "Dribbble · swiss-style",
+        "url": "https://dribbble.com/tags/swiss-style"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "ticket",
+        "calendar",
+        "timeline",
+        "kanban",
+        "stats",
+        "bars",
+        "sparkline",
+        "heatmap",
+        "funnel",
+        "leaderboard",
+        "comparison",
+        "command",
+        "stepper",
+        "tabs",
+        "product",
+        "receipt",
+        "grid"
+      ]
+    },
+    {
+      "id": "bauhaus",
+      "label": "包豪斯几何",
+      "background": "F3EBD4",
+      "surface": "FFF8E7",
+      "ink": "21262E",
+      "accent": "AA2F27",
+      "secondary": "E8B936",
+      "radius": 0,
+      "border": 2,
+      "finish": "bauhaus",
+      "typography": "sans",
+      "summary": "圆与方的几何对照、原色强调和不对称装饰",
+      "reference": {
+        "title": "Paulo Amican · Bauhaus-Styled Mobile App",
+        "url": "https://dribbble.com/shots/22842114-Bauhaus-Styled-Mobile-App"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "ticket",
+        "music",
+        "equalizer",
+        "calendar",
+        "stats",
+        "bars",
+        "ring",
+        "leaderboard",
+        "empty",
+        "tabs",
+        "dock",
+        "product",
+        "weather",
+        "swatches",
+        "onboarding",
+        "grid"
+      ]
+    },
+    {
+      "id": "retro",
+      "label": "复古印刷",
+      "background": "EEE0C2",
+      "surface": "F6EBCF",
+      "ink": "3D3026",
+      "accent": "91522A",
+      "secondary": "A8AF79",
+      "radius": 10,
+      "border": 2,
+      "finish": "retro",
+      "typography": "serif",
+      "summary": "暖纸色、棕色墨感和厚实轮廓唤起复古印刷感",
+      "reference": {
+        "title": "Dribbble · retro-ui",
+        "url": "https://dribbble.com/tags/retro-ui"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "ticket",
+        "boarding",
+        "music",
+        "podcast",
+        "calendar",
+        "timeline",
+        "checklist",
+        "leaderboard",
+        "chat",
+        "search",
+        "product",
+        "cart",
+        "receipt",
+        "weather",
+        "rating",
+        "story",
+        "grid"
+      ]
+    },
+    {
+      "id": "pixel",
+      "label": "像素街机",
+      "background": "151D2B",
+      "surface": "223246",
+      "ink": "D4F8DF",
+      "accent": "9FEA6B",
+      "secondary": "F9CF6A",
+      "radius": 0,
+      "border": 2,
+      "finish": "pixel",
+      "typography": "mono",
+      "summary": "方形像素格、等宽数字和硬边投影，适合游戏化工具",
+      "reference": {
+        "title": "Dribbble · pixel-art",
+        "url": "https://dribbble.com/tags/pixel-art"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "ticket",
+        "music",
+        "equalizer",
+        "checklist",
+        "kanban",
+        "stats",
+        "bars",
+        "ring",
+        "heatmap",
+        "leaderboard",
+        "notification",
+        "empty",
+        "command",
+        "stepper",
+        "otp",
+        "timer",
+        "poll"
+      ]
+    },
+    {
+      "id": "terminal",
+      "label": "终端字符",
+      "background": "101915",
+      "surface": "172820",
+      "ink": "C9F6DC",
+      "accent": "82E8AD",
+      "secondary": "B7D978",
+      "radius": 0,
+      "border": 1,
+      "finish": "terminal",
+      "typography": "mono",
+      "summary": "等宽字体、暗色细网格和命令式信息层级",
+      "reference": {
+        "title": "Dribbble · terminal",
+        "url": "https://dribbble.com/tags/terminal"
+      },
+      "patterns": [
+        "hero",
+        "timeline",
+        "checklist",
+        "kanban",
+        "stats",
+        "bars",
+        "sparkline",
+        "heatmap",
+        "funnel",
+        "notification",
+        "search",
+        "command",
+        "settings",
+        "stepper",
+        "tabs",
+        "login",
+        "otp",
+        "timer",
+        "accordion"
+      ]
+    },
+    {
+      "id": "cyber",
+      "label": "赛博切角",
+      "background": "111421",
+      "surface": "1F2637",
+      "ink": "E5F7FF",
+      "accent": "70E5F5",
+      "secondary": "EDCE67",
+      "radius": 12,
+      "border": 1,
+      "finish": "cut",
+      "typography": "mono",
+      "summary": "切角容器、冷色高光与仪表信息构成未来控制界面",
+      "reference": {
+        "title": "Dribbble · cyberpunk-ui",
+        "url": "https://dribbble.com/tags/cyberpunk-ui"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "boarding",
+        "music",
+        "equalizer",
+        "stats",
+        "bars",
+        "sparkline",
+        "ring",
+        "gauge",
+        "funnel",
+        "leaderboard",
+        "command",
+        "settings",
+        "slider",
+        "dock",
+        "otp",
+        "map",
+        "timer"
+      ]
+    },
+    {
+      "id": "synth",
+      "label": "合成波网格",
+      "background": "231336",
+      "surface": "34204B",
+      "ink": "FCEAFB",
+      "accent": "EEA3E9",
+      "secondary": "7ED4EF",
+      "radius": 8,
+      "border": 1,
+      "finish": "synth",
+      "typography": "mono",
+      "summary": "紫色夜幕、霓虹网格和复古电子配色，适合媒体与游戏",
+      "reference": {
+        "title": "Dribbble · synthwave",
+        "url": "https://dribbble.com/tags/synthwave"
+      },
+      "patterns": [
+        "hero",
+        "ticket",
+        "music",
+        "podcast",
+        "equalizer",
+        "timeline",
+        "stats",
+        "bars",
+        "sparkline",
+        "ring",
+        "leaderboard",
+        "chat",
+        "notification",
+        "empty",
+        "tabs",
+        "dock",
+        "weather",
+        "timer",
+        "story"
+      ]
+    },
+    {
+      "id": "aurora",
+      "label": "极光弥散",
+      "background": "102D35",
+      "surface": "1C4149",
+      "ink": "E6FAF7",
+      "accent": "8EE5CA",
+      "secondary": "B3A9F6",
+      "radius": 26,
+      "border": 0,
+      "finish": "aurora",
+      "typography": "sans",
+      "summary": "大面积弥散光斑与深色卡片形成安静的空间感",
+      "reference": {
+        "title": "Dribbble · aurora-ui",
+        "url": "https://dribbble.com/tags/aurora-ui"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "pricing",
+        "boarding",
+        "music",
+        "stats",
+        "sparkline",
+        "ring",
+        "gauge",
+        "empty",
+        "search",
+        "slider",
+        "tabs",
+        "weather",
+        "map",
+        "timer",
+        "swatches",
+        "onboarding"
+      ]
+    },
+    {
+      "id": "gradient",
+      "label": "鲜活渐变",
+      "background": "FFF0F3",
+      "surface": "FFF9FB",
+      "ink": "4D263C",
+      "accent": "A73269",
+      "secondary": "8D83D8",
+      "radius": 24,
+      "border": 0,
+      "finish": "gradient",
+      "typography": "sans",
+      "summary": "彩色光晕与大圆角模块强化内容焦点",
+      "reference": {
+        "title": "Dribbble · gradient-ui",
+        "url": "https://dribbble.com/tags/gradient-ui"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "pricing",
+        "ticket",
+        "music",
+        "equalizer",
+        "stats",
+        "ring",
+        "leaderboard",
+        "chat",
+        "empty",
+        "stepper",
+        "tabs",
+        "product",
+        "weather",
+        "swatches",
+        "onboarding",
+        "story"
+      ]
+    },
+    {
+      "id": "mono",
+      "label": "黑白雕刻",
+      "background": "EEEEEC",
+      "surface": "FAFAF8",
+      "ink": "171719",
+      "accent": "29292D",
+      "secondary": "ADADB3",
+      "radius": 16,
+      "border": 1,
+      "finish": "mono",
+      "typography": "sans",
+      "summary": "黑白灰色阶、饱满黑色行动区和简洁轮廓",
+      "reference": {
+        "title": "Dribbble · monochrome",
+        "url": "https://dribbble.com/tags/monochrome"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "pricing",
+        "ticket",
+        "boarding",
+        "music",
+        "stats",
+        "sparkline",
+        "comparison",
+        "search",
+        "settings",
+        "dock",
+        "login",
+        "product",
+        "cart",
+        "receipt",
+        "rating",
+        "story",
+        "grid"
+      ]
+    },
+    {
+      "id": "luxury",
+      "label": "墨金奢雅",
+      "background": "191A1C",
+      "surface": "252527",
+      "ink": "F3ECDC",
+      "accent": "DBBC78",
+      "secondary": "93928F",
+      "radius": 6,
+      "border": 1,
+      "finish": "luxury",
+      "typography": "serif",
+      "summary": "墨色底板、细金边和衬线标题，适合精品与会员体验",
+      "reference": {
+        "title": "Dribbble · luxury-app",
+        "url": "https://dribbble.com/tags/luxury-app"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "pricing",
+        "ticket",
+        "boarding",
+        "music",
+        "podcast",
+        "stats",
+        "comparison",
+        "notification",
+        "search",
+        "product",
+        "cart",
+        "receipt",
+        "weather",
+        "map",
+        "rating",
+        "story",
+        "grid"
+      ]
+    },
+    {
+      "id": "organic",
+      "label": "自然有机",
+      "background": "EAF0DF",
+      "surface": "F7F8ED",
+      "ink": "2C412F",
+      "accent": "466A3F",
+      "secondary": "C9B981",
+      "radius": 30,
+      "border": 0,
+      "finish": "organic",
+      "typography": "serif",
+      "summary": "植物系配色、柔软曲面和自然留白，适合生活方式界面",
+      "reference": {
+        "title": "Dribbble · organic-design",
+        "url": "https://dribbble.com/tags/organic-design"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "calendar",
+        "timeline",
+        "checklist",
+        "ring",
+        "heatmap",
+        "empty",
+        "settings",
+        "slider",
+        "form",
+        "product",
+        "weather",
+        "map",
+        "timer",
+        "rating",
+        "onboarding",
+        "grid"
+      ]
+    },
+    {
+      "id": "pastel",
+      "label": "粉彩轻盈",
+      "background": "F4EDFA",
+      "surface": "FCF8FF",
+      "ink": "494057",
+      "accent": "7555A0",
+      "secondary": "D6B8DE",
+      "radius": 24,
+      "border": 0,
+      "finish": "pastel",
+      "typography": "sans",
+      "summary": "低饱和粉彩底板搭配清晰深色文字，保持温柔层次",
+      "reference": {
+        "title": "Dribbble · pastel",
+        "url": "https://dribbble.com/tags/pastel"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "pricing",
+        "podcast",
+        "calendar",
+        "checklist",
+        "chat",
+        "notification",
+        "empty",
+        "search",
+        "settings",
+        "form",
+        "product",
+        "weather",
+        "timer",
+        "rating",
+        "poll",
+        "onboarding"
+      ]
+    },
+    {
+      "id": "kawaii",
+      "label": "可爱气泡",
+      "background": "FFF0EE",
+      "surface": "FFF9F0",
+      "ink": "553736",
+      "accent": "A7415C",
+      "secondary": "EAC779",
+      "radius": 36,
+      "border": 2,
+      "finish": "kawaii",
+      "typography": "sans",
+      "summary": "夸张圆角、糖果色边框和亲切的气泡感",
+      "reference": {
+        "title": "Dribbble · kawaii-ui",
+        "url": "https://dribbble.com/tags/kawaii-ui"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "ticket",
+        "music",
+        "checklist",
+        "ring",
+        "leaderboard",
+        "chat",
+        "notification",
+        "empty",
+        "settings",
+        "form",
+        "product",
+        "cart",
+        "weather",
+        "rating",
+        "poll",
+        "onboarding",
+        "story"
+      ]
+    },
+    {
+      "id": "paper",
+      "label": "横线手账",
+      "background": "F4ECD9",
+      "surface": "FAF4E5",
+      "ink": "493D2B",
+      "accent": "8F483B",
+      "secondary": "B1AF84",
+      "radius": 2,
+      "border": 1,
+      "finish": "paper",
+      "typography": "serif",
+      "summary": "横线纸与页边线作为底纹，像翻开一本随身手账",
+      "reference": {
+        "title": "Dribbble · paper-ui",
+        "url": "https://dribbble.com/tags/paper-ui"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "ticket",
+        "podcast",
+        "calendar",
+        "timeline",
+        "checklist",
+        "kanban",
+        "heatmap",
+        "chat",
+        "search",
+        "command",
+        "form",
+        "receipt",
+        "timer",
+        "rating",
+        "accordion",
+        "story",
+        "grid"
+      ]
+    },
+    {
+      "id": "blueprint",
+      "label": "工程蓝图",
+      "background": "123665",
+      "surface": "1A4678",
+      "ink": "E2F0FF",
+      "accent": "92CEF7",
+      "secondary": "F0D787",
+      "radius": 2,
+      "border": 1,
+      "finish": "grid",
+      "typography": "mono",
+      "summary": "蓝色坐标网格、细线轮廓与等宽标签强调结构",
+      "reference": {
+        "title": "Dribbble · blueprint",
+        "url": "https://dribbble.com/tags/blueprint"
+      },
+      "patterns": [
+        "bento",
+        "boarding",
+        "timeline",
+        "kanban",
+        "stats",
+        "bars",
+        "sparkline",
+        "ring",
+        "heatmap",
+        "gauge",
+        "funnel",
+        "comparison",
+        "command",
+        "settings",
+        "slider",
+        "stepper",
+        "tabs",
+        "map",
+        "grid"
+      ]
+    },
+    {
+      "id": "industrial",
+      "label": "工业控制",
+      "background": "232A2D",
+      "surface": "303A3E",
+      "ink": "E8F0EE",
+      "accent": "F2B86D",
+      "secondary": "A1C8BD",
+      "radius": 4,
+      "border": 1,
+      "finish": "industrial",
+      "typography": "mono",
+      "summary": "暗金属色、紧凑数值和警示色强调，适合控制面板",
+      "reference": {
+        "title": "Dribbble · industrial-ui",
+        "url": "https://dribbble.com/tags/industrial-ui"
+      },
+      "patterns": [
+        "bento",
+        "boarding",
+        "equalizer",
+        "timeline",
+        "checklist",
+        "kanban",
+        "stats",
+        "bars",
+        "sparkline",
+        "gauge",
+        "funnel",
+        "notification",
+        "command",
+        "settings",
+        "slider",
+        "stepper",
+        "dock",
+        "map",
+        "timer"
+      ]
+    },
+    {
+      "id": "contrast",
+      "label": "黑黄高对比",
+      "background": "080808",
+      "surface": "181818",
+      "ink": "FFFFFF",
+      "accent": "F8E36B",
+      "secondary": "B7DAFF",
+      "radius": 8,
+      "border": 2,
+      "finish": "contrast",
+      "typography": "sans",
+      "summary": "黑底明字、粗轮廓和黄色行动区，突出信息可见性",
+      "reference": {
+        "title": "Dribbble · high-contrast",
+        "url": "https://dribbble.com/tags/high-contrast"
+      },
+      "patterns": [
+        "hero",
+        "profile",
+        "pricing",
+        "calendar",
+        "checklist",
+        "stats",
+        "bars",
+        "ring",
+        "notification",
+        "empty",
+        "search",
+        "settings",
+        "slider",
+        "tabs",
+        "login",
+        "form",
+        "product",
+        "rating",
+        "accordion"
+      ]
+    },
+    {
+      "id": "outline",
+      "label": "线框素描",
+      "background": "F8F8FC",
+      "surface": "FFFFFF",
+      "ink": "31354C",
+      "accent": "424E91",
+      "secondary": "B8BDD8",
+      "radius": 14,
+      "border": 2,
+      "finish": "outline",
+      "typography": "sans",
+      "summary": "轻底色配连续描边，以形状轮廓区分模块",
+      "reference": {
+        "title": "Material Design · Cards",
+        "url": "https://m3.material.io/components/cards/overview"
+      },
+      "patterns": [
+        "hero",
+        "bento",
+        "profile",
+        "pricing",
+        "calendar",
+        "timeline",
+        "checklist",
+        "kanban",
+        "stats",
+        "comparison",
+        "chat",
+        "search",
+        "command",
+        "stepper",
+        "tabs",
+        "product",
+        "cart",
+        "accordion",
+        "grid"
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "id": "hero",
+      "category": "LAYOUT",
+      "title": "封面行动卡",
+      "headline": "出发，去山野",
+      "caption": "周末探索计划",
+      "value": "WEEKEND 01",
+      "action": "加入计划",
+      "items": [
+        "轻装出行",
+        "路线收藏",
+        "周末灵感"
+      ],
+      "summary": "大标题与几何主视觉构成封面，点击切换计划状态"
+    },
+    {
+      "id": "bento",
+      "category": "LAYOUT",
+      "title": "便当信息格",
+      "headline": "今日生活速览",
+      "caption": "把重要信息放在一起",
+      "value": "8,240",
+      "action": "查看今日",
+      "items": [
+        "今日步数",
+        "专注 45 分",
+        "睡眠 7.5 时"
+      ],
+      "summary": "大小不等的信息格组合主指标和辅助摘要"
+    },
+    {
+      "id": "profile",
+      "category": "SOCIAL",
+      "title": "人物名片",
+      "headline": "林间设计师",
+      "caption": "独立创作 · 上海",
+      "value": "128",
+      "action": "关注创作者",
+      "items": [
+        "作品 24",
+        "关注者 1.2k",
+        "收藏 368"
+      ],
+      "summary": "头像、身份和统计分层排布，支持关注切换"
+    },
+    {
+      "id": "pricing",
+      "category": "COMMERCE",
+      "title": "订阅方案卡",
+      "headline": "为创意留点空间",
+      "caption": "STUDIO PLUS",
+      "value": "¥29 / 月",
+      "action": "选择方案",
+      "items": [
+        "无限画板",
+        "多端同步",
+        "高清导出"
+      ],
+      "summary": "价格与权益垂直排列，切换月付和年付方案"
+    },
+    {
+      "id": "ticket",
+      "category": "COMMERCE",
+      "title": "活动撕边票",
+      "headline": "城市声音现场",
+      "caption": "LIVE SESSION",
+      "value": "09.24 · 19:30",
+      "action": "收藏票券",
+      "items": [
+        "A 区",
+        "12 排 08 座",
+        "电子入场"
+      ],
+      "summary": "虚线分割票面信息，底部用装饰条码模拟纸票"
+    },
+    {
+      "id": "boarding",
+      "category": "LIFESTYLE",
+      "title": "电子登机牌",
+      "headline": "下一站，东京",
+      "caption": "BOARDING PASS",
+      "value": "准时登机",
+      "action": "查看行程",
+      "items": [
+        "09:45",
+        "GATE 12",
+        "18A"
+      ],
+      "summary": "机场缩写、航线和登机信息组成可扫读票面"
+    },
+    {
+      "id": "music",
+      "category": "MEDIA",
+      "title": "唱片播放器",
+      "headline": "落日慢拍",
+      "caption": "SUNSET RADIO",
+      "value": "03:20",
+      "action": "播放演示",
+      "items": [
+        "夜航",
+        "城市余温",
+        "晚风"
+      ],
+      "summary": "唱片图形配合时间进度，播放按钮切换状态"
+    },
+    {
+      "id": "podcast",
+      "category": "MEDIA",
+      "title": "播客单集列",
+      "headline": "好奇心电台",
+      "caption": "每周一段新对话",
+      "value": "EPISODE 08",
+      "action": "选择单集",
+      "items": [
+        "设计的日常",
+        "在路上思考",
+        "城市里的声音"
+      ],
+      "summary": "单集列表以高亮和播放标记显示当前选择"
+    },
+    {
+      "id": "equalizer",
+      "category": "MEDIA",
+      "title": "音频均衡器",
+      "headline": "找到你的声场",
+      "caption": "SOUND LAB",
+      "value": "12 BANDS",
+      "action": "切换预设",
+      "items": [
+        "均衡",
+        "低音",
+        "人声"
+      ],
+      "summary": "十二段高低柱形构成均衡器，按钮切换预设"
+    },
+    {
+      "id": "calendar",
+      "category": "LIFESTYLE",
+      "title": "轻量月历",
+      "headline": "2026 年 9 月",
+      "caption": "给生活留出空白",
+      "value": "SEPTEMBER",
+      "action": "选择日期",
+      "items": [
+        "周会",
+        "旅行",
+        "阅读"
+      ],
+      "summary": "紧凑日期网格提供选择反馈与当前日期摘要"
+    },
+    {
+      "id": "timeline",
+      "category": "LIFESTYLE",
+      "title": "行程时间轴",
+      "headline": "今天，有条不紊",
+      "caption": "DAILY TIMELINE",
+      "value": "今日安排",
+      "action": "查看安排",
+      "items": [
+        "晨间散步",
+        "创意讨论",
+        "下班阅读"
+      ],
+      "summary": "节点与竖线连接日程，突出当前任务"
+    },
+    {
+      "id": "checklist",
+      "category": "LIFESTYLE",
+      "title": "习惯清单",
+      "headline": "小事，慢慢完成",
+      "caption": "DAILY HABITS",
+      "value": "3 项习惯",
+      "action": "完成习惯",
+      "items": [
+        "喝一杯水",
+        "阅读十分钟",
+        "晚间散步"
+      ],
+      "summary": "复选项与完成进度联动，保持任务状态直观"
+    },
+    {
+      "id": "kanban",
+      "category": "LAYOUT",
+      "title": "双栏任务板",
+      "headline": "让想法向前一步",
+      "caption": "CREATIVE WORKFLOW",
+      "value": "SPRINT 03",
+      "action": "完成首项任务",
+      "items": [
+        "整理参考",
+        "绘制草图",
+        "明确目标"
+      ],
+      "summary": "待办和完成两栏展示任务迁移，支持撤回"
+    },
+    {
+      "id": "stats",
+      "category": "DATA",
+      "title": "关键指标卡",
+      "headline": "每一步都有回响",
+      "caption": "OVERVIEW",
+      "value": "24,680",
+      "action": "查看统计",
+      "items": [
+        "新增 1,280",
+        "完成率 86%",
+        "活跃 7 天"
+      ],
+      "summary": "醒目的主数字搭配涨幅标记与两张辅助指标卡"
+    },
+    {
+      "id": "bars",
+      "category": "DATA",
+      "title": "周趋势柱图",
+      "headline": "这一周的节奏",
+      "caption": "WEEKLY ACTIVITY",
+      "value": "7 DAYS",
+      "action": "切换周次",
+      "items": [
+        "本周",
+        "上周",
+        "日均"
+      ],
+      "summary": "七列柱图突出一天，切换周次更新图形"
+    },
+    {
+      "id": "sparkline",
+      "category": "DATA",
+      "title": "迷你趋势线",
+      "headline": "让增长看得见",
+      "caption": "TREND OVERVIEW",
+      "value": "12,840",
+      "action": "查看趋势",
+      "items": [
+        "09:00",
+        "18:00",
+        "今日"
+      ],
+      "summary": "折线和透明面积呈现示例趋势，配合大数字摘要"
+    },
+    {
+      "id": "ring",
+      "category": "DATA",
+      "title": "目标进度环",
+      "headline": "距离目标更近",
+      "caption": "DAILY GOAL",
+      "value": "72%",
+      "action": "增加进度",
+      "items": [
+        "已完成",
+        "进行中",
+        "待开始"
+      ],
+      "summary": "圆环进度平滑增长，点击按钮演示完成度变化"
+    },
+    {
+      "id": "heatmap",
+      "category": "DATA",
+      "title": "活跃热力格",
+      "headline": "积累的每一天",
+      "caption": "ACTIVITY MAP",
+      "value": "连续 28 天",
+      "action": "查看记录",
+      "items": [
+        "少",
+        "中",
+        "多"
+      ],
+      "summary": "深浅方格编码活动强度，用网格呈现积累感"
+    },
+    {
+      "id": "gauge",
+      "category": "DATA",
+      "title": "半圆仪表盘",
+      "headline": "当前舒适指数",
+      "caption": "COMFORT METER",
+      "value": "65",
+      "action": "调整读数",
+      "items": [
+        "偏低",
+        "舒适",
+        "偏高"
+      ],
+      "summary": "半圆仪表与滑杆联动，展示连续数值反馈"
+    },
+    {
+      "id": "funnel",
+      "category": "DATA",
+      "title": "转化漏斗",
+      "headline": "看见每一步转化",
+      "caption": "FUNNEL REPORT",
+      "value": "示例转化率 24%",
+      "action": "查看详情",
+      "items": [
+        "访问 10k",
+        "意向 6k",
+        "完成 2.4k"
+      ],
+      "summary": "逐层收窄的色块强调阶段数量和转化关系"
+    },
+    {
+      "id": "leaderboard",
+      "category": "SOCIAL",
+      "title": "领奖台榜单",
+      "headline": "本周创作之星",
+      "caption": "CREATOR LEADERBOARD",
+      "value": "你位列第 12",
+      "action": "查看榜单",
+      "items": [
+        "小林",
+        "阿青",
+        "晚风"
+      ],
+      "summary": "三座不同高度的领奖台突出前三名"
+    },
+    {
+      "id": "comparison",
+      "category": "COMMERCE",
+      "title": "并排方案对比",
+      "headline": "选一个适合你的",
+      "caption": "COMPARE PLANS",
+      "value": "2 PLANS",
+      "action": "选择方案",
+      "items": [
+        "轻享版",
+        "进阶版",
+        "团队版"
+      ],
+      "summary": "并排展示基础和进阶权益，点击高亮当前方案"
+    },
+    {
+      "id": "chat",
+      "category": "SOCIAL",
+      "title": "双向聊天气泡",
+      "headline": "一起把想法做出来",
+      "caption": "COLLABORATION",
+      "value": "ONLINE",
+      "action": "发送示例回复",
+      "items": [
+        "这个配色怎么样？",
+        "很喜欢，试试更大的留白。",
+        "收到"
+      ],
+      "summary": "左右交错气泡区分说话人，支持本地示例回复"
+    },
+    {
+      "id": "notification",
+      "category": "FEEDBACK",
+      "title": "消息通知栈",
+      "headline": "你有一些新动态",
+      "caption": "NOTIFICATIONS",
+      "value": "3 NEW",
+      "action": "标记全部已读",
+      "items": [
+        "项目已完成构建",
+        "新评论已到达",
+        "素材同步完成"
+      ],
+      "summary": "层叠通知卡与未读圆点联动，支持全部已读"
+    },
+    {
+      "id": "empty",
+      "category": "FEEDBACK",
+      "title": "空状态引导",
+      "headline": "第一条灵感，从这里开始",
+      "caption": "暂时还没有收藏，遇到喜欢的就收下吧",
+      "value": "START HERE",
+      "action": "创建第一条",
+      "items": [
+        "周末的第一条灵感",
+        "设计想法",
+        "旅行计划"
+      ],
+      "summary": "几何插画、简短说明和行动按钮帮助用户开始"
+    },
+    {
+      "id": "search",
+      "category": "INPUT",
+      "title": "搜索结果面板",
+      "headline": "找到心里的那个想法",
+      "caption": "SEARCH IDEAS",
+      "value": "SEARCH",
+      "action": "搜索",
+      "items": [
+        "海边旅行",
+        "咖啡日记",
+        "城市漫步"
+      ],
+      "summary": "输入框实时筛选本地示例，并提供无结果状态"
+    },
+    {
+      "id": "command",
+      "category": "NAVIGATION",
+      "title": "快捷命令面板",
+      "headline": "一个入口，快速出发",
+      "caption": "QUICK ACTIONS",
+      "value": "COMMAND",
+      "action": "选择命令",
+      "items": [
+        "新建画板",
+        "打开收藏",
+        "导出草稿"
+      ],
+      "summary": "命令列表结合数字标记，点击反馈所选操作"
+    },
+    {
+      "id": "settings",
+      "category": "INPUT",
+      "title": "偏好设置组",
+      "headline": "按你的习惯来",
+      "caption": "PREFERENCES",
+      "value": "PERSONAL",
+      "action": "保存偏好",
+      "items": [
+        "接收提醒",
+        "离线缓存",
+        "自动同步"
+      ],
+      "summary": "开关与分割线组成易扫读设置列表"
+    },
+    {
+      "id": "slider",
+      "category": "INPUT",
+      "title": "亮度调节卡",
+      "headline": "调到舒服的位置",
+      "caption": "LIGHT CONTROL",
+      "value": "60%",
+      "action": "调整亮度",
+      "items": [
+        "柔和",
+        "明亮",
+        "自动"
+      ],
+      "summary": "太阳图形、大百分比与滑块共同表达连续调节"
+    },
+    {
+      "id": "stepper",
+      "category": "NAVIGATION",
+      "title": "分步流程卡",
+      "headline": "三步，开启新计划",
+      "caption": "GET STARTED",
+      "value": "STEP BY STEP",
+      "action": "下一步",
+      "items": [
+        "选择目标",
+        "安排时间",
+        "确认计划"
+      ],
+      "summary": "编号节点、进度线和内容卡同步呈现当前步骤"
+    },
+    {
+      "id": "tabs",
+      "category": "NAVIGATION",
+      "title": "分段选项卡",
+      "headline": "切换你的视角",
+      "caption": "EXPLORE VIEWS",
+      "value": "3 VIEWS",
+      "action": "切换视角",
+      "items": [
+        "今日",
+        "本周",
+        "本月"
+      ],
+      "summary": "分段导航与下方内容联动，清楚展示选中状态"
+    },
+    {
+      "id": "dock",
+      "category": "NAVIGATION",
+      "title": "悬浮底部导航",
+      "headline": "你的日常入口",
+      "caption": "QUICK NAVIGATION",
+      "value": "3 TABS",
+      "action": "切换页面",
+      "items": [
+        "首页",
+        "发现",
+        "我的"
+      ],
+      "summary": "浮起的导航托盘使用形状、文字和选中点标记入口"
+    },
+    {
+      "id": "login",
+      "category": "INPUT",
+      "title": "邮箱登录卡",
+      "headline": "欢迎回来",
+      "caption": "把今天的灵感接着写下去",
+      "value": "EMAIL SIGN IN",
+      "action": "继续",
+      "items": [
+        "安全登录",
+        "设备同步",
+        "隐私设置"
+      ],
+      "summary": "邮箱表单提供空值和格式反馈，按钮展示本地验证"
+    },
+    {
+      "id": "otp",
+      "category": "INPUT",
+      "title": "四位验证码",
+      "headline": "确认这是你",
+      "caption": "四位数字，完成下一步",
+      "value": "VERIFICATION",
+      "action": "验证",
+      "items": [
+        "输入",
+        "确认",
+        "完成"
+      ],
+      "summary": "分离数字槽映射输入内容，限制四位数字"
+    },
+    {
+      "id": "form",
+      "category": "INPUT",
+      "title": "单选偏好表单",
+      "headline": "你想从哪里开始？",
+      "caption": "CHOOSE YOUR INTEREST",
+      "value": "ONE CHOICE",
+      "action": "保存选择",
+      "items": [
+        "视觉设计",
+        "交互动画",
+        "数据界面"
+      ],
+      "summary": "单选列表和提交反馈组成轻量偏好设置流程"
+    },
+    {
+      "id": "product",
+      "category": "COMMERCE",
+      "title": "商品展示卡",
+      "headline": "随身灵感盒",
+      "caption": "轻巧收纳，每一天都装得下",
+      "value": "¥128",
+      "action": "加入购物袋",
+      "items": [
+        "雾白",
+        "深灰",
+        "砂岩"
+      ],
+      "summary": "独立主视觉、价格徽标和行动按钮构成商品卡"
+    },
+    {
+      "id": "cart",
+      "category": "COMMERCE",
+      "title": "数量购物卡",
+      "headline": "购物袋",
+      "caption": "留住今天的喜欢",
+      "value": "¥128 / 件",
+      "action": "调整数量",
+      "items": [
+        "随身灵感盒",
+        "砂岩色",
+        "标准款"
+      ],
+      "summary": "商品摘要配合数量步进器，合计随数量变化"
+    },
+    {
+      "id": "receipt",
+      "category": "COMMERCE",
+      "title": "订单纸质收据",
+      "headline": "谢谢你的喜欢",
+      "caption": "ORDER #20260909",
+      "value": "¥128",
+      "action": "查看订单",
+      "items": [
+        "手工杯",
+        "咖啡豆",
+        "包装"
+      ],
+      "summary": "商品明细和合计以分割线组织，呈现电子收据"
+    },
+    {
+      "id": "weather",
+      "category": "LIFESTYLE",
+      "title": "今日天气卡",
+      "headline": "上海，晴朗的一天",
+      "caption": "GOOD MORNING",
+      "value": "24°",
+      "action": "查看天气",
+      "items": [
+        "体感 25°",
+        "湿度 58%",
+        "风速 3 级"
+      ],
+      "summary": "超大温度和太阳图形为主，底部补充天气指标"
+    },
+    {
+      "id": "map",
+      "category": "LIFESTYLE",
+      "title": "路线示意卡",
+      "headline": "下一站，城市公园",
+      "caption": "WALK A LITTLE",
+      "value": "12 MIN",
+      "action": "显示示例路线",
+      "items": [
+        "起点",
+        "转弯",
+        "公园"
+      ],
+      "summary": "抽象街道和两端节点构成地图，按钮显隐路线"
+    },
+    {
+      "id": "timer",
+      "category": "MOTION",
+      "title": "专注倒计时",
+      "headline": "为自己留二十五分钟",
+      "caption": "FOCUS TIME",
+      "value": "25:00",
+      "action": "开始专注",
+      "items": [
+        "专注",
+        "休息",
+        "完成"
+      ],
+      "summary": "倒计时与进度条联动，可开始和暂停计时"
+    },
+    {
+      "id": "swatches",
+      "category": "COMPONENT",
+      "title": "交互配色板",
+      "headline": "今天，喜欢这个颜色",
+      "caption": "COLOR PLAYGROUND",
+      "value": "4 COLORS",
+      "action": "选择颜色",
+      "items": [
+        "主色",
+        "辅助",
+        "文字"
+      ],
+      "summary": "大色块跟随小色卡选择变化，呈现当前主题色板"
+    },
+    {
+      "id": "rating",
+      "category": "FEEDBACK",
+      "title": "星级评分卡",
+      "headline": "这次体验怎么样？",
+      "caption": "YOUR FEEDBACK",
+      "value": "4.0",
+      "action": "选择评分",
+      "items": [
+        "还可以",
+        "很喜欢",
+        "非常棒"
+      ],
+      "summary": "醒目的分值与可点按星级同步更新"
+    },
+    {
+      "id": "poll",
+      "category": "SOCIAL",
+      "title": "即时投票卡",
+      "headline": "周末想做些什么？",
+      "caption": "COMMUNITY POLL",
+      "value": "3 OPTIONS",
+      "action": "参与投票",
+      "items": [
+        "去看一场展",
+        "在家听音乐",
+        "约朋友喝咖啡"
+      ],
+      "summary": "点击选项后展示占比条和已选反馈"
+    },
+    {
+      "id": "accordion",
+      "category": "COMPONENT",
+      "title": "问答折叠组",
+      "headline": "一些常见的小问题",
+      "caption": "QUICK ANSWERS",
+      "value": "FAQ",
+      "action": "展开问题",
+      "items": [
+        "如何开始？",
+        "能离线使用吗？",
+        "可以自定义吗？"
+      ],
+      "summary": "单项展开的问答列表用平滑高度变化节省空间"
+    },
+    {
+      "id": "onboarding",
+      "category": "LAYOUT",
+      "title": "三页引导卡",
+      "headline": "把灵感变成日常",
+      "caption": "每次一个小步骤，慢慢构建喜欢的生活",
+      "value": "WELCOME",
+      "action": "继续",
+      "items": [
+        "发现新的可能",
+        "整理心里的想法",
+        "开始第一步"
+      ],
+      "summary": "插画、标题和分页指示随下一步按钮同步切换"
+    },
+    {
+      "id": "story",
+      "category": "MEDIA",
+      "title": "故事阅读卡",
+      "headline": "一日城市漫游",
+      "caption": "CITY STORIES",
+      "value": "ISSUE 09",
+      "action": "下一则",
+      "items": [
+        "沿着街道走走",
+        "在巷口停留",
+        "把晚风收藏"
+      ],
+      "summary": "分段进度条和封面内容构成可切换故事"
+    },
+    {
+      "id": "grid",
+      "category": "LAYOUT",
+      "title": "错落收藏墙",
+      "headline": "值得留下的片刻",
+      "caption": "COLLECTION WALL",
+      "value": "SELECTED 04",
+      "action": "收藏卡片",
+      "items": [
+        "山野",
+        "日常",
+        "城市"
+      ],
+      "summary": "双列高低错落卡片模拟瀑布流，点击标记收藏"
+    }
+  ]
+}

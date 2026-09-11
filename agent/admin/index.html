@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light dark">
   <title>Android Agent · 管理后台</title>
   <link rel="stylesheet" href="./admin.css">
+  <link rel="stylesheet" href="./studio.css">
 </head>
 <body>
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
@@ -25,16 +26,23 @@
   <div id="appShell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="brand"><div class="brand-mark small">A</div><div><strong>Android Agent</strong><span>管理控制台</span></div></div>
-      <nav>
-        <button class="nav-item active"><span class="nav-icon">⌘</span>账号与 Token</button>
+      <nav aria-label="管理导航">
+        <span class="nav-group-label">工作空间</span>
+        <button class="nav-item active" data-admin-view="accounts" aria-current="page"><span class="nav-icon">◎</span>账号与 Token</button>
+        <span class="nav-group-label">内容管理</span>
+        <button class="nav-item" data-admin-view="creative"><span class="nav-icon">▦</span>创意目录</button>
+        <button class="nav-item" data-admin-view="reviews"><span class="nav-icon">☑</span>审核队列</button>
+        <button class="nav-item" data-admin-view="reports"><span class="nav-icon">⚑</span>举报处理</button>
+        <button class="nav-item" data-admin-view="categories"><span class="nav-icon">⊞</span>分类与标签</button>
+        <button class="nav-item" data-admin-view="audit"><span class="nav-icon">◷</span>操作日志</button>
       </nav>
       <div class="sidebar-foot"><span class="status-dot"></span><span>控制面已连接</span><button id="logoutButton" class="text-button">退出</button></div>
     </aside>
 
-    <main class="main">
+    <main class="main" id="accountsView">
       <header class="topbar">
         <div><p class="eyebrow">CONTROL PLANE</p><h1>账号与 Token</h1></div>
-        <button id="createAccountButton" class="button primary"><span>＋</span> 新建账号</button>
+        <div class="topbar-actions"><button data-theme-toggle class="button ghost" type="button">切换主题</button><button id="createAccountButton" class="button primary"><span>＋</span> 新建账号</button></div>
       </header>
 
       <section class="metrics" aria-label="统计概览">
@@ -58,6 +66,7 @@
         </div>
       </section>
     </main>
+    <main id="studioView" class="main hidden"></main>
   </div>
 
   <aside id="detailDrawer" class="drawer hidden" aria-label="账号详情">
@@ -81,5 +90,6 @@
 
   <div id="toast" class="toast hidden" role="status"></div>
   <script src="./admin.js" defer></script>
+  <script src="./studio.js" defer></script>
 </body>
 </html>

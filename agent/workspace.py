@@ -15,6 +15,7 @@ from agent.database import TaskStore
 from agent.paths import DATA_DIR, validate_id, workspace_path
 from agent.project import load_project_meta
 from agent.safe_paths import resolve_workspace_path
+from agent.git_runner import run_git
 
 logger = logging.getLogger(__name__)
 
@@ -132,19 +133,13 @@ def _capture_manifest(workspace: Path, user_id: str) -> list[dict[str, Any]]:
 
 
 def _git_cmd(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    return run_git(repo_root, *args)
 
 
 def _parse_git_status(repo_root: Path) -> list[dict[str, str]]:
     proc = _git_cmd(repo_root, "status", "--porcelain=v1", "-uall")
     if proc.returncode != 0:
-        return []
+        raise RuntimeError(proc.stderr.strip() or "Git status failed")
     entries: list[dict[str, str]] = []
     for line in proc.stdout.splitlines():
         if len(line) < 4:
@@ -188,7 +183,9 @@ class WorkspaceRepository:
         self.workspace = workspace_path(self.user_id, self.project_id)
         meta = load_project_meta(self.user_id, self.project_id)
         repo_root = meta.get("repo_root")
-        self.repo_root = Path(repo_root) if repo_root else self.workspace
+        self.repo_root = Path(repo_root).resolve() if repo_root else self.workspace.resolve()
+        if self.repo_root != self.workspace.resolve():
+            raise PermissionError("Git 根目录必须属于当前项目")
         self.store = task_store or TaskStore()
         self._content_dir = _user_checkpoints_dir(self.user_id)
 
@@ -250,13 +247,7 @@ class WorkspaceRepository:
         elif not staged:
             args.append("HEAD")
         args.extend(["--", path or "."])
-        proc = subprocess.run(
-            args,
-            cwd=str(self.repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        proc = _git_cmd(self.repo_root, *args[1:])
         if proc.returncode != 0:
             return {
                 "ok": False,
@@ -957,7 +948,7 @@ class WorkspaceRepository:
 
     def _is_protected_path(self, rel: str) -> bool:
         parts = rel.split("/")
-        if parts[0] in {".git", ".gradle", "build"}:
+        if parts[0] in {".git", ".gradle", ".agent-home", "build"}:
             return True
         if rel in {"local.properties", ".agent-project.json"}:
             return True

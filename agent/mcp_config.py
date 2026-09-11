@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from typing import Any, Literal
 
 import agent.paths as paths
 from agent.paths import validate_id
+from agent.safe_paths import resolve_workspace_path
 from agent.redaction import REDACTED, redact_sensitive_value
 
 
@@ -34,6 +34,7 @@ class McpServerConfig:
     scope: ConfigScope = "user"
     # Raw env before secret resolution — never expose resolved secrets.
     env_refs: dict[str, str] = field(default_factory=dict)
+    credential_user_id: str | None = None
 
     def public_dict(self) -> dict[str, Any]:
         """Safe representation for API / events (no secrets)."""
@@ -57,7 +58,7 @@ def user_mcp_config_path(user_id: str) -> Path:
 
 
 def project_mcp_config_path(workspace: Path) -> Path:
-    return workspace / ".android-agent" / "mcp.json"
+    return resolve_workspace_path(workspace, ".android-agent/mcp.json")
 
 
 def project_mcp_trust_path(user_id: str, project_id: str) -> Path:
@@ -232,17 +233,31 @@ def save_project_mcp_config(workspace: Path, data: dict[str, Any]) -> Path:
     return path
 
 
-def resolve_env_secrets(env_refs: dict[str, str]) -> dict[str, str]:
-    """Resolve ${VAR} / $VAR references from the process environment at spawn time."""
+def resolve_env_secrets(env_refs: dict[str, str], *, user_id: str | None = None,
+                        server_name: str | None = None) -> dict[str, str]:
+    """Resolve only operator-provisioned credentials for this user AND server.
 
-    def repl(match: re.Match[str]) -> str:
-        key = match.group(1) or match.group(2)
-        return os.environ.get(key, "")
-
-    resolved: dict[str, str] = {}
-    for key, value in env_refs.items():
-        resolved[key] = _ENV_REF_RE.sub(repl, value)
-    return resolved
+    data/users/{user}/mcp-secrets.json is outside the workspace, is never
+    exposed by config APIs, and has shape {"servers": {"server": {"REF": "value"}}}.
+    The service environment is deliberately never consulted.
+    """
+    if not any(_ENV_REF_RE.search(value) for value in env_refs.values()):
+        return dict(env_refs)
+    if not user_id or not server_name:
+        raise PermissionError("MCP 凭据缺少用户和服务器授权")
+    path = resolve_workspace_path(paths.DATA_DIR, f"users/{validate_id(user_id)}/mcp-secrets.json")
+    try:
+        granted = json.loads(path.read_text())["servers"][_validate_server_name(server_name)]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise PermissionError("尚未为此用户和 MCP 服务器配置凭据") from None
+    if not isinstance(granted, dict):
+        raise PermissionError("MCP 凭据授权格式无效")
+    def substitute(match: re.Match) -> str:
+        ref = match.group(1) or match.group(2)
+        if not isinstance(granted.get(ref), str):
+            raise PermissionError("MCP 凭据引用未获得授权")
+        return granted[ref]
+    return {key: _ENV_REF_RE.sub(substitute, value) for key, value in env_refs.items()}
 
 
 def public_env_preview(env_refs: dict[str, str]) -> dict[str, str]:
@@ -279,6 +294,7 @@ def project_config_fingerprint(workspace: Path) -> str:
             arg_path = Path(arg)
             candidate = arg_path if arg_path.is_absolute() else base / arg_path
             if candidate.is_file():
+                candidate.resolve().relative_to(workspace.resolve())
                 candidates.append(candidate)
         for executable in sorted({item.resolve() for item in candidates}, key=str):
             digest.update(b"\0file\0")

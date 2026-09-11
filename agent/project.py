@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -160,13 +159,8 @@ def list_projects(user_id: str) -> list[dict]:
 def _git_branch_at(path: Path) -> str | None:
     if not (path / ".git").is_dir():
         return None
-    proc = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=str(path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    from agent.git_runner import run_git
+    proc = run_git(path, "rev-parse", "--abbrev-ref", "HEAD")
     if proc.returncode != 0:
         return None
     return proc.stdout.strip() or None

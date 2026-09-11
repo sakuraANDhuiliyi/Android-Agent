@@ -21,6 +21,19 @@
             android:background="?attr/colorSurface" />
 
         <TextView
+            android:id="@+id/textDeliveryStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_banner_info"
+            android:padding="12dp"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/btnContextInspector"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

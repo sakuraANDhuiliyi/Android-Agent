@@ -17,6 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bubblewrap \
         ca-certificates \
         curl \
         git \
@@ -47,7 +48,12 @@ COPY requirements.txt requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
-RUN mkdir -p /data/data /data/workspaces /data/builds /data/gradle-cache
+RUN groupadd --gid 10001 agent \
+    && useradd --uid 10001 --gid agent --create-home agent \
+    && mkdir -p /data/data /data/workspaces /data/builds /data/gradle-cache \
+    && chown -R agent:agent /data
+
+USER agent
 
 EXPOSE 8000
 

@@ -26,6 +26,12 @@ class ApkActivity : AppCompatActivity() {
     private var projectId: String = ""
     private var jobId: String? = null
     private var downloadedApk: File? = null
+    private lateinit var accountScope: String
+    private lateinit var cacheFile: File
+
+    private fun requireCurrentAccount() {
+        check(prefs.apiToken.isNotBlank() && accountScope == ApkCache.accountScope(prefs.serverUrl, prefs.userId)) { "账号已切换，请重新打开 APK 页面" }
+    }
 
     private val installPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -41,17 +47,19 @@ class ApkActivity : AppCompatActivity() {
         projectId = intent.getStringExtra(EXTRA_PROJECT_ID).orEmpty()
         jobId = intent.getStringExtra(EXTRA_JOB_ID)
         val hasApk = intent.getBooleanExtra(EXTRA_HAS_APK, false)
-        if (projectId.isBlank() || prefs.apiToken.isBlank()) {
+        if (projectId.isBlank() || prefs.apiToken.isBlank() || prefs.userId.isBlank()) {
             toast(getString(R.string.resource_unavailable))
             finish()
             return
         }
+        accountScope = ApkCache.accountScope(prefs.serverUrl, prefs.userId)
+        cacheFile = ApkCache.file(cacheDir, prefs.serverUrl, prefs.userId, projectId, jobId)
         api = AgentApi(prefs.serverUrl, prefs.apiToken)
         binding.toolbar.title = getString(R.string.apk_details)
         binding.toolbar.setNavigationIcon(android.R.drawable.ic_menu_close_clear_cancel)
         binding.toolbar.setNavigationOnClickListener { finish() }
         binding.textApkStatus.text = if (hasApk) getString(R.string.apk_downloaded) else getString(R.string.apk_not_ready)
-        binding.bannerVerified.visibility = if (hasApk) android.view.View.VISIBLE else android.view.View.GONE
+        binding.bannerVerified.visibility = android.view.View.GONE
         binding.btnDownloadApk.setOnClickListener { download() }
         binding.btnInstallApk.setOnClickListener { requestInstallPermissionIfNeeded() }
         binding.btnShareApk.setOnClickListener { share() }
@@ -61,11 +69,8 @@ class ApkActivity : AppCompatActivity() {
             else BuildLogActivity.start(this, id)
         }
         // Restore previously downloaded APK if present.
-        val existing = File(cacheDir, "apk/${projectId}.apk")
+        val existing = cacheFile
         if (existing.exists()) {
-            downloadedApk = existing
-            binding.textApkStatus.text = getString(R.string.apk_verified)
-            binding.bannerVerified.visibility = android.view.View.VISIBLE
             renderApkMeta(existing)
         }
     }
@@ -74,26 +79,25 @@ class ApkActivity : AppCompatActivity() {
         binding.btnDownloadApk.isEnabled = false
         lifecycleScope.launch {
             try {
-                val dest = File(cacheDir, "apk/${projectId}.apk")
+                requireCurrentAccount()
+                val dest = cacheFile
                 withContext(Dispatchers.IO) {
                     val jid = jobId
                     if (!jid.isNullOrBlank()) {
-                        try {
-                            api.downloadJobApk(jid, dest)
-                        } catch (_: Exception) {
-                            api.downloadApk(projectId, dest)
-                        }
+                        api.downloadJobApk(jid, dest)
                     } else {
                         api.downloadApk(projectId, dest)
                     }
                 }
-                downloadedApk = dest
-                binding.textApkStatus.text = getString(R.string.apk_verified)
-                binding.bannerVerified.visibility = android.view.View.VISIBLE
-                binding.btnDownloadApk.setText(R.string.download_verify_done)
+                requireCurrentAccount()
                 renderApkMeta(dest)
                 toast(getString(R.string.apk_downloaded))
             } catch (e: Exception) {
+                if (runCatching { requireCurrentAccount() }.isFailure) {
+                    // A download may finish after logout removed the account directory.
+                    cacheFile.delete()
+                    File("${cacheFile.absolutePath}.sha256").delete()
+                }
                 val msg = when (e) {
                     is ApiException -> if (e.isNotFound || e.isForbidden) getString(R.string.resource_unavailable) else e.message
                     else -> e.message
@@ -108,12 +112,16 @@ class ApkActivity : AppCompatActivity() {
 
     private fun renderApkMeta(apk: java.io.File) {
         lifecycleScope.launch {
-            val sha = withContext(Dispatchers.IO) { ApkVerifier.digestFile(apk) }
-            binding.textSha.text = sha
             val identity = runCatching {
                 withContext(Dispatchers.IO) { ApkVerifier.inspect(this@ApkActivity, apk) }
             }.getOrNull()
-            if (identity != null) {
+            val sha = identity?.sha256.orEmpty()
+            binding.textSha.text = sha
+            if (identity != null && runCatching { requireCurrentAccount() }.isSuccess) {
+                downloadedApk = apk
+                binding.textApkStatus.text = getString(R.string.apk_verified)
+                binding.bannerVerified.visibility = android.view.View.VISIBLE
+                binding.btnDownloadApk.setText(R.string.download_verify_done)
                 binding.textApkName.text = "${identity.packageName}.apk"
                 binding.textApkMeta.text = buildString {
                     append(getString(R.string.package_name)).append("：").append(identity.packageName).append('\n')
@@ -123,6 +131,9 @@ class ApkActivity : AppCompatActivity() {
                 }
                 binding.textSignature.text = "${getString(R.string.apk_signature)} · ${getString(R.string.apk_valid)}"
             } else {
+                downloadedApk = null
+                binding.bannerVerified.visibility = android.view.View.GONE
+                binding.textApkStatus.text = "APK 校验失败，请重新下载"
                 binding.textApkMeta.text = getString(
                     R.string.apk_ready_summary,
                     apk.length() / 1024,
@@ -133,6 +144,7 @@ class ApkActivity : AppCompatActivity() {
     }
 
     private fun requestInstallPermissionIfNeeded() {
+        if (runCatching { requireCurrentAccount() }.isFailure) { toast("请重新登录后打开 APK 页面"); return }
         if (downloadedApk == null) {
             toast("请先下载 APK")
             return
@@ -149,6 +161,7 @@ class ApkActivity : AppCompatActivity() {
     }
 
     private fun installDownloadedApk() {
+        if (runCatching { requireCurrentAccount() }.isFailure) { toast("请重新登录后打开 APK 页面"); return }
         val apk = downloadedApk ?: return
         lifecycleScope.launch {
             // 整包 SHA-256 校验必须离开主线程，大 APK 会卡 UI 甚至 ANR
@@ -177,6 +190,7 @@ class ApkActivity : AppCompatActivity() {
     }
 
     private fun launchApkInstaller(apk: File) {
+        if (runCatching { requireCurrentAccount() }.isFailure || !apk.isFile) { toast("请重新登录后打开 APK 页面"); return }
         val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
@@ -187,6 +201,7 @@ class ApkActivity : AppCompatActivity() {
     }
 
     private fun share() {
+        if (runCatching { requireCurrentAccount() }.isFailure) { toast("请重新登录后打开 APK 页面"); return }
         val apk = downloadedApk ?: run {
             toast("请先下载 APK")
             return

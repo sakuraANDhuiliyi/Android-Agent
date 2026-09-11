@@ -31,6 +31,7 @@ def settings() -> Settings:
         api_token="",
         users=[],
         registration_enabled=True,
+        guest_sessions_enabled=True,
         minimum_free_disk_bytes=0,
     )
 
@@ -58,7 +59,7 @@ class AccountApiTests(unittest.TestCase):
                 TestClient(app) as client,
             ):
                 first = client.post("/api/auth/guest", json=payload)
-                second = client.post("/api/auth/guest", json=payload)
+                second = client.post("/api/auth/guest", json=payload, headers={"Authorization": f"Bearer {first.json()['token']}"})
 
             self.assertEqual(first.status_code, 201, first.text)
             self.assertEqual(second.status_code, 201, second.text)
