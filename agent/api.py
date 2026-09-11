@@ -935,7 +935,7 @@ def create_app(
     @app.post("/api/auth/guest", status_code=201)
     def create_guest_session(body: GuestSessionRequest, request: Request,
                              authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-        if not settings.guest_sessions_enabled or not settings.registration_enabled or settings.email_verification_required:
+        if not settings.guest_sessions_enabled:
             raise HTTPException(status_code=404, detail="游客体验未启用，请登录账号")
         try:
             host = request.client.host if request.client else "unknown"

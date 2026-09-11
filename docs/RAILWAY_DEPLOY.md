@@ -59,6 +59,7 @@ SQLite + Volume 模式不要开启多副本或跨区域部署。需要水平扩�
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=你的模型供应商Key
 AGENT_REGISTRATION_ENABLED=true
+AGENT_GUEST_SESSIONS_ENABLED=true
 AGENT_EMAIL_VERIFICATION_REQUIRED=false
 AGENT_ADMIN_UI_ENABLED=false
 ```
@@ -66,6 +67,7 @@ AGENT_ADMIN_UI_ENABLED=false
 注意：
 
 - 不需要设置 `PORT`，Railway 会自动注入。
+- 游客会话由 `AGENT_GUEST_SESSIONS_ENABLED` 独立控制，无需开放普通账号注册。
 - 不要把本机 `config.yaml` 中的真实 Key 提交或复制到 Docker 镜像。
 - 选择 Anthropic 时将 `AGENT_PROVIDER=anthropic`，并把相应 Key 放在 `AGENT_API_KEY`。
 - Variables 的修改需要在 Railway 中确认并 Deploy 才会生效。

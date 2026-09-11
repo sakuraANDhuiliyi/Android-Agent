@@ -88,15 +88,21 @@ def test_new_guest_devices_share_persistent_daily_budget(store):
     assert error.value.code == "guest_global_quota_exhausted"
 
 
-@pytest.mark.parametrize("overrides", [
-    {"guest_sessions_enabled": False},
-    {"registration_enabled": False},
-    {"email_verification_required": True},
-])
-def test_guest_endpoint_respects_deployment_policy(tmp_path, store, overrides):
-    app = create_app(replace(settings(), **overrides), user_store=store, task_store=TaskStore(tmp_path / "tasks.db"))
+def test_guest_endpoint_respects_deployment_policy(tmp_path, store):
+    app = create_app(replace(settings(), guest_sessions_enabled=False), user_store=store, task_store=TaskStore(tmp_path / "tasks.db"))
     with TestClient(app) as client:
         assert client.post("/api/auth/guest", json={"device": {"device_id": "phone", "device_name": "Phone"}}).status_code == 404
+
+
+def test_guest_policy_is_independent_from_account_registration(tmp_path, store):
+    app = create_app(
+        replace(settings(), registration_enabled=False, email_verification_required=True, guest_sessions_enabled=True),
+        user_store=store,
+        task_store=TaskStore(tmp_path / "tasks.db"),
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/auth/guest", json={"device": {"device_id": "phone", "device_name": "Phone"}})
+    assert response.status_code == 201, response.text
 
 
 def test_guests_cannot_write_or_enter_terminals(tmp_path, store):

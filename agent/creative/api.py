@@ -49,6 +49,9 @@ class CatalogCapabilities(Model):
 def install_creative_routes(app: FastAPI, settings, current_admin, current_identity) -> None:
     store = CommunityStore(app.state.task_store.db_path)
     app.state.creative_store = store
+    if settings.creative_catalog_enabled and settings.creative_bootstrap_builtins and not store.has_items():
+        from .seed import import_builtins
+        import_builtins(store, "system:bootstrap", publish=True)
 
     async def creative_error(_request: Request, exc: CreativeError):
         return JSONResponse(status_code=exc.status, content=build_error_body(exc.status, exc.message, code=exc.code))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +38,30 @@ def settings() -> Settings:
 
 
 class AccountApiTests(unittest.TestCase):
+    def test_guest_session_does_not_require_public_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = replace(
+                settings(),
+                registration_enabled=False,
+                email_verification_required=True,
+                guest_sessions_enabled=True,
+            )
+            app = create_app(
+                config,
+                user_store=UserStore(root / "users.db"),
+                task_store=TaskStore(root / "agent.db"),
+            )
+            payload = {"device": {"device_id": "guest-only", "device_name": "Guest Only", "device_type": "android"}}
+            with (
+                patch("agent.api.user_workspaces_dir", side_effect=lambda user: root / "workspaces" / user),
+                patch("agent.api.user_builds_dir", side_effect=lambda user: root / "builds" / user),
+                TestClient(app) as client,
+            ):
+                response = client.post("/api/auth/guest", json=payload)
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertTrue(response.json()["account"]["is_guest"])
+
     def test_guest_session_is_stable_and_quota_is_server_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

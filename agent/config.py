@@ -105,6 +105,7 @@ class Settings:
     admin_ui_enabled: bool = False
     admin_token: str = ""
     creative_catalog_enabled: bool = True
+    creative_bootstrap_builtins: bool = False
     creative_submissions_enabled: bool = False
     ws_ticket_ttl_seconds: int = 30
     max_request_bytes: int = 2 * 1024 * 1024
@@ -255,6 +256,7 @@ def _build_settings(
         debug_web_ui_enabled=bool(shared.get("debug_web_ui_enabled", True)),
         admin_ui_enabled=bool(shared.get("admin_ui_enabled", False)),
         creative_catalog_enabled=bool(shared.get("creative_catalog_enabled", True)),
+        creative_bootstrap_builtins=bool(shared.get("creative_bootstrap_builtins", False)),
         creative_submissions_enabled=bool(shared.get("creative_submissions_enabled", False)),
         admin_token=str(shared.get("admin_token", "") or ""),
         ws_ticket_ttl_seconds=int(shared.get("ws_ticket_ttl_seconds", 30)),
@@ -475,6 +477,7 @@ def load_settings() -> Settings:
             name="debug_web_ui_enabled",
         ),
         "creative_catalog_enabled": _env_bool("AGENT_CREATIVE_CATALOG_ENABLED", _as_bool(file_data.get("creative_catalog_enabled", True), name="creative_catalog_enabled")),
+        "creative_bootstrap_builtins": _env_bool("AGENT_CREATIVE_BOOTSTRAP_BUILTINS", _as_bool(file_data.get("creative_bootstrap_builtins", False), name="creative_bootstrap_builtins")),
         "creative_submissions_enabled": _env_bool("AGENT_CREATIVE_SUBMISSIONS_ENABLED", _as_bool(file_data.get("creative_submissions_enabled", False), name="creative_submissions_enabled")),
         "admin_ui_enabled": _env_bool(
             "AGENT_ADMIN_UI_ENABLED",

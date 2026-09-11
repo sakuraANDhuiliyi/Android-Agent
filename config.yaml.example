@@ -33,7 +33,7 @@ server_port: 8000
 # 也可通过环境变量 AGENT_REGISTRATION_TOKEN 提供注册密钥。
 registration_enabled: false
 
-# 游客体验默认关闭；还要求 registration_enabled=true 且未强制邮箱验证。
+# 游客体验默认关闭，可独立于普通账号注册和邮箱验证启用。
 # 游客仅允许只读问答，不开放终端、MCP、文件修改和任务恢复。
 guest_sessions_enabled: false
 guest_message_limit: 3
@@ -63,6 +63,8 @@ debug_web_ui_enabled: true
 admin_ui_enabled: false
 # 服务端创意目录（后台入口 /admin/ 的“创意目录”）。
 creative_catalog_enabled: true
+# 空数据库首次启动时是否自动导入并发布内置创意；已有任何创意时不会执行。
+creative_bootstrap_builtins: false
 # 用户投稿：开启前启用管理员后台并完成创意/账号备份恢复演练。
 # 也可通过 AGENT_CREATIVE_SUBMISSIONS_ENABLED=true 开启，修改后重启服务。
 # 关闭只暂停新投稿；本机/云端草稿、撤回、已有审核与消息仍可使用。

@@ -122,6 +122,10 @@ class CreativeStore:
         finally:
             db.close()
 
+    def has_items(self) -> bool:
+        with self.connection() as db:
+            return db.execute("SELECT 1 FROM creatives LIMIT 1").fetchone() is not None
+
     @staticmethod
     def _item(db, item_id, expected=None):
         item = db.execute("SELECT * FROM creatives WHERE id=?", (item_id,)).fetchone()

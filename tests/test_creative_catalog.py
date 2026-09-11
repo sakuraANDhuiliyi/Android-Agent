@@ -125,6 +125,17 @@ def test_seed_import_is_complete_and_does_not_restore_hidden_items(store):
     assert store.admin_detail(item["id"])["distribution_state"] == "admin_blocked"
 
 
+def test_empty_catalog_can_bootstrap_builtins_for_deployment(tmp_path):
+    config = replace(settings(), creative_bootstrap_builtins=True)
+    task_store = TaskStore(tmp_path / "agent.db")
+    app = create_app(config, user_store=UserStore(tmp_path / "users.db"), task_store=task_store)
+    with TestClient(app) as http:
+        page = http.get("/api/creative/items", params={"limit": 100})
+    assert page.status_code == 200, page.text
+    assert 6 <= len(page.json()["items"]) <= 100
+    assert all(item["origin"] == "official" for item in page.json()["items"])
+
+
 @pytest.fixture
 def client(tmp_path):
     config = replace(settings(), admin_ui_enabled=True, admin_token="test-admin-token-for-creative-catalog")
