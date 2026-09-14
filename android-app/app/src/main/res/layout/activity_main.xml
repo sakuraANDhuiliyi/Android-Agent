@@ -52,7 +52,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:contentDescription="@string/app_name"
-                android:src="@drawable/ic_auth_sparkle" />
+                android:src="@drawable/ic_auth_sparkle"
+                app:tint="?attr/colorOnPrimary" />
         </FrameLayout>
 
         <TextView
@@ -97,7 +98,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnPasswordMode"
-                style="@style/Widget.AndroidAgent.Button.Tonal"
+                style="@style/Widget.AndroidAgent.Button.Segment"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -105,7 +106,7 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnCodeMode"
-                style="@style/Widget.AndroidAgent.Button.Tonal"
+                style="@style/Widget.AndroidAgent.Button.Segment"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"

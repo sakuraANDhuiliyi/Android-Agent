@@ -148,7 +148,7 @@ fun Context.theoAgentTimeline(entries: List<TheoTimelineEntry>): View {
             TheoEventStatus.FAILED -> p.failed
         }
         val dot = View(this)
-        dot.background = TheoUi.roundedBg(dotColor, TheoTokens.RADIUS_FULL)
+        dot.background = TheoUi.roundedBg(this, dotColor, TheoTokens.RADIUS_FULL)
         dot.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 8f), TheoUi.dp(this, 8f))
         rail.addView(dot)
         if (idx < entries.size - 1) {
@@ -182,7 +182,7 @@ fun Context.theoAgentProfile(name: String, role: String, model: String? = null):
     val p = theoPalette()
     val row = theoRow(gap = 3f)
     val avatar = LinearLayout(this)
-    avatar.background = TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_FULL)
+    avatar.background = TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_FULL)
     val av = theoText(name.take(1).uppercase(), TheoType.BODY, p.primaryForeground)
     av.gravity = Gravity.CENTER
     avatar.addView(av)

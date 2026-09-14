@@ -28,11 +28,11 @@ object TheoUi {
         Math.round(v * context.resources.displayMetrics.scaledDensity)
 
     /** Rounded background drawable from token radius values (negative = full). */
-    fun roundedBg(color: Int, radiusDp: Float, strokeColor: Int? = null, strokeDp: Float = 1f): GradientDrawable {
+    fun roundedBg(context: Context, color: Int, radiusDp: Float, strokeColor: Int? = null, strokeDp: Float = 1f): GradientDrawable {
         val d = GradientDrawable()
         d.setColor(color)
-        d.cornerRadius = if (radiusDp < 0f) 999f else radiusDp
-        if (strokeColor != null) d.setStroke(Math.round(strokeDp), strokeColor)
+        d.cornerRadius = if (radiusDp < 0f) 999f else dp(context, radiusDp).toFloat()
+        if (strokeColor != null) d.setStroke(dp(context, strokeDp), strokeColor)
         return d
     }
 
@@ -47,9 +47,11 @@ object TheoUi {
 
     fun applyType(tv: TextView, context: Context, type: TheoType) {
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, type.sizeSp)
-        tv.setLineSpacing(0f, type.lineMult - 1f)
+        tv.setLineSpacing(0f, type.lineMult)
         tv.letterSpacing = type.trackingEm
-        tv.typeface = if (type.mono) Typeface.MONOSPACE else Typeface.create("sans-serif", type.weight)
+        tv.typeface = if (type.mono) Typeface.MONOSPACE else if (android.os.Build.VERSION.SDK_INT >= 28) {
+            Typeface.create(Typeface.SANS_SERIF, type.weight, false)
+        } else Typeface.create(if (type.weight >= 500) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
         tv.includeFontPadding = false
     }
 
@@ -160,10 +162,11 @@ fun Context.theoCard(
     val p = theoPalette()
     val ll = LinearLayout(this)
     ll.orientation = LinearLayout.VERTICAL
-    ll.background = TheoUi.roundedBg(
+    ll.background = TheoUi.roundedBg(this,
         bg ?: p.card,
         radiusDp,
         if (stroke) p.border else null,
+        1f,
     )
     val pad = TheoUi.dp(this, paddingUnits * 4f)
     ll.setPadding(pad, pad, pad, pad)
@@ -222,7 +225,7 @@ fun Context.theoButton(
     tv.text = label
     tv.setTextColor(fg)
     tv.gravity = Gravity.CENTER
-    tv.background = TheoUi.roundedBg(bg, TheoTokens.RADIUS_MD, stroke)
+    tv.background = TheoUi.roundedBg(this, bg, 26f, stroke, 1f)
     val vpad = if (small) 4f else 7f
     val hpad = if (small) 10f else 14f
     tv.setPadding(TheoUi.dp(this, hpad), TheoUi.dp(this, vpad), TheoUi.dp(this, hpad), TheoUi.dp(this, vpad))
@@ -242,6 +245,9 @@ fun Context.theoButton(
         row.isClickable = true
         row
     } else tv
+    wrap.minimumHeight = TheoUi.dp(this, if (small) 48f else 52f)
+    wrap.minimumWidth = TheoUi.dp(this, 48f)
+    wrap.isFocusable = true
     if (onClick != null) wrap.setOnClickListener { onClick() }
     return wrap
 }
@@ -251,9 +257,9 @@ fun Context.theoProgressBar(fraction: Float, tone: TheoTone = TheoTone.PRIMARY, 
     val p = theoPalette()
     val frame = FrameLayout(this)
     val track = View(this)
-    track.background = TheoUi.roundedBg(p.muted, TheoTokens.RADIUS_FULL)
+    track.background = TheoUi.roundedBg(this, p.muted, TheoTokens.RADIUS_FULL)
     val fill = View(this)
-    fill.background = TheoUi.roundedBg(p.tone(tone), TheoTokens.RADIUS_FULL)
+    fill.background = TheoUi.roundedBg(this, p.tone(tone), TheoTokens.RADIUS_FULL)
     val h = TheoUi.dp(this, heightDp)
     frame.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h)
     track.layoutParams = FrameLayout.LayoutParams(

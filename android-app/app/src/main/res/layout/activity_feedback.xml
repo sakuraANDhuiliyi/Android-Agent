@@ -6,19 +6,30 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="16dp" android:orientation="vertical">
             <TextView android:id="@+id/textStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/loading" android:textAppearance="?attr/textAppearanceHeadlineSmall" android:accessibilityLiveRegion="polite" />
             <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" app:cardElevation="0dp" app:strokeWidth="1dp" app:strokeColor="?attr/colorOutlineVariant">
-                <TextView android:id="@+id/textSummary" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="20dp" android:textAppearance="?attr/textAppearanceBodyLarge" android:lineSpacingExtra="6dp" android:textIsSelectable="true" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_duration" />
+                    <TextView android:id="@+id/textSummary" style="@style/Widget.AndroidAgent.MetricValue" />
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_tasks" android:layout_marginTop="20dp" />
+                    <TextView android:id="@+id/textTaskMetrics" style="@style/Widget.AndroidAgent.MetricValue" />
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_warnings" android:layout_marginTop="20dp" />
+                    <TextView android:id="@+id/textWarningMetrics" style="@style/Widget.AndroidAgent.MetricValue" />
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/workspace_tests" android:layout_marginTop="20dp" />
+                    <TextView android:id="@+id/textTestMetrics" style="@style/Widget.AndroidAgent.MetricValue" />
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_artifact" android:layout_marginTop="20dp" />
+                    <TextView android:id="@+id/textArtifactMetrics" style="@style/Widget.AndroidAgent.MetricValue" />
+                </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
             <com.google.android.material.button.MaterialButton android:id="@+id/btnArtifact" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_install" android:visibility="gone" />
             <com.google.android.material.button.MaterialButton android:id="@+id/btnRawLog" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_raw_log" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="@string/feedback_options" android:textAppearance="?attr/textAppearanceTitleMedium" />
-            <com.google.android.material.switchmaterial.SwitchMaterial android:id="@+id/switchBuild" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_build" />
-            <com.google.android.material.switchmaterial.SwitchMaterial android:id="@+id/switchTests" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_tests" />
-            <com.google.android.material.switchmaterial.SwitchMaterial android:id="@+id/switchFix" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_fix" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/switchBuild" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_build" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/switchTests" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_tests" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/switchFix" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="@string/feedback_auto_fix" />
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_limit_hint" android:textAppearance="?attr/textAppearanceBodySmall" />
-            <com.google.android.material.button.MaterialButton android:id="@+id/btnSaveOptions" style="@style/Widget.AndroidAgent.Button.Outlined" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/save" />
-            <com.google.android.material.button.MaterialButton android:id="@+id/btnRunBuild" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_run" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnSaveOptions" android:layout_marginTop="8dp" style="@style/Widget.AndroidAgent.Button.Outlined" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/save" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnRunBuild" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_run" />
             <TextView android:id="@+id/textProblemsTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/feedback_problems" android:textAppearance="?attr/textAppearanceTitleLarge" />
-            <com.google.android.material.button.MaterialButton android:id="@+id/btnFixAll" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_fix_all" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnFixAll" android:layout_marginTop="8dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_fix_all" />
             <com.google.android.material.button.MaterialButton android:id="@+id/btnRuntime" style="@style/Widget.AndroidAgent.Button.Text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/feedback_add_runtime" />
             <LinearLayout android:id="@+id/layoutProblems" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
         </LinearLayout>

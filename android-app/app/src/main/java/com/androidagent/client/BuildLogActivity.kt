@@ -38,7 +38,7 @@ class BuildLogActivity : AppCompatActivity() {
         prefs = AgentPrefs(this)
         jobId = intent.getStringExtra(EXTRA_JOB_ID).orEmpty()
         binding.toolbar.title = getString(R.string.build_and_logs)
-        binding.toolbar.setNavigationIcon(android.R.drawable.ic_menu_close_clear_cancel)
+        binding.toolbar.setNavigationIcon(R.drawable.ic_arrow_back)
         binding.toolbar.setNavigationOnClickListener { finish() }
         if (jobId.isBlank() || prefs.apiToken.isBlank()) {
             toast(getString(R.string.resource_unavailable))

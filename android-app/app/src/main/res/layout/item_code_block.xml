@@ -28,8 +28,8 @@
             android:id="@+id/btnCopyCode"
             style="@style/Widget.AndroidAgent.Button.Text"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:icon="@drawable/ic_copy"
+            android:layout_height="wrap_content"
+            android:drawableStart="@drawable/ic_copy"
             android:minWidth="48dp"
             android:text="@string/copy" />
     </LinearLayout>
@@ -49,6 +49,9 @@
             android:textColor="?attr/colorOnSurface"
             android:textIsSelectable="true"
             android:textSize="@dimen/code_text_size"
+            android:lineSpacingMultiplier="1.5"
+            android:paddingTop="8dp"
+            android:paddingBottom="12dp"
             tools:text="fun main() {\n    println()\n}" />
     </HorizontalScrollView>
 
@@ -56,7 +59,7 @@
         android:id="@+id/btnToggleCode"
         style="@style/Widget.AndroidAgent.Button.Text"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="wrap_content"
         android:text="@string/code_block_expand"
         android:visibility="gone"
         tools:visibility="visible" />

@@ -8,9 +8,9 @@
     android:layout_marginTop="@dimen/space_small"
     android:layout_marginEnd="@dimen/screen_margin"
     android:layout_marginBottom="@dimen/space_small"
-    app:cardBackgroundColor="?attr/colorSurface"
+    app:cardBackgroundColor="@color/projects_card_surface"
     app:cardCornerRadius="@dimen/radius_card"
-    app:cardElevation="2dp"
+    app:cardElevation="0dp"
     app:strokeColor="?attr/colorOutlineVariant"
     app:strokeWidth="1dp">
 

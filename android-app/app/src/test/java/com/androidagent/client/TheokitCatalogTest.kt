@@ -182,11 +182,11 @@ class TheokitCatalogTest {
             assertNotEquals(p.background, p.foreground)
             assertNotEquals(p.primary, p.mutedForeground)
             if (dark) {
-                assertEquals(0xFF101318.toInt(), p.background)
-                assertEquals(0xFF7598FF.toInt(), p.primary)
+                assertEquals(0xFF111210.toInt(), p.background)
+                assertEquals(0xFFF1F2EC.toInt(), p.primary)
             } else {
-                assertEquals(0xFFFFFFFF.toInt(), p.background)
-                assertEquals(0xFF2563EB.toInt(), p.primary)
+                assertEquals(0xFFF7F7F5.toInt(), p.background)
+                assertEquals(0xFF20211F.toInt(), p.primary)
             }
         }
         assertPalette(TheoTokens.LIGHT, dark = false)

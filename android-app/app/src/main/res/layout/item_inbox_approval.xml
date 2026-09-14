@@ -8,7 +8,7 @@
     android:layout_marginBottom="@dimen/space_small"
     android:clickable="true"
     android:focusable="true"
-    app:cardBackgroundColor="?attr/colorSurface"
+    app:cardBackgroundColor="@color/projects_card_surface"
     app:cardCornerRadius="@dimen/radius_card"
     app:cardElevation="0dp"
     app:strokeColor="?attr/colorOutlineVariant"

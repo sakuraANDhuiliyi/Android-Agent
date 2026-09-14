@@ -42,6 +42,7 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
         binding.rowNotifications.root.setOnClickListener { NotificationSettingsActivity.start(requireContext()) }
         binding.rowPermissions.root.setOnClickListener { PermissionsActivity.start(requireContext()) }
         binding.rowAbout.root.setOnClickListener { AboutActivity.start(requireContext()) }
+        binding.rowAppearance.root.setOnClickListener { startActivity(android.content.Intent(requireContext(), AppearanceActivity::class.java)) }
     }
 
     override fun onResume() {
@@ -110,6 +111,7 @@ class MeFragment : Fragment(), MainNavActivity.Refreshable {
         binding.rowNotifications.textRowTitle.setText(R.string.row_notifications)
         binding.rowPermissions.textRowTitle.setText(R.string.row_permissions)
         binding.rowAbout.textRowTitle.setText(R.string.row_about)
+        binding.rowAppearance.textRowTitle.setText(R.string.soft_appearance)
     }
 
     override fun onDestroyView() {

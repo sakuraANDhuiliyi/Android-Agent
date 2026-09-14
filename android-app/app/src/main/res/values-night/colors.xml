@@ -1,31 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Signal Workbench palette (dark) -->
-    <color name="signal_primary">#FF7598FF</color>
-    <color name="signal_on_primary">#FF101B35</color>
-    <color name="signal_primary_container">#FF1E3768</color>
-    <color name="signal_on_primary_container">#FFD6E2FF</color>
-    <color name="signal_secondary">#FFA3AAB5</color>
+    <color name="signal_primary">#FFF1F2EC</color>
+    <color name="signal_on_primary">#FF20211F</color>
+    <color name="signal_primary_container">#FF252822</color>
+    <color name="signal_on_primary_container">#FFF1F2EC</color>
+    <color name="signal_secondary">#FFB1B6A9</color>
     <color name="signal_on_secondary">#FF20242C</color>
-    <color name="signal_secondary_container">#FF262C36</color>
-    <color name="signal_on_secondary_container">#FFE3E6EB</color>
-    <color name="signal_tertiary">#FF56D6C9</color>
+    <color name="signal_secondary_container">#FF252822</color>
+    <color name="signal_on_secondary_container">#FFF1F2EC</color>
+    <color name="signal_tertiary">#FFA8CFB3</color>
     <color name="signal_on_tertiary">#FF003733</color>
-    <color name="signal_surface_dim">#FF15181D</color>
-    <color name="signal_surface">#FF101318</color>
-    <color name="signal_surface_variant">#FF1E242E</color>
-    <color name="signal_on_surface">#FFE8ECF2</color>
-    <color name="signal_on_surface_variant">#FFA5AFBF</color>
-    <color name="signal_outline">#FF414C5B</color>
-    <color name="signal_outline_variant">#FF2B3340</color>
-    <color name="signal_navigation">#FF171B22</color>
+    <color name="signal_surface_dim">#FF252822</color>
+    <color name="signal_surface">#FF111210</color>
+    <color name="signal_surface_variant">#FF252822</color>
+    <color name="signal_on_surface">#FFF1F2EC</color>
+    <color name="signal_on_surface_variant">#FFB1B6A9</color>
+    <color name="signal_outline">#FF62695C</color>
+    <color name="signal_outline_variant">#FF363B31</color>
+    <color name="signal_navigation">#FF111210</color>
     <color name="signal_error">#FFF28B82</color>
     <color name="signal_on_error">#FF3B0A08</color>
     <color name="signal_error_container">#FF3A2220</color>
     <color name="signal_on_error_container">#FFF28B82</color>
 
     <!-- Status / semantic (dark) -->
-    <color name="status_running">#FF8AB4F8</color>
+    <color name="status_running">#FFB1B6A9</color>
     <color name="status_success">#FF81C995</color>
     <color name="status_failed">#FFF28B82</color>
     <color name="status_warning">#FFFDD663</color>
@@ -35,39 +35,39 @@
     <color name="badge_pending_bg">#33FDD663</color>
     <color name="badge_apk_bg">#332EA043</color>
     <color name="badge_apk_text">#FF81C995</color>
-    <color name="badge_running_bg">#33256BFF</color>
+    <color name="badge_running_bg">#FF252822</color>
     <color name="banner_warning_bg">#332E2000</color>
     <color name="banner_warning_text">#FFFDD663</color>
     <color name="banner_error_bg">#33F28B82</color>
     <color name="banner_error_text">#FFF28B82</color>
-    <color name="banner_info_bg">#331E3768</color>
-    <color name="banner_info_text">#FF8EB1FF</color>
+    <color name="banner_info_bg">#FF252822</color>
+    <color name="banner_info_text">#FFB1B6A9</color>
     <color name="banner_success_bg">#332EA043</color>
     <color name="banner_success_text">#FF81C995</color>
     <color name="diff_add_bg">#332EA043</color>
     <color name="diff_del_bg">#33F28B82</color>
     <color name="diff_add_text">#FF81C995</color>
     <color name="diff_del_text">#FFF28B82</color>
-    <color name="avatar_fill">#FF7598FF</color>
+    <color name="avatar_fill">#FFF1F2EC</color>
 
     <!-- Authentication surfaces -->
-    <color name="auth_background_start">#FF111A2B</color>
-    <color name="auth_background_center">#FF101318</color>
-    <color name="auth_background_end">#FF101318</color>
-    <color name="auth_card_surface">#F21A222D</color>
-    <color name="auth_input_surface">#FF141C27</color>
-    <color name="auth_chip_surface">#331E6FFF</color>
-    <color name="auth_chip_text">#FFA9C1FF</color>
-    <color name="auth_orb_primary">#356B8CFF</color>
-    <color name="auth_orb_secondary">#298C5CF6</color>
-    <color name="auth_divider">#FF303A48</color>
+    <color name="auth_background_start">#FF111210</color>
+    <color name="auth_background_center">#FF111210</color>
+    <color name="auth_background_end">#FF111210</color>
+    <color name="auth_card_surface">#FF1A1C18</color>
+    <color name="auth_input_surface">#FF1A1C18</color>
+    <color name="auth_chip_surface">#FF252822</color>
+    <color name="auth_chip_text">#FFB1B6A9</color>
+    <color name="auth_orb_primary">#00FFFFFF</color>
+    <color name="auth_orb_secondary">#00FFFFFF</color>
+    <color name="auth_divider">#FF363B31</color>
 
     <!-- Projects dashboard -->
-    <color name="projects_hero_start">#FF1D304C</color>
-    <color name="projects_hero_end">#FF293D56</color>
+    <color name="projects_hero_start">#FF252822</color>
+    <color name="projects_hero_end">#FF252822</color>
     <color name="projects_hero_muted">#D9FFFFFF</color>
     <color name="projects_hero_stat">#24FFFFFF</color>
-    <color name="projects_card_surface">#FF171B22</color>
-    <color name="projects_icon_surface">#FF203966</color>
-    <color name="projects_page_surface">#FF101318</color>
+    <color name="projects_card_surface">#FF1A1C18</color>
+    <color name="projects_icon_surface">#FF252822</color>
+    <color name="projects_page_surface">#FF111210</color>
 </resources>

@@ -1,149 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="?attr/colorSurface"
-    android:paddingStart="16dp"
-    android:paddingEnd="16dp"
-    android:paddingBottom="12dp">
-
-    <com.google.android.material.button.MaterialButtonToggleGroup
-        android:id="@+id/chatModeToggle"
-        android:layout_width="220dp"
-        android:layout_height="44dp"
-        android:layout_marginTop="4dp"
-        app:checkedButton="@id/btnModeChat"
-        app:selectionRequired="true"
-        app:singleSelection="true"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnModeChat"
-            style="@style/Widget.AndroidAgent.Button.Tonal"
-            android:layout_width="110dp"
-            android:layout_height="wrap_content"
-            android:text="@string/drawer_chat" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnModeWork"
-            style="@style/Widget.AndroidAgent.Button.Tonal"
-            android:layout_width="110dp"
-            android:layout_height="wrap_content"
-            android:text="@string/chat_mode_work" />
-    </com.google.android.material.button.MaterialButtonToggleGroup>
-
-    <LinearLayout
-        android:id="@+id/emptyState"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:paddingHorizontal="20dp"
-        app:layout_constraintBottom_toTopOf="@id/composer"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/chatModeToggle"
-        app:layout_constraintVertical_bias="0.48">
-
-        <ImageView
-            android:layout_width="64dp"
-            android:layout_height="64dp"
-            android:contentDescription="@string/app_name"
-            android:src="@drawable/ic_auth_sparkle" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:gravity="center"
-            android:text="@string/chat_home_title"
-            android:textAppearance="?attr/textAppearanceHeadlineSmall"
-            android:textColor="?attr/colorOnSurface"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/textGuestQuota"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:background="@drawable/bg_auth_status"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="6dp"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="@color/banner_info_text"
-            tools:text="游客可免费对话 3 次" />
-
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipSuggestionOne"
-            style="@style/Widget.Material3.Chip.Assist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:text="@string/chat_suggestion_one" />
-
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipSuggestionTwo"
-            style="@style/Widget.Material3.Chip.Assist"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/chat_suggestion_two" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+    android:background="?attr/colorSurface" android:paddingHorizontal="16dp" android:paddingBottom="12dp">
+    <androidx.core.widget.NestedScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fillViewport="true" android:clipToPadding="false">
+        <LinearLayout android:id="@+id/emptyState" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center" android:paddingHorizontal="8dp" android:paddingVertical="24dp">
+            <ImageView android:layout_width="72dp" android:layout_height="72dp" android:padding="20dp" android:background="@drawable/bg_chat_composer" android:src="@drawable/ic_auth_sparkle" android:contentDescription="@null" app:tint="?attr/colorOnSurface" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:gravity="center" android:text="@string/soft_home_title" android:textSize="28sp" android:textColor="?attr/colorOnSurface" android:fontFamily="sans-serif-medium" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:gravity="center" android:text="@string/soft_home_subtitle" android:textSize="14sp" android:textColor="?attr/colorOnSurfaceVariant" />
+            <TextView android:id="@+id/textGuestQuota" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:background="@drawable/bg_auth_status" android:paddingHorizontal="12dp" android:paddingVertical="6dp" android:textAppearance="?attr/textAppearanceLabelMedium" android:textColor="?attr/colorOnSurfaceVariant" />
+            <com.google.android.material.chip.ChipGroup android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="32dp" app:singleLine="false">
+                <com.google.android.material.chip.Chip android:id="@+id/chipSuggestionOne" style="@style/Widget.Material3.Chip.Assist" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/soft_suggestion_fix" app:chipBackgroundColor="?attr/colorSurfaceVariant" app:chipStrokeWidth="0dp" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipSuggestionTwo" style="@style/Widget.Material3.Chip.Assist" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/soft_suggestion_explore" app:chipBackgroundColor="?attr/colorSurfaceVariant" app:chipStrokeWidth="0dp" />
+            </com.google.android.material.chip.ChipGroup>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+    <LinearLayout android:id="@+id/composer" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@drawable/bg_chat_composer" android:orientation="vertical" android:padding="12dp" android:elevation="1dp">
+        <com.google.android.material.textfield.TextInputEditText android:id="@+id/editPrompt" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@null" android:hint="@string/chat_composer_hint" android:gravity="top" android:imeOptions="actionSend" android:inputType="textMultiLine|textCapSentences" android:maxLines="4" android:minHeight="64dp" android:padding="8dp" android:textSize="16sp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+            <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/chatModeToggle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" app:checkedButton="@id/btnModeChat" app:selectionRequired="true" app:singleSelection="true">
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnModeChat" style="@style/Widget.AndroidAgent.Button.Segment" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/drawer_chat" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnModeWork" style="@style/Widget.AndroidAgent.Button.Segment" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/chat_mode_work" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+            <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/btnSend" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="12dp" android:src="@drawable/ic_send" android:contentDescription="@string/send" app:fabCustomSize="48dp" app:maxImageSize="22dp" />
+        </LinearLayout>
     </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/composer"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:background="@drawable/bg_chat_composer"
-        android:gravity="bottom"
-        android:minHeight="64dp"
-        android:orientation="horizontal"
-        android:paddingStart="18dp"
-        android:paddingTop="6dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="6dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/editPrompt"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_vertical"
-            android:layout_weight="1"
-            android:background="@null"
-            android:gravity="center_vertical"
-            android:hint="@string/chat_composer_hint"
-            android:imeOptions="actionSend"
-            android:inputType="textMultiLine|textCapSentences"
-            android:maxLines="5"
-            android:minHeight="52dp"
-            android:padding="0dp"
-            android:textAppearance="?attr/textAppearanceBodyLarge" />
-
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:id="@+id/btnSend"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:contentDescription="@string/send"
-            android:src="@drawable/ic_send"
-            app:fabCustomSize="48dp"
-            app:maxImageSize="22dp" />
-    </LinearLayout>
-
-    <com.google.android.material.progressindicator.CircularProgressIndicator
-        android:id="@+id/progress"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        tools:visibility="visible" />
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <com.google.android.material.progressindicator.CircularProgressIndicator android:id="@+id/progress" android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="center" android:layout_marginTop="4dp" android:visibility="gone" app:indicatorSize="24dp" />
+</LinearLayout>

@@ -47,7 +47,7 @@ abstract class WorkspaceScreen : AppCompatActivity() {
         setPadding(0, dp(12), 0, dp(12)); body.addView(this)
     }
     protected fun button(value: String, action: () -> Unit): MaterialButton = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-        text = value; minHeight = dp(48); cornerRadius = dp(12)
+        text = value; minHeight = dp(52); cornerRadius = dp(26)
         gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
         body.addView(this, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         setOnClickListener { action() }

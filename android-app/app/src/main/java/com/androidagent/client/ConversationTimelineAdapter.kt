@@ -314,6 +314,15 @@ class ConversationTimelineAdapter(
     }
 
     class UserVH(private val binding: ItemUserMessageBinding) : RecyclerView.ViewHolder(binding.root) {
+        init {
+            binding.root.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+                val available = view.width - view.paddingLeft - view.paddingRight
+                if (available > 0) {
+                    val limit = (available * 0.78f).toInt()
+                    if (binding.textUserMessage.maxWidth != limit) binding.textUserMessage.maxWidth = limit
+                }
+            }
+        }
         fun bind(row: Row.User) {
             binding.textUserMessage.text = row.text
         }

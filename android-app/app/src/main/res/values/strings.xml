@@ -417,7 +417,7 @@
     <string name="notify_task_done">任务完成</string>
     <string name="notify_task_done_desc">任务结束时提醒你查看结果</string>
     <string name="notify_failure">失败</string>
-    <string name="notify_failure_desc">任务失败时立即通知</string>
+    <string name="notify_failure_desc">同步到任务失败状态后提醒；后台同步并非即时推送</string>
     <string name="notify_approval">等待审批</string>
     <string name="notify_approval_desc">需要你确认操作时通知</string>
     <string name="notify_quota">配额将尽</string>

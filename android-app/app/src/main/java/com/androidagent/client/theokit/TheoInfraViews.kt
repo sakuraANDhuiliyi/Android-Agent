@@ -20,7 +20,7 @@ fun Context.theoSessionListItem(title: String, subtitle: String, time: String, a
         paddingUnits = 3f,
     )
     if (active) {
-        card.background = TheoUi.roundedBg(
+        card.background = TheoUi.roundedBg(this,
             TheoTokens.tint(p.primary, 0.08f),
             TheoTokens.RADIUS_LG,
             p.primary,
@@ -46,7 +46,7 @@ fun Context.theoSessionTimeline(events: List<TheoSessionEvent>): View {
         val row = theoRow(gap = 2f)
         row.addView(theoMono(ev.time, p.mutedForeground, TheoType.CODE_SM))
         val dot = View(this)
-        dot.background = TheoUi.roundedBg(p.tone(ev.tone), TheoTokens.RADIUS_FULL)
+        dot.background = TheoUi.roundedBg(this, p.tone(ev.tone), TheoTokens.RADIUS_FULL)
         dot.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 6f), TheoUi.dp(this, 6f))
         row.addView(dot)
         row.addView(theoText(ev.title, TheoType.BODY_SM, p.foreground))
@@ -184,7 +184,7 @@ fun Context.theoGatewayStatusIndicator(status: String, latencyMs: Int? = null): 
     }
     val row = theoRow(gap = 1.5f)
     val dot = View(this)
-    dot.background = TheoUi.roundedBg(p.tone(tone), TheoTokens.RADIUS_FULL)
+    dot.background = TheoUi.roundedBg(this, p.tone(tone), TheoTokens.RADIUS_FULL)
     dot.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 8f), TheoUi.dp(this, 8f))
     row.addView(dot)
     row.addView(theoText("gateway: $status", TheoType.MICRO, p.mutedForeground))
@@ -205,7 +205,7 @@ fun Context.theoModelCard(model: TheoModelInfo, selected: Boolean = false): View
         bg = if (selected) TheoTokens.tint(p.primary, 0.06f) else p.card,
         paddingUnits = 3f,
     )
-    if (selected) card.background = TheoUi.roundedBg(TheoTokens.tint(p.primary, 0.06f), TheoTokens.RADIUS_LG, p.primary)
+    if (selected) card.background = TheoUi.roundedBg(this, TheoTokens.tint(p.primary, 0.06f), TheoTokens.RADIUS_LG, p.primary)
     val head = theoRow(gap = 2f)
     head.addView(theoIcon("cpu", p.primary, 16f))
     val mid = theoColumn(gap = 0.5f)
@@ -243,7 +243,7 @@ fun Context.theoTokenUsageChart(data: List<Pair<String, Int>>): View {
         col.gravity = Gravity.CENTER_HORIZONTAL
         val bar = View(this)
         val h = Math.max(4f, 64f * value / max)
-        bar.background = TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_SM)
+        bar.background = TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_SM)
         bar.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 18f), TheoUi.dp(this, h))
         col.addView(bar)
         col.addView(theoText(day, TheoType.MICRO, p.mutedForeground))
@@ -416,15 +416,15 @@ fun Context.theoWhiteboard(elements: List<Pair<String, String>>): View {
     val canvas = LinearLayout(this)
     canvas.orientation = LinearLayout.VERTICAL
     canvas.minimumHeight = TheoUi.dp(this, 120f)
-    canvas.background = TheoUi.roundedBg(p.muted, TheoTokens.RADIUS_MD)
+    canvas.background = TheoUi.roundedBg(this, p.muted, TheoTokens.RADIUS_MD)
     canvas.setPadding(TheoUi.dp(this, 12f), TheoUi.dp(this, 12f), TheoUi.dp(this, 12f), TheoUi.dp(this, 12f))
     elements.take(4).forEach { (kind, label) ->
         val row = theoRow(gap = 2f)
         val shape = View(this)
         shape.background = when (kind) {
-            "circle" -> TheoUi.roundedBg(p.accent, TheoTokens.RADIUS_FULL)
-            "diamond" -> TheoUi.roundedBg(p.success, 4f)
-            else -> TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_SM)
+            "circle" -> TheoUi.roundedBg(this, p.accent, TheoTokens.RADIUS_FULL)
+            "diamond" -> TheoUi.roundedBg(this, p.success, 4f)
+            else -> TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_SM)
         }
         shape.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 10f), TheoUi.dp(this, 10f))
         row.addView(shape)
@@ -449,7 +449,7 @@ fun Context.theoPreviewPanel(title: String, mode: String = "desktop"): View {
     card.addView(head)
     val frame = View(this)
     frame.minimumHeight = TheoUi.dp(this, 96f)
-    frame.background = TheoUi.roundedBg(p.muted, TheoTokens.RADIUS_MD)
+    frame.background = TheoUi.roundedBg(this, p.muted, TheoTokens.RADIUS_MD)
     card.addView(frame)
     TheoRowGap.apply(card, this)
     return card

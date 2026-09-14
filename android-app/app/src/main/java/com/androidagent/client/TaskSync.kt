@@ -168,6 +168,8 @@ class AgentApplication : Application() {
     }
     override fun onCreate() {
         super.onCreate()
+        SoftAppearance.apply(this)
+        registerActivityLifecycleCallbacks(SoftSystemBars())
         identity = TaskRepository.scopeFor(AgentPrefs(this))
         getSharedPreferences("agent_prefs", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(listener)
         TaskSync.schedule(this)

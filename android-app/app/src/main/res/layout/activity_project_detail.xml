@@ -38,6 +38,7 @@
 
             <TextView
                 android:id="@+id/textHubName"
+                android:visibility="gone"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:textAppearance="?attr/textAppearanceHeadlineSmall"
@@ -220,7 +221,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:visibility="gone"
-                app:cardBackgroundColor="?attr/colorSurface"
+                app:cardBackgroundColor="@color/projects_card_surface"
                 app:cardCornerRadius="@dimen/radius_card"
                 app:cardElevation="0dp"
                 app:strokeColor="?attr/colorOutlineVariant"
@@ -303,21 +304,20 @@
                 android:textAppearance="?attr/textAppearanceTitleSmall"
                 android:textColor="?attr/colorOnSurfaceVariant" />
 
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowConversations" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_nav_activity" android:text="@string/workspace_conversations" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowConversations" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="0dp" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_nav_activity" android:text="@string/workspace_conversations" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/rowFiles"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/space_small"
+                android:layout_marginBottom="0dp"
                 android:clickable="true"
                 android:focusable="true"
-                app:cardBackgroundColor="?attr/colorSurface"
-                app:cardCornerRadius="@dimen/radius_card"
+                app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface"
                 app:cardElevation="0dp"
                 app:rippleColor="@color/signal_primary_container"
                 app:strokeColor="?attr/colorOutlineVariant"
-                app:strokeWidth="1dp">
+                app:strokeWidth="0dp">
 
                 <TextView
                     android:layout_width="match_parent"
@@ -328,22 +328,21 @@
                     android:padding="16dp"
                     android:text="@string/hub_workspace_files"
                     android:textAppearance="?attr/textAppearanceBodyLarge"
-                    app:drawableStartCompat="@drawable/ic_tool_read" />
+                    app:drawableStartCompat="@drawable/ic_tool_read" android:background="@drawable/bg_soft_list_row" />
             </com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/rowChanges"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/space_small"
+                android:layout_marginBottom="0dp"
                 android:clickable="true"
                 android:focusable="true"
-                app:cardBackgroundColor="?attr/colorSurface"
-                app:cardCornerRadius="@dimen/radius_card"
+                app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface"
                 app:cardElevation="0dp"
                 app:rippleColor="@color/signal_primary_container"
                 app:strokeColor="?attr/colorOutlineVariant"
-                app:strokeWidth="1dp">
+                app:strokeWidth="0dp">
 
                 <TextView
                     android:layout_width="match_parent"
@@ -354,22 +353,21 @@
                     android:padding="16dp"
                     android:text="@string/hub_changes"
                     android:textAppearance="?attr/textAppearanceBodyLarge"
-                    app:drawableStartCompat="@drawable/ic_tool_edit" />
+                    app:drawableStartCompat="@drawable/ic_tool_edit" android:background="@drawable/bg_soft_list_row" />
             </com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/rowBuild"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="@dimen/space_small"
+                android:layout_marginBottom="0dp"
                 android:clickable="true"
                 android:focusable="true"
-                app:cardBackgroundColor="?attr/colorSurface"
-                app:cardCornerRadius="@dimen/radius_card"
+                app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface"
                 app:cardElevation="0dp"
                 app:rippleColor="@color/signal_primary_container"
                 app:strokeColor="?attr/colorOutlineVariant"
-                app:strokeWidth="1dp">
+                app:strokeWidth="0dp">
 
                 <TextView
                     android:layout_width="match_parent"
@@ -380,14 +378,14 @@
                     android:padding="16dp"
                     android:text="@string/hub_build_apk"
                     android:textAppearance="?attr/textAppearanceBodyLarge"
-                    app:drawableStartCompat="@drawable/ic_tool_command" />
+                    app:drawableStartCompat="@drawable/ic_tool_command" android:background="@drawable/bg_soft_list_row" />
             </com.google.android.material.card.MaterialCardView>
 
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowProblems" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:text="@string/workspace_problems" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowTerminal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_command" android:text="@string/workspace_terminal" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowContext" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_read" android:text="@string/workspace_context" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowHistory" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="@dimen/space_small" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_history" android:text="@string/workspace_history" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
-            <com.google.android.material.card.MaterialCardView android:id="@+id/rowSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:clickable="true" android:focusable="true" app:cardCornerRadius="@dimen/radius_card" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="1dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_settings" android:text="@string/workspace_settings" android:textAppearance="?attr/textAppearanceBodyLarge" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowProblems" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="0dp" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:text="@string/workspace_problems" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowTerminal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="0dp" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_command" android:text="@string/workspace_terminal" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowContext" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="0dp" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_tool_read" android:text="@string/workspace_context" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowHistory" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="0dp" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_history" android:text="@string/workspace_history" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
+            <com.google.android.material.card.MaterialCardView android:id="@+id/rowSettings" android:layout_width="match_parent" android:layout_height="wrap_content" android:clickable="true" android:focusable="true" app:cardCornerRadius="0dp" app:cardBackgroundColor="?attr/colorSurface" app:cardElevation="0dp" app:strokeColor="?attr/colorOutlineVariant" app:strokeWidth="0dp"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/touch_target" android:padding="16dp" android:drawablePadding="12dp" android:drawableTint="?attr/colorOnSurfaceVariant" android:gravity="center_vertical" android:drawableStart="@drawable/ic_settings" android:text="@string/workspace_settings" android:textAppearance="?attr/textAppearanceBodyLarge" android:background="@drawable/bg_soft_list_row" /></com.google.android.material.card.MaterialCardView>
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 
@@ -399,5 +397,5 @@
         android:layout_margin="@dimen/screen_margin"
         android:contentDescription="@string/new_conversation"
         android:src="@drawable/ic_send"
-        app:tint="?attr/colorOnPrimaryContainer" />
+        app:tint="?attr/colorOnPrimary" />
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

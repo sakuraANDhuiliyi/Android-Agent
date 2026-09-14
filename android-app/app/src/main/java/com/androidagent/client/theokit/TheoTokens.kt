@@ -56,22 +56,22 @@ object TheoTokens {
     /** ARGB literals (not Color.parseColor) so unit tests resolve real values. */
     val LIGHT = TheoPalette(
         dark = false,
-        background = 0xFFFFFFFF.toInt(),
-        foreground = 0xFF202735.toInt(),
+        background = 0xFFF7F7F5.toInt(),
+        foreground = 0xFF20211F.toInt(),
         card = 0xFFFFFFFF.toInt(),
-        cardForeground = 0xFF202735.toInt(),
+        cardForeground = 0xFF20211F.toInt(),
         popover = 0xFFFFFFFF.toInt(),
-        primary = 0xFF2563EB.toInt(),
+        primary = 0xFF20211F.toInt(),
         primaryForeground = 0xFFFFFFFF.toInt(),
-        secondary = 0xFFEEF1F5.toInt(),
-        secondaryForeground = 0xFF202735.toInt(),
-        accent = 0xFF087F78.toInt(),
+        secondary = 0xFFEFEFED.toInt(),
+        secondaryForeground = 0xFF20211F.toInt(),
+        accent = 0xFF35634C.toInt(),
         accentForeground = 0xFFFFFFFF.toInt(),
-        muted = 0xFFEEF1F5.toInt(),
-        mutedForeground = 0xFF606D80.toInt(),
-        border = 0xFFE1E5EB.toInt(),
-        input = 0xFFE1E5EB.toInt(),
-        ring = 0xFF2563EB.toInt(),
+        muted = 0xFFEFEFED.toInt(),
+        mutedForeground = 0xFF666963.toInt(),
+        border = 0xFFDDDFD9.toInt(),
+        input = 0xFFDDDFD9.toInt(),
+        ring = 0xFF20211F.toInt(),
         success = 0xFF16A34A.toInt(),
         successForeground = 0xFFFFFFFF.toInt(),
         warning = 0xFFD97706.toInt(),
@@ -82,28 +82,28 @@ object TheoTokens {
 
     val DARK = TheoPalette(
         dark = true,
-        background = 0xFF101318.toInt(),
-        foreground = 0xFFE8ECF2.toInt(),
-        card = 0xFF171B22.toInt(),
-        cardForeground = 0xFFE8ECF2.toInt(),
-        popover = 0xFF171B22.toInt(),
-        primary = 0xFF7598FF.toInt(),
-        primaryForeground = 0xFF101B35.toInt(),
-        secondary = 0xFF1E242E.toInt(),
-        secondaryForeground = 0xFFE8ECF2.toInt(),
-        accent = 0xFF56D6C9.toInt(),
-        accentForeground = 0xFF101B35.toInt(),
-        muted = 0xFF1E242E.toInt(),
-        mutedForeground = 0xFFA5AFBF.toInt(),
-        border = 0xFF2B3340.toInt(),
+        background = 0xFF111210.toInt(),
+        foreground = 0xFFF1F2EC.toInt(),
+        card = 0xFF1A1C18.toInt(),
+        cardForeground = 0xFFF1F2EC.toInt(),
+        popover = 0xFF1A1C18.toInt(),
+        primary = 0xFFF1F2EC.toInt(),
+        primaryForeground = 0xFF20211F.toInt(),
+        secondary = 0xFF252822.toInt(),
+        secondaryForeground = 0xFFF1F2EC.toInt(),
+        accent = 0xFFA8CFB3.toInt(),
+        accentForeground = 0xFF20211F.toInt(),
+        muted = 0xFF252822.toInt(),
+        mutedForeground = 0xFFB1B6A9.toInt(),
+        border = 0xFF363B31.toInt(),
         input = 0xFF3A3A3A.toInt(),
-        ring = 0xFF7598FF.toInt(),
+        ring = 0xFFF1F2EC.toInt(),
         success = 0xFF22E58C.toInt(),
-        successForeground = 0xFF101318.toInt(),
+        successForeground = 0xFF111210.toInt(),
         warning = 0xFFF59E0B.toInt(),
-        warningForeground = 0xFF101318.toInt(),
+        warningForeground = 0xFF111210.toInt(),
         destructive = 0xFFFF4F6D.toInt(),
-        destructiveForeground = 0xFF101318.toInt(),
+        destructiveForeground = 0xFF111210.toInt(),
     )
 
     fun of(context: Context): TheoPalette {
@@ -115,11 +115,11 @@ object TheoTokens {
     /** Spacing unit: 1 = 4dp (Tailwind scale). */
     const val UNIT = 4f
 
-    const val RADIUS_SM = 4f
-    const val RADIUS_MD = 6f
-    const val RADIUS_LG = 10f
-    const val RADIUS_XL = 14f
-    const val RADIUS_2XL = 20f
+    const val RADIUS_SM = 12f
+    const val RADIUS_MD = 16f
+    const val RADIUS_LG = 22f
+    const val RADIUS_XL = 28f
+    const val RADIUS_2XL = 28f
     const val RADIUS_FULL = -1f
 
     /** Compose a translucent tint (alpha fraction 0..1) of a token color. */
@@ -148,7 +148,7 @@ enum class TheoType(val sizeSp: Float, val weight: Int, val lineMult: Float, val
     BODY(15f, 400, 1.46f, -0.005f, false),
     BODY_SM(13f, 400, 1.46f, 0f, false),
     LABEL(14f, 500, 1.43f, 0f, false),
-    MICRO(11f, 500, 1.36f, 0.01f, false),
+    MICRO(12f, 500, 1.36f, 0.01f, false),
     CODE(13f, 500, 1.54f, 0f, true),
     CODE_SM(12f, 500, 1.54f, 0f, true),
 }

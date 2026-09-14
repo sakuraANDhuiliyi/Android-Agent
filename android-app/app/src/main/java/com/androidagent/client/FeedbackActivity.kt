@@ -70,26 +70,26 @@ class FeedbackActivity : AppCompatActivity() {
 
     private fun render() {
         val build = report.optJSONObject("build")
-        val tests = report.optJSONObject("tests")
-        val counts = build?.optJSONObject("tasks")
-        val testCounts = tests?.optJSONObject("tests")
         val artifact = report.optJSONObject("artifact")
         val issues = report.optJSONArray("problems") ?: JSONArray()
         binding.textStatus.text = "assembleDebug · " + when (build?.optString("status")) {
             "success" -> "✓ SUCCESS"
             "failed" -> "✕ FAILED"
+            "running" -> "构建中"
+            "queued" -> "等待构建"
             else -> getString(R.string.feedback_not_run)
         }
-        binding.textSummary.text = buildString {
-            append("Duration\n").append(if (build == null || build.isNull("duration_ms")) "—" else "%.1fs".format(build.optLong("duration_ms") / 1000.0))
-            append("\n\nTasks\n").append(if (counts == null) "—" else "${counts.optInt("executed")} executed · ${counts.optInt("cached")} cached · ${counts.optInt("up_to_date")} up-to-date")
-            append("\n\nWarnings\n").append(build?.optInt("warnings") ?: 0)
-            append("\n\nTests\n")
-            if (tests == null) append(getString(R.string.feedback_not_run))
-            else if (testCounts?.optBoolean("reported") == true) append("${testCounts.optInt("passed")} passed · ${testCounts.optInt("failed")} failed · ${testCounts.optInt("skipped")} skipped")
-            else append(tests.optString("status")).append(" · ").append(getString(R.string.feedback_no_test_report))
-            append("\n\nArtifact\n").append(artifact?.let { "${it.optString("name")} · %.1f MB".format(it.optLong("size") / 1048576.0) } ?: "—")
-        }
+        val summary = FeedbackPresentation.from(report)
+        binding.textSummary.text = summary.duration
+        binding.textTaskMetrics.text = summary.tasks
+        binding.textWarningMetrics.text = summary.warnings
+        binding.textTestMetrics.text = summary.tests
+        binding.textArtifactMetrics.text = summary.artifact
+        binding.textStatus.setTextColor(getColor(when (build?.optString("status")) {
+            "success" -> R.color.status_success
+            "failed" -> R.color.status_failed
+            else -> R.color.signal_on_surface
+        }))
         binding.btnArtifact.isVisible = artifact != null
         binding.btnRawLog.isEnabled = !report.isNull("job_id")
         if (!optionsLoaded) {
@@ -99,7 +99,7 @@ class FeedbackActivity : AppCompatActivity() {
             binding.switchFix.isChecked = options.optBoolean("fix_failures")
             optionsLoaded = true
         }
-        binding.textProblemsTitle.text = "${issues.length()} Problems"
+        binding.textProblemsTitle.text = "${issues.length()} 个问题"
         binding.layoutProblems.removeAllViews()
         if (issues.length() == 0) binding.layoutProblems.addView(TextView(this).apply { text = getString(R.string.problems_none); setPadding(0, 20, 0, 20) })
         for (index in 0 until issues.length()) {
@@ -108,7 +108,15 @@ class FeedbackActivity : AppCompatActivity() {
                 text = "${issue.optString("severity").uppercase()} · ${issue.optString("source")}\n" +
                     (issue.optString("path").takeIf { it.isNotBlank() && it != "null" }?.let { "$it:${issue.optInt("line", 1)}\n" } ?: "") + issue.optString("message")
                 setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
-                setPadding(12, 24, 12, 24)
+                val pad = (16 * resources.displayMetrics.density).toInt()
+                setPadding(pad, pad, pad, pad)
+                setLineSpacing(0f, 1.5f)
+                background = getDrawable(R.drawable.bg_soft_list_row)
+                setTextColor(getColor(when (issue.optString("severity").lowercase()) {
+                    "error" -> R.color.status_failed
+                    "warning" -> R.color.status_warning
+                    else -> R.color.signal_on_surface
+                }))
                 minHeight = (64 * resources.displayMetrics.density).toInt()
                 isFocusable = true
                 setOnClickListener { problemActions(issue) }

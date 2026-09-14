@@ -179,7 +179,7 @@
                 android:background="@drawable/bg_drawer_avatar"
                 android:gravity="center"
                 android:text="游"
-                android:textColor="@android:color/white"
+                android:textColor="?attr/colorOnPrimary"
                 android:textStyle="bold" />
 
             <LinearLayout

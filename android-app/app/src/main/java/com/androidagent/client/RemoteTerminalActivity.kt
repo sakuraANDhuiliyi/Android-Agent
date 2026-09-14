@@ -39,8 +39,24 @@ class RemoteTerminalActivity : WorkspaceScreen() {
             AlertDialog.Builder(this).setMessage("服务器 PTY · 离开页面不会停止 session。服务器重启后 session 会中断。\n此处发送的命令直接执行，不经过 Agent 审批。手机采用文本输出视图，不支持全屏终端程序。")
                 .setPositiveButton("确定", null).show(); true
         }
-        status = label("选择或创建 session")
-        command = EditText(this).apply { hint = "输入远程命令"; typeface = Typeface.MONOSPACE; maxLines = 3; body.addView(this) }
+        status = label("选择或创建 session").apply {
+            textSize = 13f
+            setTextColor(getColor(R.color.signal_on_surface_variant))
+        }
+        command = EditText(this).apply {
+            hint = "输入远程命令"; typeface = Typeface.MONOSPACE; maxLines = 3
+            textSize = 14f; minHeight = dp(56)
+            setTextColor(getColor(R.color.signal_on_surface))
+            setHintTextColor(getColor(R.color.signal_on_surface_variant))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(getColor(R.color.projects_card_surface)); cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), getColor(R.color.signal_outline_variant))
+            }
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            body.addView(this, android.widget.LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(16); bottomMargin = dp(12)
+            })
+        }
         command.setText(savedInstanceState?.getString("command").orEmpty())
         val runButton = button(getString(R.string.terminal_run)) {
             val text = command.text.toString()
@@ -66,7 +82,9 @@ class RemoteTerminalActivity : WorkspaceScreen() {
         val copyButton = button(getString(R.string.copy)) { copy(selectedOutput()) }
         val askButton = button(getString(R.string.ask_agent)) { explainOutput() }
         output = label("").apply {
-            typeface = Typeface.MONOSPACE; textSize = 12f; setTextIsSelectable(true)
+            typeface = Typeface.MONOSPACE; textSize = 13f; setTextIsSelectable(true)
+            setLineSpacing(0f, 1.5f)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
             customSelectionActionModeCallback = object : ActionMode.Callback {
                 override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
                     menu.add(0, 9001, 0, "Ask Agent to fix")
@@ -81,19 +99,26 @@ class RemoteTerminalActivity : WorkspaceScreen() {
             }
         }
         body.removeView(output)
-        body.addView(android.widget.ScrollView(this).apply { addView(output) }, 1,
+        body.addView(android.widget.ScrollView(this).apply {
+            background = getDrawable(R.drawable.bg_code_block)
+            clipToOutline = true
+            addView(output)
+        }, 1,
             android.widget.LinearLayout.LayoutParams(-1, 0, 1f))
-        val actions = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.HORIZONTAL }
-        for (action in listOf(runButton, stopButton, copyButton, askButton)) {
-            body.removeView(action)
-            action.setPadding(dp(8), dp(8), dp(8), dp(8))
-            action.gravity = android.view.Gravity.CENTER
-            actions.addView(action, android.widget.LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+        runButton.backgroundTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.signal_primary))
+        runButton.setTextColor(getColor(R.color.signal_on_primary))
+        for (pair in listOf(listOf(runButton, stopButton), listOf(copyButton, askButton))) {
+            val actions = AdaptiveActionLayout(this)
+            pair.forEachIndexed { index, action ->
+                body.removeView(action)
+                action.gravity = android.view.Gravity.CENTER
+                actions.addView(action, android.widget.LinearLayout.LayoutParams(0, -2, 1f).apply {
+                    if (index == 0) marginEnd = dp(8)
+                    bottomMargin = dp(8)
+                })
+            }
+            body.addView(actions, android.widget.LinearLayout.LayoutParams(-1, -2))
         }
-        body.addView(android.widget.HorizontalScrollView(this).apply {
-            isFillViewport = true
-            addView(actions)
-        }, android.widget.LinearLayout.LayoutParams(-1, -2))
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {

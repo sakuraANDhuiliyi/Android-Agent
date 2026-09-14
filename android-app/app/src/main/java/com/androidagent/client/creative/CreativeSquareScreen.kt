@@ -96,6 +96,10 @@ fun CreativeSquareTheme(content: @Composable () -> Unit) {
         onPrimary = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_primary),
         primaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_primary_container),
         onPrimaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_primary_container),
+        surfaceTint = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface),
+        surfaceContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.projects_card_surface),
+        surfaceContainerLow = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.projects_card_surface),
+        surfaceContainerHigh = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface_variant),
         secondary = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_secondary),
         secondaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_secondary_container),
         onSecondaryContainer = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_secondary_container),
@@ -107,6 +111,9 @@ fun CreativeSquareTheme(content: @Composable () -> Unit) {
         outlineVariant = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_outline_variant),
         background = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_surface),
         onBackground = androidx.compose.ui.res.colorResource(com.androidagent.client.R.color.signal_on_surface),
+    ), shapes = androidx.compose.material3.Shapes(
+        small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(16.dp),
+        large = RoundedCornerShape(22.dp), extraLarge = RoundedCornerShape(28.dp),
     ), content = content)
 }
 

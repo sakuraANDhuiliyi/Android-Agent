@@ -44,10 +44,10 @@ class ChatHomeFragment : Fragment(), MainNavActivity.Refreshable {
             } else false
         }
         binding.chipSuggestionOne.setOnClickListener {
-            fillPrompt(getString(R.string.chat_suggestion_one))
+            fillPrompt(getString(R.string.soft_suggestion_fix))
         }
         binding.chipSuggestionTwo.setOnClickListener {
-            fillPrompt(getString(R.string.chat_suggestion_two))
+            fillPrompt(getString(R.string.soft_suggestion_explore))
         }
         binding.chatModeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (isChecked && checkedId == R.id.btnModeWork) {

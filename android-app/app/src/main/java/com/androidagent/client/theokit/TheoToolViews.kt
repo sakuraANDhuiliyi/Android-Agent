@@ -447,7 +447,7 @@ fun Context.theoApprovalCard(
     val p = theoPalette()
     val card = theoCard(paddingUnits = 4f)
     // risk rail: tinted background + colored left stripe via padding trick
-    card.background = TheoUi.roundedBg(
+    card.background = TheoUi.roundedBg(this,
         when (risk) {
             TheoRiskLevel.DESTRUCTIVE -> TheoTokens.tint(p.destructive, 0.08f)
             else -> p.card

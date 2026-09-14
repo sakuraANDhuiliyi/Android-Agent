@@ -264,9 +264,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         binding.contentRoot.doOnLayout { root ->
             val available = root.width - root.paddingLeft - root.paddingRight
             val maxWidth = resources.getDimensionPixelSize(R.dimen.conversation_content_max_width)
-            val targetWidth = minOf(available, maxWidth)
             for (view in listOf(binding.approvalBar, binding.composerBar)) {
                 val params = view.layoutParams as? LinearLayout.LayoutParams ?: continue
+                val targetWidth = minOf(available - params.leftMargin - params.rightMargin, maxWidth).coerceAtLeast(0)
                 if (params.width != targetWidth || params.gravity != Gravity.CENTER_HORIZONTAL) {
                     params.width = targetWidth
                     params.gravity = Gravity.CENTER_HORIZONTAL
@@ -753,6 +753,15 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         contextAttachments.forEach { item ->
             binding.chipContexts.addView(Chip(this).apply {
                 text = "${if (item.kind in setOf("file", "folder", "symbol")) "@" else "#"} ${item.label}"
+                maxWidth = (resources.displayMetrics.widthPixels * 0.72f).toInt()
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setOnClickListener {
+                    AlertDialog.Builder(this@ConversationActivity)
+                        .setTitle(item.label)
+                        .setMessage(item.path ?: item.label)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show()
+                }
                 isCloseIconVisible = true
                 setOnCloseIconClickListener {
                     contextAttachments.remove(item)

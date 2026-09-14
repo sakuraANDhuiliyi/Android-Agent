@@ -22,6 +22,7 @@
         <activity android:name=".ProjectHistoryActivity" android:exported="false" />
         <activity android:name=".RemoteTerminalActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".AgentsActivity" android:exported="false" />
+        <activity android:name=".AppearanceActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="false"

@@ -62,14 +62,21 @@
             android:textColor="@color/status_success"
             android:visibility="gone" />
 
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fillViewport="true"
+            android:scrollbars="horizontal">
         <TextView
             android:id="@+id/textHunkContent"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
             android:padding="12dp"
             android:textIsSelectable="true"
-            android:textSize="12sp"
+            android:textSize="13sp"
+            android:lineSpacingMultiplier="1.5"
             tools:text=" Text(\n-  text = old\n+  text = title\n )" />
+        </HorizontalScrollView>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

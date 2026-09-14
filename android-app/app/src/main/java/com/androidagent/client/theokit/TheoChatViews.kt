@@ -58,7 +58,7 @@ fun Context.theoChatMessageActions(actions: List<String>): View {
         btn.gravity = Gravity.CENTER
         btn.addView(theoIcon(iconMap[label] ?: "more-horizontal", p.mutedForeground, 14f))
         btn.setPadding(TheoUi.dp(this, 6f), TheoUi.dp(this, 6f), TheoUi.dp(this, 6f), TheoUi.dp(this, 6f))
-        btn.background = TheoUi.roundedBg(p.muted, TheoTokens.RADIUS_MD)
+        btn.background = TheoUi.roundedBg(this, p.muted, TheoTokens.RADIUS_MD)
         row.addView(btn)
     }
     return row
@@ -129,7 +129,7 @@ fun Context.theoChatMessageBranch(
         branchViews.forEachIndexed { i, v -> v.visibility = if (i == current) View.VISIBLE else View.GONE }
         page.text = "${current + 1} of ${branchViews.size}"
         dots.forEachIndexed { i, d ->
-            d.background = TheoUi.roundedBg(if (i == current) p.primary else p.border, TheoTokens.RADIUS_FULL)
+            d.background = TheoUi.roundedBg(this, if (i == current) p.primary else p.border, TheoTokens.RADIUS_FULL)
         }
     }
     prev.setOnClickListener {
@@ -178,7 +178,7 @@ fun Context.theoChatComposer(hint: String = "Message…", onSend: ((String) -> U
     val send = LinearLayout(this)
     send.gravity = Gravity.CENTER
     send.addView(theoIcon("send", p.primaryForeground, 16f))
-    send.background = TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_MD)
+    send.background = TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_MD)
     send.setPadding(TheoUi.dp(this, 8f), TheoUi.dp(this, 8f), TheoUi.dp(this, 8f), TheoUi.dp(this, 8f))
     row.addView(send)
     if (onSend != null) send.setOnClickListener { onSend(input.text.toString()) }
@@ -315,7 +315,7 @@ fun Context.theoChoicePrompt(
         row.addView(theoIcon("circle-dot", p.primary, 14f))
         row.addView(theoText(opt, TheoType.BODY, p.foreground))
         row.setPadding(TheoUi.dp(this, 8f), TheoUi.dp(this, 8f), TheoUi.dp(this, 8f), TheoUi.dp(this, 8f))
-        row.background = TheoUi.roundedBg(p.background, TheoTokens.RADIUS_MD, p.border)
+        row.background = TheoUi.roundedBg(this, p.background, TheoTokens.RADIUS_MD, p.border)
         row.isClickable = true
         row.setOnClickListener { onPick?.invoke(i) }
         list.addView(row)
@@ -353,7 +353,7 @@ fun Context.theoTextPrompt(question: String, placeholder: String = "", onSubmit:
     input.hint = placeholder
     input.setTextColor(p.foreground)
     input.setHintTextColor(p.mutedForeground)
-    input.background = TheoUi.roundedBg(p.background, TheoTokens.RADIUS_MD, p.input)
+    input.background = TheoUi.roundedBg(this, p.background, TheoTokens.RADIUS_MD, p.input)
     input.setPadding(TheoUi.dp(this, 10f), TheoUi.dp(this, 10f), TheoUi.dp(this, 10f), TheoUi.dp(this, 10f))
     card.addView(input)
     card.addView(theoButton("Submit", TheoButtonVariant.PRIMARY, small = true, onClick = { onSubmit?.invoke(input.text.toString()) }))
@@ -380,8 +380,8 @@ fun Context.theoMultiSelectPrompt(
         val mark = theoIcon("check", p.primaryForeground, 10f)
         mark.visibility = if (i in state) View.VISIBLE else View.GONE
         box.addView(mark)
-        box.background = if (i in state) TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_SM) else
-            TheoUi.roundedBg(Color.TRANSPARENT, TheoTokens.RADIUS_SM, p.border)
+        box.background = if (i in state) TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_SM) else
+            TheoUi.roundedBg(this, Color.TRANSPARENT, TheoTokens.RADIUS_SM, p.border)
         box.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(this, 16f), TheoUi.dp(this, 16f))
         row.addView(box)
         row.addView(theoText(opt, TheoType.BODY, p.foreground))
@@ -389,8 +389,8 @@ fun Context.theoMultiSelectPrompt(
         row.setOnClickListener {
             if (!state.add(i)) state.remove(i)
             mark.visibility = if (i in state) View.VISIBLE else View.GONE
-            box.background = if (i in state) TheoUi.roundedBg(p.primary, TheoTokens.RADIUS_SM) else
-                TheoUi.roundedBg(Color.TRANSPARENT, TheoTokens.RADIUS_SM, p.border)
+            box.background = if (i in state) TheoUi.roundedBg(this, p.primary, TheoTokens.RADIUS_SM) else
+                TheoUi.roundedBg(this, Color.TRANSPARENT, TheoTokens.RADIUS_SM, p.border)
         }
         list.addView(row)
     }

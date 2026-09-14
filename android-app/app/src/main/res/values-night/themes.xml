@@ -29,5 +29,7 @@
         <item name="materialButtonOutlinedStyle">@style/Widget.AndroidAgent.Button.Outlined</item>
         <item name="materialCardViewStyle">@style/Widget.AndroidAgent.Card</item>
         <item name="toolbarStyle">@style/Widget.AndroidAgent.Toolbar</item>
+        <item name="textInputStyle">@style/Widget.AndroidAgent.Auth.TextInput</item>
+        <item name="floatingActionButtonStyle">@style/Widget.AndroidAgent.Fab</item>
     </style>
 </resources>

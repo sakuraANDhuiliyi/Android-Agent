@@ -8,10 +8,11 @@
     android:layout_marginTop="@dimen/space_tiny"
     android:layout_marginEnd="@dimen/screen_margin"
     android:layout_marginBottom="@dimen/space_small"
-    app:cardBackgroundColor="?attr/colorSurfaceVariant"
+    app:cardBackgroundColor="@color/projects_card_surface"
     app:cardCornerRadius="@dimen/radius_card"
     app:cardElevation="0dp"
-    app:strokeWidth="0dp">
+    app:strokeColor="?attr/colorOutlineVariant"
+    app:strokeWidth="1dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -83,6 +84,11 @@
             android:textColor="?attr/colorOnSurfaceVariant"
             tools:text="app/src/main.kt&#10;app/src/main.xml" />
 
+        <com.androidagent.client.AdaptiveActionLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnViewChanges"
             style="@style/Widget.AndroidAgent.Button.Text"
@@ -97,5 +103,6 @@
             android:layout_height="wrap_content"
             android:minHeight="48dp"
             android:text="@string/history_revert_turn" />
+        </com.androidagent.client.AdaptiveActionLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

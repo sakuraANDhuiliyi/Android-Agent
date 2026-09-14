@@ -172,7 +172,7 @@ object TheokitCatalog {
             repeat(4) { i ->
                 val d = android.view.View(ctx)
                 d.layoutParams = LinearLayout.LayoutParams(TheoUi.dp(ctx, 7f), TheoUi.dp(ctx, 7f))
-                d.background = TheoUi.roundedBg(if (i == 1) p.primary else p.border, TheoTokens.RADIUS_FULL)
+                d.background = TheoUi.roundedBg(ctx, if (i == 1) p.primary else p.border, TheoTokens.RADIUS_FULL)
                 row.addView(d)
             }
             row

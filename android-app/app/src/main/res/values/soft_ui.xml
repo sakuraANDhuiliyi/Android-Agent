@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="soft_duration">耗时</string>
+    <string name="soft_tasks">构建任务</string>
+    <string name="soft_warnings">警告</string>
+    <string name="soft_artifact">构建产物</string>
+    <string name="soft_appearance">外观与阅读</string>
+    <string name="soft_theme">外观</string>
+    <string name="soft_theme_system">跟随系统</string>
+    <string name="soft_theme_light">浅色</string>
+    <string name="soft_theme_dark">深色</string>
+    <string name="soft_theme_hint">更改立即应用到整个 App，仅保存在当前设备。</string>
+    <string name="soft_reading">阅读与字号</string>
+    <string name="soft_reading_hint">界面遵循系统字号。正文自动换行，代码保持等宽显示，长代码可横向滚动。</string>
+    <string name="soft_display_settings">打开系统显示设置</string>
+    <string name="soft_home_title">把想法变成应用</string>
+    <string name="soft_home_subtitle">从一个问题，或一个项目开始。</string>
+    <string name="soft_suggestion_fix">修复一个问题</string>
+    <string name="soft_suggestion_explore">探索项目代码</string>
+</resources>
