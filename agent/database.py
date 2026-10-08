@@ -662,21 +662,21 @@ class TaskStore:
         return uuid.uuid5(uuid.NAMESPACE_URL, value).hex
 
     def recover_interrupted(self) -> list[dict[str, Any]]:
-        now = time.time()
         recovered: list[dict[str, Any]] = []
         with self._connect() as conn:
+            # Serialize against claims and heartbeats. Starting another API
+            # instance is not evidence that an existing worker has died.
+            conn.execute("BEGIN IMMEDIATE")
+            now = self.server_now(conn)
             rows = conn.execute(
-                """SELECT id, status FROM tasks
+                """SELECT id, status, claim_owner, claim_token, lease_expires_at FROM tasks
                    WHERE status IN ('queued', 'running', 'awaiting_approval', 'paused')"""
             ).fetchall()
             for row in rows:
+                if (row["claim_owner"] and row["claim_token"]
+                        and (row["lease_expires_at"] or 0) >= now):
+                    continue
                 if row["status"] == "queued":
-                    conn.execute(
-                        """UPDATE tasks SET claim_owner=NULL, lease_expires_at=NULL,
-                           heartbeat_at=NULL, claim_token=NULL, attempt=0
-                           WHERE id=?""",
-                        (row["id"],),
-                    )
                     continue
                 if row["status"] == "paused":
                     conn.execute(
@@ -725,6 +725,8 @@ class TaskStore:
                    FROM conversation_turns AS t
                    LEFT JOIN tasks AS j ON j.id=t.task_id
                    WHERE t.status IN ('running', 'awaiting_approval')
+                     AND (j.id IS NULL OR j.status NOT IN
+                          ('queued', 'running', 'awaiting_approval', 'paused'))
                    ORDER BY t.created_at, t.id"""
             ).fetchall()
 
@@ -1254,9 +1256,15 @@ class TaskStore:
                 if lock_key:
                     conflict = conn.execute(
                         """SELECT 1 FROM tasks
-                           WHERE write_lock_key=? AND status='running'
+                           WHERE (write_lock_key=? OR
+                             (? AND user_id=? AND project_id=?
+                              AND (parent_task_id IS NULL OR parent_task_id='')
+                              AND (role IS NULL OR role='')
+                              AND (write_lock_key IS NULL OR write_lock_key='')))
+                           AND status IN ('running', 'awaiting_approval')
                            AND lease_expires_at>=? AND id!=?""",
-                        (lock_key, now, row["id"]),
+                        (lock_key, lock_key == f"main:{row['user_id']}:{row['project_id']}",
+                         row["user_id"], row["project_id"], now, row["id"]),
                     ).fetchone()
                     if conflict:
                         continue
@@ -1268,7 +1276,7 @@ class TaskStore:
                     if not parent and not role:
                         conflict = conn.execute(
                             """SELECT 1 FROM tasks
-                               WHERE project_id=? AND user_id=? AND status='running'
+                               WHERE project_id=? AND user_id=? AND status IN ('running', 'awaiting_approval')
                                AND lease_expires_at>=? AND id!=?
                                AND (parent_task_id IS NULL OR parent_task_id='')
                                AND (write_lock_key IS NULL OR write_lock_key=''

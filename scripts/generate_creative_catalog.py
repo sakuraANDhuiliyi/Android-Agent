@@ -36,6 +36,15 @@ def pattern_literal(p):
     return 'CreativePattern(' + ', '.join(values + [kotlin_list(p['items'])]) + ')'
 
 
+def references_for(style, data):
+    return style.get('references', [style['reference'], data['patternReference']])
+
+
+def origin_notice(style):
+    origin = style.get('origin')
+    return (ROOT / origin['noticePath']).read_text().rstrip() if origin else ''
+
+
 def load():
     data = json.loads(DATA.read_text())
     style_ids = [s['id'] for s in data['styles']]
@@ -52,21 +61,34 @@ def load():
         for key in ['background', 'surface', 'ink', 'accent', 'secondary']:
             assert re.fullmatch('[0-9A-F]{6}', s[key]), (s['id'], key)
         count += len(s['patterns'])
-        for ref in [s['reference'], data['patternReference']]:
+        for ref in references_for(s, data):
             parsed = urlparse(ref['url'])
             assert parsed.scheme == 'https' and parsed.netloc and not parsed.username, ref
+        if origin := s.get('origin'):
+            assert re.fullmatch('[0-9a-f]{40}', origin['revision']), s['id']
+            assert origin['repository'].startswith('https://github.com/'), s['id']
+            assert origin['adaptation'] and origin['evidence'] and origin['license'], s['id']
+            assert origin_notice(s).strip(), s['id']
     assert count <= min(data['limit'], 500), f'Catalog exceeds 500: {count}'
     for p in data['patterns']:
-        assert len(p['items']) == 3 and all(p['items']), p['id']
+        assert 1 <= len(p['items']) <= 12 and all(p['items']), p['id']
     foundation = (DEST / 'StyleFoundation.kt').read_text().split('\n', 1)[1].lstrip()
     foundation = foundation.replace('internal ', 'private ').replace('data class ', 'private data class ')
-    layout_file = (DEST / 'StyleLayouts.kt').read_text()
+    layout_files = sorted(DEST.glob('Style*Layouts.kt'))
+    assert layout_files, 'Missing native creative layouts'
+    # Standalone recipes need the same imports as the native scene they render.
+    imports = set(re.findall(r'^import .+$', foundation, re.M))
+    for path in layout_files:
+        imports.update(re.findall(r'^import .+$', path.read_text(), re.M))
+    foundation = '\n'.join(sorted(imports)) + '\n\n' + re.sub(r'^import .+\n', '', foundation, flags=re.M).lstrip()
     layouts = {}
-    for chunk in layout_file.split('// pattern:')[1:]:
-        key, body = chunk.split('\n', 1)
-        body = body.strip().replace('internal ', 'private ')
-        name = re.search(r'fun (Style\w+)\(', body).group(1)
-        layouts[key.strip()] = (name, body)
+    for path in layout_files:
+        for chunk in path.read_text().split('// pattern:')[1:]:
+            key, body = chunk.split('\n', 1)
+            body = body.strip().replace('internal ', 'private ')
+            name = re.search(r'fun (Style\w+)\(', body).group(1)
+            assert key.strip() not in layouts, f'Duplicate layout: {key}'
+            layouts[key.strip()] = (name, body)
     assert set(layouts) == set(pattern_ids), 'Native layout/catalog mismatch'
     return data, foundation, layouts, count
 
@@ -82,29 +104,38 @@ def generate(data, foundation, layouts):
         ('styleSummaries', [(s['id'], quote(s['summary'])) for s in data['styles']]),
         ('patternSummaries', [(p['id'], quote(p['summary'])) for p in data['patterns']]),
         ('categories', [(p['id'], 'CreativeCategory.' + p['category']) for p in data['patterns']]),
-        ('references', [(s['id'], 'CreativeReference(' + quote(s['reference']['title']) + ', ' + quote(s['reference']['url']) + ')') for s in data['styles']]),
+        ('references', [(s['id'], 'listOf(' + ', '.join('CreativeReference(' + quote(r['title']) + ', ' + quote(r['url']) + ')' for r in references_for(s, data)) + ')') for s in data['styles']]),
     ]:
         lines += [f'    private val {name} = mapOf('] + [f'        {quote(k)} to {v},' for k, v in values] + ['    )']
-    ref = data['patternReference']
-    lines += [f'    private val patternReference = CreativeReference({quote(ref["title"])}, {quote(ref["url"])})']
+    lines += ['    private val origins: Map<String, CreativeOrigin> = mapOf(']
+    for s in data['styles']:
+        if origin := s.get('origin'):
+            args = [origin[k] for k in ['project', 'repository', 'revision', 'license', 'adaptation', 'evidence']]
+            args.append(origin_notice(s))
+            lines += [f'        {quote(s["id"])} to CreativeOrigin(' + ', '.join(quote(a) for a in args) + '),']
+    lines += ['    )']
     lines += ['''
     val recipes: List<CreativeRecipe> = (0 until selections.values.maxOf { it.size }).flatMap { index ->
         styles.mapNotNull { style ->
             selections.getValue(style.id).getOrNull(index)?.let { patternId ->
                 val pattern = patterns.getValue(patternId)
                 val id = "${style.id}-${pattern.id}"
-                val refs = listOf(references.getValue(style.id), patternReference)
+                val refs = references.getValue(style.id)
+                val origin = origins[style.id]
                 CreativeRecipe(
                     id = id,
                     title = "${style.label} · ${pattern.title}",
                     summary = "${styleSummaries.getValue(style.id)}。${patternSummaries.getValue(pattern.id)}。",
                     category = categories.getValue(patternId),
                     preview = CreativePreview.STYLE,
-                    tags = linkedSetOf(style.label, pattern.title, style.id, pattern.id, categories.getValue(patternId).label),
+                    tags = linkedSetOf(style.label, pattern.title, style.id, pattern.id, categories.getValue(patternId).label).apply {
+                        origin?.let { add(it.project); add(it.license); add("开源移植") }
+                    },
                     style = style,
                     pattern = pattern,
                     references = refs,
-                    sourceBuilder = { CreativeStyleSources.build(style, pattern, refs.map { it.url }) },
+                    origin = origin,
+                    sourceBuilder = { CreativeStyleSources.build(style, pattern, refs.map { it.url }, origin) },
                 )
             }
         }
@@ -120,16 +151,18 @@ internal fun CreativeStyleContent(style: CreativeStyleSpec, pattern: CreativePat
     for key, (name, _) in layouts.items():
         dispatcher += f'        {quote(key)} -> {name}(style, pattern, interactive)\n'
     dispatcher += '        else -> error("Unknown creative layout: ${pattern.id}")\n    }\n}\n'
-    sources = [header + package, 'internal object CreativeStyleSources {', '    private const val foundation = ' + quote(foundation)]
+    sources = [header + package, 'import com.androidagent.client.creative.CreativeOrigin\n', 'internal object CreativeStyleSources {', '    private const val foundation = ' + quote(foundation)]
     helpers = re.findall(r'(?:data class|fun) (\w+)\(', foundation)
     sources += ['    private val sharedHelpers = ' + kotlin_list(helpers)]
     sources += ['    private val layouts = mapOf('] + [f'        {quote(key)} to {quote(body)},' for key, (_, body) in layouts.items()] + ['    )']
     sources += ['    private val names = mapOf('] + [f'        {quote(key)} to {quote(name)},' for key, (name, _) in layouts.items()] + ['    )']
+    local_helpers = {key: re.findall(r'(?:data class|fun) (\w+)\(', body) for key, (_, body) in layouts.items()}
+    sources += ['    private val localHelpers = mapOf('] + [f'        {quote(key)} to {kotlin_list(names)},' for key, names in local_helpers.items()] + ['    )']
     sources += [r'''
     private fun quoted(value: String): String = "\"" + value.replace("\\", "\\\\")
         .replace("\"", "\\\"").replace("$", "\\$").replace("\n", "\\n") + "\""
 
-    fun build(s: CreativeStyleSpec, p: CreativePattern, references: List<String>): String {
+    fun build(s: CreativeStyleSpec, p: CreativePattern, references: List<String>, origin: CreativeOrigin?): String {
         val styleArgs = listOf(quoted(s.id), quoted(s.label)) +
             listOf(s.background, s.surface, s.ink, s.accent, s.secondary).map { "0x" + it.toString(16).uppercase() } +
             listOf(s.radius.toString(), s.border.toString(), quoted(s.finish), quoted(s.typography))
@@ -138,9 +171,16 @@ internal fun CreativeStyleContent(style: CreativeStyleSpec, pattern: CreativePat
         val entry = "Creative" + "${s.id}-${p.id}".split('-').joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
         return buildString {
             appendLine("// ${s.label} · ${p.title}")
-            appendLine("// 原创 Compose 演示；复制到已启用 Compose Material3 的 Kotlin 文件。最低 SDK 24。")
+            appendLine(if (origin == null) "// 原创 Compose 演示；复制到已启用 Compose Material3 的 Kotlin 文件。最低 SDK 24。"
+                else "// 开源核心的 Compose 最小移植；复制到已启用 Compose Material3 的 Kotlin 文件。最低 SDK 24。")
             appendLine("// 用法：$entry()；示例数据与交互不连接真实业务服务。")
             references.forEach { appendLine("// 设计参考：$it") }
+            origin?.let {
+                appendLine("// 上游：${it.project} · ${it.repository} · commit ${it.revision}")
+                appendLine("// 修改与移植范围：${it.adaptation}")
+                appendLine("// 许可：${it.license}；请保留以下完整声明。")
+                it.notice.lineSequence().forEach { line -> appendLine("// $line") }
+            }
             appendLine(foundation)
             appendLine(layouts.getValue(p.id))
             appendLine("\n@Composable")
@@ -151,7 +191,7 @@ internal fun CreativeStyleContent(style: CreativeStyleSpec, pattern: CreativePat
             appendLine("}")
         }.let { code ->
             // Distinct helper names let independently copied recipes share a package.
-            val identifiers = sharedHelpers + names.getValue(p.id)
+            val identifiers = sharedHelpers + localHelpers.getValue(p.id)
             code.replace(Regex("\\b(" + identifiers.joinToString("|") + ")\\b")) { match -> entry + match.value }
         }
     }

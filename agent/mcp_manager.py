@@ -30,6 +30,8 @@ from agent.redaction import redact_sensitive_value
 from agent.tool_registry import (
     DuplicateToolError,
     ToolSpec,
+    ToolScope,
+    tool_scope,
     clear_dynamic_tools,
     list_dynamic_tool_specs,
     unregister_dynamic_tool,
@@ -100,6 +102,7 @@ class McpManager:
         self.user_id = user_id
         self.project_id = project_id
         self.workspace = workspace
+        self.registry_scope = tool_scope(user_id, project_id, workspace)
         self.on_event = on_event
         self._lock = threading.RLock()
         self._servers: dict[str, McpServerState] = {}
@@ -346,16 +349,16 @@ class McpManager:
                 )
             state.transport = None
         # Unregister this server's tools.
-        prefix = f"mcp__{name}__"
-        clear_dynamic_tools(prefix=prefix)
+        prefix = mcp_tool_name(name, "").rsplit("__", 1)[0] + "__"
+        clear_dynamic_tools(prefix=prefix, scope=self.registry_scope)
         if state.status not in {"disabled", "untrusted"}:
             state.status = "stopped"
 
     def _sync_registry_locked(self, state: McpServerState) -> None:
-        prefix = f"mcp__{state.config.name}__"
+        prefix = mcp_tool_name(state.config.name, "").rsplit("__", 1)[0] + "__"
         existing = {
             t.name
-            for t in list_dynamic_tool_specs()
+            for t in list_dynamic_tool_specs(scope=self.registry_scope)
             if t.name.startswith(prefix)
         }
         seen: set[str] = set()
@@ -387,11 +390,11 @@ class McpManager:
                 handler=handler,
             )
             try:
-                upsert_dynamic_tool(spec)
+                upsert_dynamic_tool(spec, scope=self.registry_scope)
             except DuplicateToolError:
                 pass
         for name in existing - seen:
-            unregister_dynamic_tool(name)
+            unregister_dynamic_tool(name, scope=self.registry_scope)
 
 
     def _make_handler(self, server: str, tool: str):
@@ -400,6 +403,8 @@ class McpManager:
         def _handler(ctx, tool_input: dict[str, Any]):
             from agent.tools import ToolResult
 
+            if tool_scope(ctx.user_id, ctx.project_id, ctx.workspace) != manager.registry_scope:
+                return ToolResult(False, "MCP 工具不属于当前用户、项目或工作区", error_type="PermissionDenied")
             if ctx.cancel_check:
                 ctx.cancel_check()
             started = time.monotonic()
@@ -426,7 +431,7 @@ class McpManager:
 
 
 # Process-local managers keyed by user/project.
-_managers: dict[tuple[str, str], McpManager] = {}
+_managers: dict[ToolScope, McpManager] = {}
 _managers_lock = threading.Lock()
 
 
@@ -437,7 +442,7 @@ def get_mcp_manager(
     *,
     on_event: EventCallback | None = None,
 ) -> McpManager:
-    key = (user_id, project_id)
+    key = tool_scope(user_id, project_id, workspace)
     with _managers_lock:
         mgr = _managers.get(key)
         if mgr is None:

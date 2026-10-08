@@ -98,11 +98,11 @@ cors_allowed_origins:
 #   - id: admin
 #     token: "请换成随机长字符串"
 
-# 部署模式：sqlite（默认单机）| postgres | hybrid
-# postgres / hybrid 启动时若缺少 URL 会直接失败，不会降级到半残状态。
+# 部署模式：当前仅支持 sqlite 单实例。
+# postgres / hybrid 运行时后端尚未完成，即使配置 URL 也拒绝启动。
 # deployment_mode: sqlite
 # database_url: "postgresql://agent:secret@127.0.0.1:5432/android_agent"
-# redis_url: "redis://127.0.0.1:6379/0"   # hybrid 下用于 ticket / 限流
+# redis_url: "redis://127.0.0.1:6379/0"   # 可选 ticket / 限流后端，不替代核心 SQLite
 # artifact_backend: local                 # local | object
 # object_store_url: "s3://android-agent-artifacts"
 # object_store_prefix: android-agent

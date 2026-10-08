@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from agent.workspace import WorkspaceRepository
 
 MAX_ITEMS = 20
 MAX_ITEM_CHARS = 24_000
+logger = logging.getLogger(__name__)
 
 
 def _read_text(path: Path, limit: int = MAX_ITEM_CHARS) -> str:
@@ -115,7 +117,11 @@ def build_context_bundle(
     explicit: list[dict[str, Any]] = []
     remaining = max(0, budget_chars - 1_000)
     for raw_item in (attachments or [])[:MAX_ITEMS]:
-        item = _resolve_one(user_id, project_id, raw_item, store)
+        try:
+            item = _resolve_one(user_id, project_id, raw_item, store)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning("Skipping unavailable explicit context: %s", exc)
+            continue
         if not item["content"] and item["kind"] != "screenshot":
             continue
         if remaining <= 0:
@@ -128,21 +134,26 @@ def build_context_bundle(
         remaining -= item["chars"]
     used_chars = sum(item["chars"] for item in explicit)
 
-    index = get_repo_index(user_id, project_id)
-    if index.status().get("status") != "ready":
-        index.rebuild()
+    index = None
     automatic: list[dict[str, Any]] = []
     auto_plan: dict[str, Any] = {"tokens_estimate": 0}
     if include_automatic and budget_chars - used_chars > 2_000:
         first_file = next((item.get("path") for item in explicit if item["kind"] == "file"), None)
-        auto_plan = ContextPlanner(index, user_id=user_id, project_id=project_id).plan(
-            prompt,
-            current_file=first_file,
-            budget_chars=max(2_000, budget_chars - used_chars),
-            include_memories=task_id is not None,
-            task_id=task_id,
-        )
-        explicit_paths = {item.get("path") for item in explicit}
+        try:
+            index = get_repo_index(user_id, project_id)
+            if index.status().get("status") != "ready":
+                index.rebuild()
+            auto_plan = ContextPlanner(index, user_id=user_id, project_id=project_id).plan(
+                prompt,
+                current_file=first_file,
+                budget_chars=max(2_000, budget_chars - used_chars),
+                include_memories=task_id is not None,
+                task_id=task_id,
+            )
+        except Exception as exc:
+            # Automatic retrieval is optional; explicit attachments must survive.
+            logger.warning("Automatic context unavailable: %s", exc)
+        explicit_paths = {item["path"] for item in explicit if item.get("path")}
         for item in auto_plan.get("selected") or []:
             if item.get("rel_path") in explicit_paths:
                 continue
@@ -175,9 +186,13 @@ def build_context_bundle(
         sections.append("## 自动检索的仓库上下文\n" + "\n\n".join(
             render_item(item) for item in automatic
         ))
-    repo_map = index.repo_map(max_files=1)
-    symbol_count = sum(int(row.get("count") or 0) for row in repo_map.get("symbol_summary") or [])
-    memory_count = get_memory_store(DATA_DIR / "agent.db").count_memories(user_id, project_id=project_id)
+    symbol_count = memory_count = 0
+    try:
+        repo_map = index.repo_map(max_files=1) if index is not None else {}
+        symbol_count = sum(int(row.get("count") or 0) for row in repo_map.get("symbol_summary") or [])
+        memory_count = get_memory_store(DATA_DIR / "agent.db").count_memories(user_id, project_id=project_id)
+    except Exception as exc:
+        logger.warning("Context statistics unavailable: %s", exc)
     all_items = explicit + automatic
     total_tokens = sum(item["tokens_estimate"] for item in all_items)
     return {

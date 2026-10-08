@@ -189,6 +189,12 @@ def decide_permission(
     risk = classify_risk(tool_spec)
     approval_kind = tool_spec.approval_kind
 
+    if not profile and run_mode == "read_only" and risk != "read":
+        return PermissionDecision(
+            action="deny", reason="read_only 模式仅允许只读工具",
+            matched_rule="read_only:deny", approval_kind=approval_kind, risk=risk,
+        )
+
     if recovery_mode and is_replay and tool_spec.replay_policy == "requires_approval_on_recovery":
         return PermissionDecision(
             action="ask",

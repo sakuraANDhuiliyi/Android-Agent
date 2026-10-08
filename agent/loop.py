@@ -29,6 +29,7 @@ from agent.mcp_manager import get_mcp_manager
 from agent.processes import CancellationRequested as ProcessCancellationRequested
 from agent.stream import StreamedCompletion, stream_anthropic_message, stream_openai_chat
 from agent.tools import ToolResult, dispatch_tool, get_tool_definitions
+from agent.tool_registry import ToolScope, tool_scope
 from agent.worker import PauseRequested, TaskLeaseLost
 
 EventCallback = Callable[[str, Any], None]
@@ -421,7 +422,7 @@ def dispatch_agent_tool(
     try:
         if allowed_tools is not None and name not in allowed_tools:
             return ToolResult(False, f"当前 Agent 角色无权调用工具: {name}", "PermissionError")
-        spec = get_tool_spec(name)
+        spec = get_tool_spec(name, scope=tool_scope(user_id, project_id, workspace))
         replay = next(
             (
                 item
@@ -493,6 +494,8 @@ def dispatch_agent_tool(
 def _openai_tools(
     settings: Settings,
     allowed_tools: set[str] | frozenset[str] | None = None,
+    *,
+    scope: ToolScope | None = None,
 ) -> list[dict]:
     return [
         {
@@ -503,7 +506,7 @@ def _openai_tools(
                 "parameters": tool["input_schema"],
             },
         }
-        for tool in get_tool_definitions(settings)
+        for tool in get_tool_definitions(settings, scope=scope)
         if allowed_tools is None or tool["name"] in allowed_tools
     ]
 
@@ -716,7 +719,7 @@ def _run_openai_compatible(
             on_event,
             cancel_check,
             messages=messages,
-            tools=_openai_tools(settings, allowed_tools),
+            tools=_openai_tools(settings, allowed_tools, scope=tool_scope(user_id, project_id, workspace)),
             max_tokens=max_output,
             message_id=message_id,
             stream_id=message_id,
@@ -1226,7 +1229,7 @@ def _run_anthropic(
     final_text_parts: list[str] = []
     tool_definitions = [
         tool
-        for tool in get_tool_definitions(settings)
+        for tool in get_tool_definitions(settings, scope=tool_scope(user_id, project_id, workspace))
         if allowed_tools is None or tool["name"] in allowed_tools
     ]
     active_model = settings.model

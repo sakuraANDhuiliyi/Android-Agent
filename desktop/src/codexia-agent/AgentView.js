@@ -558,7 +558,7 @@
     card.appendChild(body);
     if (window.DeliveryUI) card.appendChild(window.DeliveryUI.render(job));
     const project = job.project || selectedProject();
-    if (project?.workspace) {
+    if (project?.id) {
       const workspace = document.createElement("button");
       workspace.type = "button";
       workspace.className = "cx-workspace-card";
@@ -569,7 +569,7 @@
       const workspaceName = document.createElement("strong");
       workspaceName.textContent = project.name || "Android Agent";
       const workspacePath = document.createElement("small");
-      workspacePath.textContent = project.workspace;
+      workspacePath.textContent = `云端项目 · ${project.id}`;
       workspaceInfo.append(workspaceName, workspacePath);
       const workspaceOpen = document.createElement("b");
       workspaceOpen.textContent = "打开方式⌄";
@@ -577,7 +577,7 @@
       workspace.addEventListener("click", async (event) => {
         event.stopPropagation();
         switchToWorkbench();
-        await window.EditorApp?.openFolder?.(project.workspace);
+        await window.AiPanel?.selectProject?.(project.id);
       });
       card.appendChild(workspace);
     }
@@ -618,11 +618,9 @@
         row.addEventListener("click", async (event) => {
           event.stopPropagation();
           if (!file.path) return;
-          const absolutePath = /^[/\\]/.test(file.path) || !project?.workspace
-            ? file.path
-            : await window.agentDesktop?.joinPath?.(project.workspace, file.path) || file.path;
           switchToWorkbench();
-          await window.EditorApp?.openPath?.(absolutePath);
+          try { await window.EditorApp?.openProjectFile?.(project, file.path); }
+          catch (error) { toast(error.message); }
         });
         changes.appendChild(row);
       });
@@ -979,7 +977,12 @@
     renderTodos();
   }
 
-  function renderFileTree(nodes, container, depth = 0) {
+  let fileScope = null;
+  let fileRequest = 0;
+  let fileReadRequest = 0;
+  const fileScopeCurrent = (scope) => fileScope === scope && scope?.projectId === selectedProject()?.id && scope.current();
+
+  function renderFileTree(nodes, container, depth = 0, scope = fileScope) {
     for (const node of nodes || []) {
       const row = button("cx-file-row");
       row.style.paddingLeft = `${8 + depth * 15}px`;
@@ -990,12 +993,25 @@
       if (node.type === "dir") {
         const group = document.createElement("div");
         group.className = "cx-file-group";
-        group.hidden = depth > 0;
-        row.addEventListener("click", () => { group.hidden = !group.hidden; });
+        group.hidden = true;
+        row.addEventListener("click", async () => {
+          if (!PREVIEW_MODE && !fileScopeCurrent(scope)) return;
+          if (!PREVIEW_MODE && !node.loaded) {
+            try {
+              const children = await scope.list(node.path);
+              if (!fileScopeCurrent(scope)) return;
+              node.children = children;
+              node.loaded = true;
+              group.textContent = "";
+              renderFileTree(children, group, depth + 1, scope);
+            } catch (error) { toast(error.message); return; }
+          }
+          group.hidden = !group.hidden;
+        });
         container.append(row, group);
-        renderFileTree(node.children || [], group, depth + 1);
+        renderFileTree(node.children || [], group, depth + 1, scope);
       } else {
-        row.addEventListener("click", () => selectFile(node.path, row));
+        row.addEventListener("click", () => selectFile(node.path, row, scope));
         container.appendChild(row);
       }
     }
@@ -1003,59 +1019,52 @@
 
   async function loadFiles() {
     const project = selectedProject();
+    const request = ++fileRequest;
+    fileReadRequest += 1;
+    fileScope = null;
+    state.selectedFilePath = null;
+    els.openSelectedFile.disabled = true;
     els.filesTree.textContent = "";
     els.filePreview.textContent = "Loading files…";
     els.filesTitle.textContent = project?.name || "Files";
-    if (!project?.workspace) {
-      els.filePreview.textContent = "The selected project has no local workspace.";
-      return;
-    }
+    if (!project?.id) { els.filePreview.textContent = "请先选择项目"; return; }
     try {
-      const tree = PREVIEW_MODE && state.debugData?.tree
-        ? state.debugData.tree
-        : await window.agentDesktop.readTree(project.workspace);
+      const scope = PREVIEW_MODE ? null : window.WorkspaceFiles.remoteScope(window.AiPanel.client, project, window.AiPanel.getState().userId);
+      fileScope = scope;
+      const tree = PREVIEW_MODE && state.debugData?.tree ? state.debugData.tree : { children: await scope.list() };
+      if (request !== fileRequest || (!PREVIEW_MODE && !fileScopeCurrent(scope))) return;
       state.fileTree = tree;
-      renderFileTree(tree.children || tree.entries || [], els.filesTree);
+      renderFileTree(tree.children || tree.entries || [], els.filesTree, 0, scope);
       els.filePreview.textContent = "Select a file to preview it.";
     } catch (error) {
-      els.filePreview.textContent = `Unable to load files: ${error.message || error}`;
+      if (request === fileRequest) els.filePreview.textContent = `Unable to load files: ${error.message || error}`;
     }
   }
 
-  async function selectFile(path, row) {
+  async function selectFile(path, row, scope = fileScope) {
+    if (!PREVIEW_MODE && !fileScopeCurrent(scope)) return;
+    const request = ++fileReadRequest;
     document.querySelectorAll(".cx-file-row.active").forEach((item) => item.classList.remove("active"));
     row?.classList.add("active");
     state.selectedFilePath = path;
     els.openSelectedFile.disabled = false;
     els.filePreview.textContent = "Loading…";
-    const project = selectedProject();
     try {
-      let content;
-      if (PREVIEW_MODE) content = "export function AgentView() {\n  return <main>Functional Agent workspace</main>;\n}\n";
-      else {
-        try {
-          const absolute = await window.agentDesktop.joinPath(project.workspace, path);
-          content = (await window.agentDesktop.readFile(absolute)).content;
-        } catch (_) {
-          content = (await window.AiPanel?.client?.readProjectFile(project.id, path))?.content || "";
-        }
-      }
+      const content = PREVIEW_MODE ? "export function AgentView() { return <main>Agent workspace</main>; }" : (await scope.read(path)).content;
+      if (request !== fileReadRequest || (!PREVIEW_MODE && !fileScopeCurrent(scope))) return;
       els.filePreview.textContent = String(content || "");
     } catch (error) {
-      els.filePreview.textContent = `Unable to read file: ${error.message || error}`;
+      if (request === fileReadRequest && fileScopeCurrent(scope)) els.filePreview.textContent = `Unable to read file: ${error.message || error}`;
     }
   }
 
   async function openSelectedFile() {
     const project = selectedProject();
-    if (!project?.workspace || !state.selectedFilePath) return;
+    if (!project || !state.selectedFilePath || !fileScopeCurrent(fileScope)) return;
     try {
-      const absolute = await window.agentDesktop.joinPath(project.workspace, state.selectedFilePath);
       switchToWorkbench();
-      await window.EditorApp?.openPath?.(absolute);
-    } catch (error) {
-      toast(error.message || error);
-    }
+      await window.EditorApp?.openProjectFile?.(project, state.selectedFilePath);
+    } catch (error) { toast(error.message || error); }
   }
 
   function paintDiff(diff) {
@@ -1455,9 +1464,9 @@
     });
     document.getElementById("cxOpenIn")?.addEventListener("click", async () => {
       const project = selectedProject();
-      if (!project?.workspace) return toast("The selected project has no local workspace");
+      if (!project?.id) return toast("请先选择项目");
       switchToWorkbench();
-      await window.EditorApp?.openFolder?.(project.workspace);
+      await window.AiPanel?.selectProject?.(project.id);
     });
     document.getElementById("cxHeaderShare")?.addEventListener("click", async () => {
       const workspace = selectedProject()?.workspace;

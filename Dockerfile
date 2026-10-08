@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ANDROID_SDK_ROOT=/opt/android-sdk \
     ANDROID_HOME=/opt/android-sdk \
     JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
-    GRADLE_USER_HOME=/data/gradle-cache \
+    AGENT_GRADLE_CACHE_SEED=/opt/gradle-seed \
     AGENT_CONFIG_PATH=/app/deploy/config.railway.yaml \
     AGENT_DATA_DIR=/data/data \
     AGENT_WORKSPACES_DIR=/data/workspaces \
@@ -49,9 +49,13 @@ COPY requirements.txt requirements.lock ./
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
+# Fetch template dependencies at image build time. Runtime tenant builds remain
+# offline and receive independent writable copies of this trusted cache.
+RUN python scripts/prepare_gradle_seed.py --output /opt/gradle-seed \
+    && chmod -R a+rX /opt/gradle-seed
 RUN groupadd --gid 10001 agent \
     && useradd --uid 10001 --gid agent --create-home agent \
-    && mkdir -p /data/data /data/workspaces /data/builds /data/gradle-cache \
+    && mkdir -p /data/data /data/workspaces /data/builds \
     && chown -R agent:agent /data
 
 EXPOSE 8000

@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { once } = require("node:events");
+const { gunzipSync } = require("node:zlib");
 const { chromium } = require("playwright");
 const root = path.resolve(__dirname, "../..");
 const token = "isolated-creative-browser-test-token";
@@ -33,6 +34,7 @@ uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="warning")).run(soc
 `;
 
 async function run() {
+  const builtinCount = JSON.parse(gunzipSync(await fs.readFile(path.join(root, "agent/creative/builtin_catalog.json.gz"))).toString()).items.length;
   const data = await fs.mkdtemp(path.join(os.tmpdir(), "creative-live-"));
   const output = path.join(root, process.env.CREATIVE_TEST_COMMUNITY === "1" ? ".artifacts/creative-c2" : ".artifacts/creative-c1");
   await fs.mkdir(output, {recursive:true});
@@ -122,7 +124,7 @@ async function run() {
     assert(!JSON.stringify(audit).includes(token));
     await page.getByRole("button",{name:"导入内置创意",exact:true}).click();
     await page.getByRole("button",{name:"开始导入",exact:true}).click();
-    await page.getByText("完成：新增 500，跳过 0，上架 0。",{exact:true}).waitFor({timeout:120000});
+    await page.getByText(`完成：新增 ${builtinCount}，跳过 0，上架 0。`,{exact:true}).waitFor({timeout:120000});
     assert.deepEqual((await json("/api/creative/items")).items,[],"default import must not publish drafts");
     await page.getByRole("button",{name:"完成",exact:true}).click();
     await page.locator('[data-admin-view="reviews"]').click();
@@ -134,7 +136,7 @@ async function run() {
     await page.locator("#logoutButton").click();
     await page.locator("#loginGate").waitFor({state:"visible"});
     assert.deepEqual(errors,[]);
-    console.log("creative-live: create + cover, draft isolation, publish, rollback, placement, takedown, explicit restore, audit, 500-item draft import, mobile layout and logout passed");
+    console.log(`creative-live: create + cover, draft isolation, publish, rollback, placement, takedown, explicit restore, audit, ${builtinCount}-scene draft import, mobile layout and logout passed`);
   } finally {
     if(browser)await browser.close();
     if(server.exitCode===null){const exited=once(server,"exit");server.kill("SIGTERM");await exited;}

@@ -24,6 +24,12 @@ def recovery_settings() -> SimpleNamespace:
         provider="openai",
         model="fake-model",
         auto_build_after_edit=False,
+        model_candidates=["fake-model"],
+        provider_fallbacks=[],
+        max_turns=3,
+        max_auto_continuations=0,
+        max_gradle_retries=0,
+        max_output_tokens=1024,
     )
 
 

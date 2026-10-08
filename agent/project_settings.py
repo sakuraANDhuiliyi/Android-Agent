@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from agent.safe_paths import atomic_workspace_file, open_workspace_file, resolve_workspace_path
+
 PERMISSION_PROFILES = ("safe", "standard", "full_access")
 DEFAULT_PERMISSION_PROFILE = "standard"
 
@@ -27,7 +29,7 @@ _locks_guard = threading.Lock()
 
 
 def project_settings_path(workspace: Path) -> Path:
-    return workspace / ".android-agent" / _SETTINGS_FILENAME
+    return resolve_workspace_path(workspace, f".android-agent/{_SETTINGS_FILENAME}")
 
 
 def _lock_for(path: Path) -> threading.Lock:
@@ -50,8 +52,11 @@ def load_project_settings(workspace: Path) -> dict[str, Any]:
     if not path.is_file():
         return _defaults()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        with open_workspace_file(workspace, ".android-agent/settings.json") as handle:
+            data = json.loads(handle.read().decode("utf-8"))
+    except PermissionError:
+        raise
+    except (OSError, ValueError):
         return _defaults()
     if not isinstance(data, dict):
         return _defaults()
@@ -99,13 +104,8 @@ def save_project_settings(workspace: Path, data: dict[str, Any]) -> dict[str, An
     merged = merge_with_defaults(data)
     path = project_settings_path(workspace)
     with _lock_for(path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(path)
+        with atomic_workspace_file(workspace, ".android-agent/settings.json") as handle:
+            handle.write((json.dumps(merged, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return merged
 
 

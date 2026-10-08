@@ -284,6 +284,21 @@
       );
     }
 
+    listProjectFiles(projectId, path = ".") {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(path)}`);
+    }
+
+    searchProjectFiles(projectId, query = "") {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/files/search?q=${encodeURIComponent(query)}`);
+    }
+
+    writeProjectFile(projectId, path, content, expectedRevision) {
+      return this.request(`/api/projects/${encodeURIComponent(projectId)}/files/content`, {
+        method: "PUT",
+        body: { path, content, expected_revision: expectedRevision },
+      });
+    }
+
     // —— MCP ——
     mcpServers(projectId) {
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/mcp/servers`);

@@ -21,6 +21,8 @@ import com.androidagent.client.core.agent.DefaultJobWatcherFactory
 import com.androidagent.client.core.agent.JobEventWatcher
 import com.androidagent.client.core.agent.JobWatcherFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -65,7 +67,8 @@ class ConversationViewModel(
     private val watcherFactory: JobWatcherFactory,
 ) : ViewModel() {
 
-    val store = TimelineStore()
+    var store = TimelineStore()
+        private set
 
     private val _state = MutableStateFlow(ConversationUiState())
     val state: StateFlow<ConversationUiState> = _state
@@ -79,6 +82,8 @@ class ConversationViewModel(
 
     /** 会话切换令牌：过期响应直接丢弃。 */
     private var loadToken = 0
+    private val earlierRequests = HistoryPageRequests()
+    private var earlierJob: Job? = null
 
     private var historyMinSeq: Int? = null
     private var watcher: JobEventWatcher? = null
@@ -92,6 +97,7 @@ class ConversationViewModel(
     // ---------- 启动：缓存优先，再后台同步 ----------
 
     fun start(projectId: String, conversationId: String) {
+        if (!hasCurrentSession()) return
         if (started) return
         started = true
         this.projectId = projectId
@@ -112,8 +118,12 @@ class ConversationViewModel(
 
     /** 回到前台时重新同步（缓存不重放，仅增量拉取最新页）。 */
     fun refresh() {
-        if (!started) return
+        if (!started || !hasCurrentSession()) return
         val token = ++loadToken
+        earlierRequests.invalidate()
+        earlierJob?.cancel()
+        earlierJob = null
+        updateState { it.copy(loadingEarlier = false) }
         viewModelScope.launch { syncFromServer(token) }
     }
 
@@ -133,8 +143,16 @@ class ConversationViewModel(
                 )
             }
             bumpTimeline()
+        } catch (cancelled: CancellationException) {
+            hasCurrentSession()
+            throw cancelled
         } catch (e: Exception) {
             if (token != loadToken) return
+            if (e is ApiException && (e.isUnauthorized || e.isForbidden || e.isNotFound)) {
+                clearConversationState()
+                emitSignal(errorSignal(e))
+                return
+            }
             // 缓存已渲染则静默降级为离线横幅，否则提示错误
             updateState { it.copy(offline = true) }
             if (_state.value.source == ConversationUiState.Source.NONE) {
@@ -149,6 +167,9 @@ class ConversationViewModel(
                 cachedJobs.firstOrNull { it.status in ACTIVE_STATUSES }?.let { cachedActive ->
                     if (watcher == null && token == loadToken) attachJob(cachedActive.id, resume = true)
                 }
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (_: Exception) {
                 /* 缓存读取失败不影响主流程 */
             }
@@ -172,6 +193,9 @@ class ConversationViewModel(
                 active.id == _state.value.jobId && watcher != null -> applyJob(active)
                 else -> attachJob(active.id, resume = true)
             }
+        } catch (cancelled: CancellationException) {
+            hasCurrentSession()
+            throw cancelled
         } catch (e: Exception) {
             if (servedEvents) return // 事件流可用即可，任务列表失败交给缓存/后续刷新
             if (_state.value.job == null) emitSignal(errorSignal(e))
@@ -179,29 +203,40 @@ class ConversationViewModel(
     }
 
     private fun ingest(events: List<JSONObject>) {
+        if (!hasCurrentSession()) return
         store.ingest(events.mapNotNull { ConversationEventNormalizer.fromConversationEvent(it) })
     }
 
     // ---------- 历史分页 ----------
 
     fun loadEarlier() {
+        if (!hasCurrentSession()) return
         val current = _state.value
         if (current.loadingEarlier || !current.historyHasMore) return
         val before = historyMinSeq ?: return
+        val request = earlierRequests.begin() ?: return
         updateState { it.copy(loadingEarlier = true) }
         bumpTimeline()
         val token = loadToken
-        viewModelScope.launch {
+        earlierJob = viewModelScope.launch {
             try {
                 val page = repository.fetchEvents(conversationId, beforeSeq = before)
-                if (token != loadToken) return@launch
+                if (token != loadToken || !earlierRequests.owns(request)) return@launch
                 ingest(page.events)
                 if (page.events.isNotEmpty()) historyMinSeq = page.events.first().optInt("seq")
-                updateState { it.copy(historyHasMore = page.hasMore, loadingEarlier = false) }
+                updateState { it.copy(historyHasMore = page.hasMore) }
                 bumpTimeline()
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
-                updateState { it.copy(loadingEarlier = false) }
-                emitSignal(errorSignal(e))
+                if (token == loadToken && earlierRequests.owns(request)) emitSignal(errorSignal(e))
+            } finally {
+                if (earlierRequests.finish(request)) {
+                    earlierJob = null
+                    updateState { it.copy(loadingEarlier = false) }
+                    bumpTimeline()
+                }
             }
         }
     }
@@ -209,6 +244,7 @@ class ConversationViewModel(
     // ---------- 任务绑定与实时事件 ----------
 
     private fun attachJob(jobId: String, resume: Boolean) {
+        if (!hasCurrentSession()) return
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
         updateState { it.copy(jobId = jobId) }
         session.selectedJobId = jobId
@@ -235,6 +271,9 @@ class ConversationViewModel(
                 val job = withContext(Dispatchers.IO) { api.getJob(jobId) }
                 applyJob(job)
                 refreshApprovals(jobId)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
                 emitSignal(errorSignal(e))
             }
@@ -243,10 +282,11 @@ class ConversationViewModel(
 
     /** WS 回调可能来自 OkHttp 线程，统一切回主线程后再触碰 store。 */
     private fun onMain(block: () -> Unit) {
-        viewModelScope.launch { block() }
+        viewModelScope.launch { if (hasCurrentSession()) block() }
     }
 
     private fun handleTaskEvent(jobId: String, event: JSONObject) {
+        if (!hasCurrentSession()) return
         val type = event.optString("type")
         if (type in COALESCED_EVENT_TYPES) {
             // 高频 delta 类事件：缓冲 24ms 合并成一次 ingest + 一次渲染
@@ -287,6 +327,7 @@ class ConversationViewModel(
     }
 
     private fun applyJob(job: JobInfo) {
+        if (!hasCurrentSession()) return
         updateState { it.copy(job = job, jobId = job.id) }
         session.selectedJobId = job.id
         viewModelScope.launch { repository.saveJob(job) }
@@ -303,13 +344,20 @@ class ConversationViewModel(
         val token = loadToken
         viewModelScope.launch {
             try {
-                val after = store.conversationSeqMax?.toInt()
-                val page = repository.fetchEvents(conversationId, afterSeq = after)
-                if (token != loadToken) return@launch
-                if (page.events.isNotEmpty()) {
-                    ingest(page.events)
-                    bumpTimeline()
-                }
+                drainEventPages(
+                    after = store.conversationSeqMax?.toInt() ?: 0,
+                    isCurrent = { token == loadToken && hasCurrentSession() },
+                    fetch = { cursor ->
+                        val page = repository.fetchEvents(conversationId, afterSeq = cursor)
+                        EventSyncPage(page.events, page.nextAfterSeq, page.hasMore)
+                    },
+                    consume = { events ->
+                        if (events.isNotEmpty()) { ingest(events); bumpTimeline() }
+                    },
+                )
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (_: Exception) {
                 /* 终态同步失败不影响主流程 */
             }
@@ -317,6 +365,7 @@ class ConversationViewModel(
     }
 
     fun controlJob(action: String) {
+        if (!hasCurrentSession()) return
         val jobId = _state.value.jobId ?: return
         viewModelScope.launch {
             try {
@@ -328,6 +377,9 @@ class ConversationViewModel(
                     }
                 }
                 applyJob(job)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
                 emitSignal(errorSignal(e))
             }
@@ -336,6 +388,7 @@ class ConversationViewModel(
 
     /** onStop 时落盘 WS 游标；任务后台完成仍可触发本地通知。 */
     fun persistJobCursor() {
+        if (!hasCurrentSession()) return
         val jobId = _state.value.jobId ?: return
         session.setEventCursor(jobId, watcher?.currentCursor() ?: session.eventCursor(jobId))
     }
@@ -343,6 +396,7 @@ class ConversationViewModel(
     // ---------- 发送 ----------
 
     fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
+        if (!hasCurrentSession()) return
         val text = prompt.trim()
         if (text.isBlank()) return
         if (session.guestMode && session.guestRemaining <= 0) {
@@ -371,10 +425,14 @@ class ConversationViewModel(
                         contexts = contexts,
                     )
                 }
+                repository.requireCurrentSession()
                 if (session.guestMode) session.guestRemaining = session.guestRemaining - 1
                 repository.saveJob(job)
                 emitSignal(ConversationSignal.ComposerReset)
                 attachJob(job.id, resume = false)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
                 store.removeItem(optimisticKey)
                 if (isGuestQuota(e)) {
@@ -398,9 +456,13 @@ class ConversationViewModel(
                 withContext(Dispatchers.IO) {
                     if (steer) api.steerJob(jobId, enriched) else api.followUpJob(jobId, enriched)
                 }
+                repository.requireCurrentSession()
                 if (session.guestMode) session.guestRemaining = session.guestRemaining - 1
                 emitSignal(ConversationSignal.ComposerReset)
                 emitSignal(ConversationSignal.ToastText("已发送"))
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
                 if (isGuestQuota(e)) {
                     session.guestRemaining = 0
@@ -439,6 +501,9 @@ class ConversationViewModel(
                             repository.setApprovalStatus(approval.id, "approved")
                             store.setApprovalDecision(approval.id, "approved")
                             continue
+                        } catch (cancelled: CancellationException) {
+                            hasCurrentSession()
+                            throw cancelled
                         } catch (_: Exception) {
                             /* fall through to show the card */
                         }
@@ -454,6 +519,9 @@ class ConversationViewModel(
                     ConversationEventNormalizer.fromConversationEvent(ev)?.let { store.ingest(listOf(it)) }
                 }
                 bumpTimeline()
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (_: Exception) {
                 /* 轮询失败静默 */
             } finally {
@@ -463,6 +531,7 @@ class ConversationViewModel(
     }
 
     fun decideApproval(model: ApprovalCardBinder.Model, approved: Boolean, always: Boolean = false) {
+        if (!hasCurrentSession()) return
         val jobId = model.jobId ?: _state.value.jobId ?: return
         if (always && approved) {
             if (!ApprovalAllowlist.canRemember(model.risk, model.kind)) {
@@ -479,6 +548,9 @@ class ConversationViewModel(
                 withContext(Dispatchers.IO) { api.resolveApproval(jobId, model.approvalId, approved) }
                 repository.setApprovalStatus(model.approvalId, if (approved) "approved" else "rejected")
                 store.setApprovalDecision(model.approvalId, if (approved) "approved" else "rejected")
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
             } catch (e: Exception) {
                 if (e is ApiException && (e.isNotFound || e.isConflict)) {
                     store.setApprovalDecision(model.approvalId, "resolved_elsewhere")
@@ -500,7 +572,33 @@ class ConversationViewModel(
 
     // ---------- 内部 ----------
 
+    private fun clearConversationState() {
+        loadToken++
+        earlierRequests.invalidate()
+        earlierJob?.cancel()
+        earlierJob = null
+        watcher?.stop()
+        watcher = null
+        coalesceJob?.cancel()
+        coalesceJob = null
+        pendingTaskEvents.clear()
+        submittingApprovals.clear()
+        refreshingApprovals.clear()
+        historyMinSeq = null
+        store = TimelineStore()
+        _state.value = ConversationUiState(timelineVersion = _state.value.timelineVersion + 1)
+    }
+
+    private fun hasCurrentSession(): Boolean = try {
+        repository.requireCurrentSession()
+        true
+    } catch (_: CancellationException) {
+        clearConversationState()
+        false
+    }
+
     private fun updateState(transform: (ConversationUiState) -> ConversationUiState) {
+        if (!hasCurrentSession()) return
         _state.update(transform)
     }
 
@@ -509,6 +607,7 @@ class ConversationViewModel(
     }
 
     private fun emitSignal(signal: ConversationSignal) {
+        if (!hasCurrentSession()) return
         _signals.tryEmit(signal)
     }
 
@@ -523,6 +622,7 @@ class ConversationViewModel(
         // lifecycleScope 取消只终结协程，不会关掉 OkHttp WebSocket；
         // 必须显式 stop，否则服务端会为一个已销毁的页面持续推送事件。
         coalesceJob?.cancel()
+        earlierJob?.cancel()
         flushPendingTaskEvents()
         watcher?.stop()
         watcher = null

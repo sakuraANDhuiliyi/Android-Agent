@@ -8,6 +8,7 @@ import json
 import shutil
 import smtplib
 import socket
+import tempfile
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +29,8 @@ from agent.api_contract import (
     public_terminal_ws_done,
 )
 from agent.api_errors import build_error_body
-from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id
+from agent.safe_paths import open_workspace_file, resolve_workspace_path
+from agent.config import Settings, load_settings, models_catalog, resolve_job_settings, resolve_user_id, validate_deployment_settings
 from agent.conversation_events import (
     ConversationEventError,
     ConversationEventStore,
@@ -194,17 +197,39 @@ class RequestBodyLimitMiddleware:
         await response(scope, receive, send)
 
 
-def _apk_file_response(path: Path, filename: str) -> FileResponse:
+class _TemporaryApkResponse(FileResponse):
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Also clean up if the client disconnects or response streaming fails.
+            Path(self.path).unlink(missing_ok=True)
+
+
+def _apk_file_response(path: Path, filename: str, *, root: Path) -> FileResponse:
+    # FileResponse opens its path later, after this handler returns. Copy from a
+    # pinned, no-follow descriptor to a private temporary file first so an agent
+    # cannot swap the workspace path between validation and response streaming.
+    rel = path.absolute().relative_to(root.absolute()).as_posix()
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return FileResponse(
-        path,
-        media_type="application/vnd.android.package-archive",
-        filename=filename,
-        headers={"X-APK-SHA256": digest.hexdigest()},
-    )
+    snapshot: Path | None = None
+    try:
+        with open_workspace_file(root, rel) as source:
+            with tempfile.NamedTemporaryFile(prefix="agent-apk-", suffix=".apk", delete=False) as target:
+                snapshot = Path(target.name)
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    target.write(chunk)
+        return _TemporaryApkResponse(
+            snapshot,
+            media_type="application/vnd.android.package-archive",
+            filename=filename,
+            headers={"X-APK-SHA256": digest.hexdigest(), "ETag": f'"{digest.hexdigest()}"'},
+        )
+    except BaseException:
+        if snapshot is not None:
+            snapshot.unlink(missing_ok=True)
+        raise
 
 
 class StrictRequest(BaseModel):
@@ -604,6 +629,7 @@ def create_app(
     task_store: TaskStore | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    validate_deployment_settings(settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -667,7 +693,11 @@ def create_app(
     ) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content=build_error_body(422, exc.errors(), code="validation_error"),
+            content=build_error_body(
+                422,
+                jsonable_encoder(exc.errors(), custom_encoder={Exception: str}),
+                code="validation_error",
+            ),
         )
 
     @app.middleware("http")
@@ -1828,12 +1858,16 @@ def create_app(
         if not job:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         apk_path = job.get("apk_path")
-        if not apk_path or not __import__("pathlib").Path(apk_path).is_file():
+        if not apk_path:
             raise HTTPException(status_code=404, detail="该任务没有 APK")
-        return _apk_file_response(
-            Path(apk_path),
-            f"{job['project_id']}-{job_id}.apk",
-        )
+        try:
+            return _apk_file_response(
+                Path(apk_path),
+                f"{job['project_id']}-{job_id}.apk",
+                root=user_builds_dir(user_id),
+            )
+        except (PermissionError, OSError, ValueError) as e:
+            raise HTTPException(status_code=404, detail="该任务没有可访问的 APK") from e
 
     @app.get("/api/jobs/{job_id}/log")
     def get_task_log(
@@ -1941,18 +1975,20 @@ def create_app(
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
-        apk = latest_apk_path(user_id, project_id)
-        if not apk.is_file():
-            workspace_apk = (
-                workspace_path(user_id, project_id)
-                / "app/build/outputs/apk/debug/app-debug.apk"
-            )
-            if workspace_apk.is_file():
-                apk = workspace_apk
-            else:
+        try:
+            root = user_builds_dir(user_id)
+            apk = resolve_workspace_path(root, f"{project_id}/latest.apk")
+            if not apk.is_file():
+                root = workspace_path(user_id, project_id)
+                apk = resolve_workspace_path(
+                    root,
+                    "app/build/outputs/apk/debug/app-debug.apk",
+                )
+            if not apk.is_file():
                 raise HTTPException(status_code=404, detail="APK 尚未生成")
-
-        return _apk_file_response(apk, f"{project_id}.apk")
+            return _apk_file_response(apk, f"{project_id}.apk", root=root)
+        except (PermissionError, OSError, ValueError) as e:
+            raise HTTPException(status_code=404, detail="APK 路径不可访问") from e
 
     @app.get("/api/projects/{project_id}/builds/{build_id}")
     def get_build_log(
@@ -2690,10 +2726,14 @@ def create_app(
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         workspace = workspace_path(user_id, project_id)
+        try:
+            settings_data = load_project_settings(workspace)
+        except PermissionError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return {
             "user_id": user_id,
             "project_id": project_id,
-            "settings": load_project_settings(workspace),
+            "settings": settings_data,
             "permission_profiles": profile_summary(),
         }
 
@@ -2717,13 +2757,20 @@ def create_app(
                         f"{body.permission_profile}（可选: {', '.join(PERMISSION_PROFILES)}）"
                     ),
                 )
-            update_project_settings(
-                workspace, permission_profile=body.permission_profile
-            )
+            try:
+                update_project_settings(
+                    workspace, permission_profile=body.permission_profile
+                )
+            except PermissionError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        try:
+            settings_data = load_project_settings(workspace)
+        except PermissionError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return {
             "user_id": user_id,
             "project_id": project_id,
-            "settings": load_project_settings(workspace),
+            "settings": settings_data,
             "permission_profiles": profile_summary(),
         }
 

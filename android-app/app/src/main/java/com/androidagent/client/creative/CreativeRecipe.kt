@@ -16,12 +16,6 @@ enum class CreativeCategory(val label: String) {
 }
 
 enum class CreativePreview {
-    PULSE_BUTTON,
-    EXPANDABLE_CARD,
-    FAVORITE_TOGGLE,
-    ANIMATED_COUNTER,
-    LOADING_DOTS,
-    PROGRESS_REVEAL,
     STYLE,
 }
 
@@ -38,6 +32,7 @@ class CreativeRecipe(
     val style: com.androidagent.client.creative.styles.CreativeStyleSpec? = null,
     val pattern: com.androidagent.client.creative.styles.CreativePattern? = null,
     val references: List<CreativeReference> = emptyList(),
+    val origin: CreativeOrigin? = null,
     private val sourceBuilder: (() -> String)? = null,
 ) {
     val source: String by lazy {
@@ -54,7 +49,8 @@ class CreativeRecipe(
         Recipe 额外依赖（Compose 基础依赖之外）:
         ${if (dependencies.isEmpty()) "- 无额外依赖" else dependencies.joinToString("\n") { "- $it" }}
 
-        设计参考（原创 Compose 演示，非第三方源码）：
+        来源：${origin?.let { "${it.project} · ${it.license} · commit ${it.revision}\n        最小移植范围：${it.adaptation}" } ?: "原创 Compose 演示"}
+        来源与参考链接：
         ${references.joinToString("\n") { "- ${it.title}: ${it.url}" }}
 
         参考实现：
@@ -69,10 +65,21 @@ class CreativeRecipe(
         4. 将组件接入一个用户能够实际打开的页面，补充必要的字符串、颜色、依赖和无障碍描述。
         5. 运行 Gradle assembleDebug；如失败，修复后再次验证。
         6. 最后汇报改动文件、使用方式和验证结果。
+        7. 移植开源组件时保留源码中的上游版权、完整许可与修改说明。
     """.trimIndent()
 }
 
 data class CreativeReference(val title: String, val url: String)
+
+data class CreativeOrigin(
+    val project: String,
+    val repository: String,
+    val revision: String,
+    val license: String,
+    val adaptation: String,
+    val evidence: String,
+    val notice: String,
+)
 
 private val COMPOSE_IMPORTS = """
     import androidx.compose.animation.*

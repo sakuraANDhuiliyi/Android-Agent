@@ -3,6 +3,11 @@ package com.androidagent.client
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
 import com.androidagent.client.creative.*
 import android.view.View
 import android.view.ViewGroup
@@ -32,7 +37,14 @@ class WorkbenchPreviewActivity : AppCompatActivity() {
                 CreativeSquareTheme {
                     val example = CreativeDraft("preview", title = "灵动底部导航", summary = "为常用页面提供清晰、流畅的导航体验。", source = "@Composable fun Navigation() {}", integration = "在主页面底部接入 Navigation。", license = "MIT")
                     var selected by remember { mutableStateOf(if (name == "creative-editor") example else null) }
-                    if (name == "creative-square") {
+                    if (name == "creative-recipe") {
+                        val recipe = CreativeCatalog.find(intent.getStringExtra("recipe") ?: "") ?: CreativeCatalog.recipes.first()
+                        Surface(Modifier.fillMaxSize()) {
+                            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                CreativeCatalogPreview(recipe, interactive = true)
+                            }
+                        }
+                    } else if (name == "creative-square") {
                         CreativeSquareScreen(CreativeCatalog.recipes, null, {}, {})
                     } else CreativeStudioScreen(listOf(example), selected, true,
                         "离线界面预览 · 社区投稿尚未开放，草稿仅保存在本机。",

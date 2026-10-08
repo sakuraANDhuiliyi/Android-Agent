@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {err}", file=sys.stderr)
             return 2
         print("verify: ok")
-        print("Apply the SQL on PostgreSQL, then set deployment_mode=postgres and database_url.")
+        print("SQL export is for offline migration validation only. PostgreSQL runtime stores are not implemented; keep deployment_mode=sqlite.")
         print("Live psycopg import is optional; this dump is the supported apply path.")
     else:
         print("dry-run only (pass --apply to write SQL)")

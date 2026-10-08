@@ -16,10 +16,12 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.androidagent.client.core.database.AppDatabase
+import com.androidagent.client.core.database.CacheSession
 import com.androidagent.client.databinding.ActivityMainNavBinding
 import com.androidagent.client.feature.conversation.ConversationRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -31,6 +33,8 @@ class MainNavActivity : AppCompatActivity() {
     private var creatingGuestSession = false
     private var currentDestination = R.id.nav_chat
     private var drawerConversations: List<ConversationInfo> = emptyList()
+    private var historySession: CacheSession? = null
+    private var historyRefresh: Job? = null
 
     interface Refreshable {
         fun refreshContent()
@@ -137,28 +141,44 @@ class MainNavActivity : AppCompatActivity() {
         super.onResume()
         renderAccount()
         ensureSession()
-        if (!prefs.guestMode) refreshDrawerHistory()
+        refreshDrawerHistory()
     }
 
     fun refreshDrawerHistory() {
         renderAccount()
         if (prefs.guestMode || prefs.apiToken.isBlank()) {
+            historyRefresh?.cancel()
+            historyRefresh = null
+            historySession = null
             drawerConversations = emptyList()
+            binding.drawerHistoryList.removeAllViews()
             renderHistory(emptyList())
             return
         }
-        val api = AgentApi(prefs.serverUrl, prefs.apiToken)
-        val repository = conversationRepository(api)
-        lifecycleScope.launch {
+        val session = CacheSession.capture(prefs)
+        if (historySession?.matches(session) != true) {
+            historyRefresh?.cancel()
+            historyRefresh = null
+            historySession = session
+            drawerConversations = emptyList()
+            binding.drawerHistoryList.removeAllViews()
+        }
+        if (historyRefresh?.isActive == true) return
+        val api = AgentApi(session.serverUrl, session.apiToken)
+        val repository = conversationRepository(api, session)
+        historyRefresh = lifecycleScope.launch {
             // 缓存优先：先渲染本地会话列表，后台再同步服务端
             if (drawerConversations.isEmpty()) {
                 try {
                     val cached = repository.cachedConversations(DRAWER_HISTORY_LIMIT)
+                    if (!session.isCurrent(prefs)) return@launch
                     if (cached.isNotEmpty()) {
                         val cachedItems = cached.map { repository.cachedConversationInfo(it) }
                         drawerConversations = cachedItems
                         renderHistory(cachedItems)
                     }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (_: Exception) {
                     /* 缓存不可用时直接走网络 */
                 }
@@ -171,6 +191,7 @@ class MainNavActivity : AppCompatActivity() {
                         .take(DRAWER_HISTORY_LIMIT)
                 }
                 repository.replaceConversations(conversations)
+                if (!session.isCurrent(prefs)) return@launch
                 drawerConversations = conversations
                 renderHistory(conversations)
             } catch (cancelled: CancellationException) {
@@ -181,14 +202,15 @@ class MainNavActivity : AppCompatActivity() {
         }
     }
 
-    private fun conversationRepository(api: AgentApi): ConversationRepository {
-        val db = AppDatabase.get(applicationContext)
+    private fun conversationRepository(api: AgentApi, session: CacheSession): ConversationRepository {
+        val db = AppDatabase.get(applicationContext, session)
         return ConversationRepository(
             api = api,
             eventDao = db.conversationEventDao(),
             conversationDao = db.conversationDao(),
             jobDao = db.jobDao(),
             approvalDao = db.approvalDao(),
+            isCurrentSession = { session.isCurrent(prefs) },
         )
     }
 

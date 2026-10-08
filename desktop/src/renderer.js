@@ -55,6 +55,9 @@
 
   const state = {
     root: null,
+    scope: { kind: "local", key: "local:", root: null, label: "本地" },
+    scopeVersion: 0,
+    treeVersion: 0,
     tabs: [],
     activeId: null,
     nextId: 1,
@@ -101,6 +104,7 @@
     { id: "open-folder", label: "文件: 打开文件夹", run: () => openFolderDialog() },
     { id: "open-file", label: "文件: 打开文件", run: () => openFileDialog() },
     { id: "new-file", label: "文件: 新建文件", run: () => createTab({ content: "", title: "未命名" }) },
+    { id: "reload-file", label: "文件: 重新加载当前文件", run: () => reloadActive() },
     { id: "save", label: "文件: 保存", run: () => saveActive() },
     { id: "save-as", label: "文件: 另存为", run: () => saveActive({ saveAs: true }) },
     { id: "save-all", label: "文件: 全部保存", run: () => saveAll() },
@@ -175,6 +179,60 @@
     }, 2400);
   }
 
+  function visibleTabs() {
+    return state.tabs.filter((tab) => tab.scope.key === state.scope.key);
+  }
+
+  function scopeIsCurrent(scope, version) {
+    return state.scope === scope && state.scopeVersion === version && (scope.current?.() ?? true);
+  }
+
+  function readScopedFile(scope, path) {
+    return scope.kind === "remote" ? scope.read(path) : api.readFile(path);
+  }
+
+  function setScope(scope) {
+    state.scope = scope;
+    state.scopeVersion += 1;
+    state.treeVersion += 1;
+    state.root = scope.kind === "local" ? scope.root : null;
+    state.fileIndex = [];
+    els.fileTree.textContent = "";
+    els.explorerRootName.textContent = scope.label;
+    // Drafts remain in memory, but another project/account never displays them.
+    for (const tab of visibleTabs()) tab.scope = scope;
+    state.activeId = visibleTabs()[0]?.id || null;
+    els.previewPane.hidden = true;
+    if (editor) editor.setModel(activeTab()?.model || null);
+    invalidatePreviewStrings();
+    window.EditorApp?.closeDiff?.();
+    renderTabs();
+    if (activeTab()) syncEditorFromTab(activeTab());
+    updateEmpty();
+  }
+
+  async function openRemoteProject(project, client, userId) {
+    const scope = window.WorkspaceFiles.remoteScope(client, project, userId);
+    if (state.scope.key === scope.key && state.scope.current?.()) return;
+    setScope(scope);
+    await refreshTree({ silent: true });
+  }
+
+  function clearRemoteWorkspace() {
+    if (state.scope.kind === "remote") setScope({ kind: "local", key: "local:", root: null, label: "本地" });
+  }
+
+  async function openProjectFile(project, path, line = 0) {
+    const source = window.AiPanel;
+    const opening = source.getState().selectedProjectId !== project.id
+      ? source.selectProject(project.id)
+      : openRemoteProject(project, source.client, source.getState().userId);
+    const version = state.scopeVersion;
+    await opening;
+    if (version !== state.scopeVersion || state.scope.kind !== "remote" || state.scope.projectId !== project.id) return;
+    return openPath(path, undefined, line);
+  }
+
   function activeTab() {
     return state.tabs.find((t) => t.id === state.activeId) || null;
   }
@@ -182,16 +240,16 @@
   function updateEmpty() {
     // The welcome overlay must never cover an open diff review.
     const diffOpen = els.monacoDiffHost && !els.monacoDiffHost.hidden;
-    els.emptyState.classList.toggle("hidden", state.tabs.length > 0 || diffOpen);
+    els.emptyState.classList.toggle("hidden", visibleTabs().length > 0 || diffOpen);
   }
 
   function updateWindowTitle() {
     const tab = activeTab();
     if (tab) {
       const dirty = tab.dirty ? "● " : "";
-      els.windowTitle.textContent = `${dirty}${tab.title}${state.root ? ` — ${basenameSync(state.root)}` : ""}`;
-    } else if (state.root) {
-      els.windowTitle.textContent = basenameSync(state.root);
+      els.windowTitle.textContent = `${dirty}${tab.title} — ${state.scope.label}`;
+    } else if (state.root || state.scope.kind === "remote") {
+      els.windowTitle.textContent = state.scope.label;
     } else {
       els.windowTitle.textContent = "欢迎";
     }
@@ -203,14 +261,14 @@
 
   function renderTabs() {
     els.tabs.innerHTML = "";
-    for (const tab of state.tabs) {
+    for (const tab of visibleTabs()) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className =
         "tab" +
         (tab.id === state.activeId ? " active" : "") +
         (tab.dirty ? " dirty" : "");
-      btn.title = tab.path || "未命名";
+      btn.title = `${tab.scope.label} · ${tab.path || "未命名"}`;
 
       const name = document.createElement("span");
       name.className = "name";
@@ -260,7 +318,7 @@
       els.breadcrumbs.appendChild(btn);
     };
 
-    if (!tab.path || !state.root) {
+    if (!tab.path || (!state.root && tab.scope.kind !== "remote")) {
       const crumb = document.createElement("span");
       crumb.className = "crumb";
       crumb.textContent = tab.title;
@@ -271,7 +329,8 @@
     }
     let rel = tab.path;
     try {
-      rel = await api.relative(state.root, tab.path);
+      if (tab.scope.kind === "local") rel = await api.relative(tab.scope.root, tab.path);
+      if (activeTab() !== tab) return;
     } catch (_) {
       /* keep absolute */
     }
@@ -368,8 +427,8 @@
       if (force || state.previewStringsPath !== tabPath) {
         const strings = await window.LayoutPreview.loadStringsNearLayout(
           tabPath,
-          (p) => api.readFile(p),
-          (...parts) => api.joinPath(...parts),
+          (p) => readScopedFile(tab.scope, p),
+          (...parts) => tab.scope.kind === "remote" ? Promise.resolve(parts.join("/")) : api.joinPath(...parts),
         );
         if (activeTab()?.id !== tabId) return;
         state.previewStrings = strings;
@@ -404,6 +463,7 @@
   function syncEditorFromTab(tab) {
     if (!editor || !tab) return;
     editor.setModel(tab.model);
+    editor.updateOptions({ readOnly: tab.writable === false });
     if (tab.viewState) editor.restoreViewState(tab.viewState);
     editor.focus();
     updateStatusFromEditor();
@@ -421,10 +481,10 @@
     window.AiPanel?.onActiveFileChanged(tab);
   }
 
-  function createTab({ path, content, title }) {
+  function createTab({ path, content, title, scope = state.scope, revision = null, writable = true }) {
     const id = state.nextId++;
     const uri = path
-      ? monaco.Uri.file(path)
+      ? monaco.Uri.parse(scope.kind === "remote" ? scope.uri(path) : `agent-local:/${encodeURIComponent(scope.key)}/${encodeURIComponent(path)}`)
       : monaco.Uri.parse(`untitled:untitled-${id}`);
     const existing = monaco.editor.getModel(uri);
     if (existing) existing.dispose();
@@ -432,6 +492,7 @@
     const tab = {
       id,
       path: path || null,
+      scope, revision, writable,
       title: title || (path ? basenameSync(path) : "未命名"),
       dirty: false,
       model,
@@ -451,7 +512,10 @@
   }
 
   async function openPath(filePath, { reveal = true } = {}, line = 0) {
-    const existing = state.tabs.find((t) => t.path === filePath);
+    const scope = state.scope;
+    const version = state.scopeVersion;
+    if (scope.kind === "remote") filePath = scope.path(filePath);
+    const existing = visibleTabs().find((t) => t.path === filePath);
     if (existing) {
       activateTab(existing.id);
       if (line && editor) {
@@ -460,9 +524,13 @@
       }
       return existing;
     }
-    const data = await api.readFile(filePath);
-    const title = await api.basename(filePath);
-    const tab = createTab({ path: filePath, content: data.content, title });
+    const data = await readScopedFile(scope, filePath);
+    if (!scopeIsCurrent(scope, version)) return null;
+    const opened = visibleTabs().find((t) => t.path === filePath);
+    if (opened) { activateTab(opened.id); return opened; }
+    const title = basenameSync(filePath);
+    const tab = createTab({ path: filePath, content: data.content, title, scope, revision: data.revision, writable: data.writable });
+    if (data.truncated) toast("文件过大，仅显示只读预览，不能覆盖保存");
     if (line && editor) {
       setTimeout(() => {
         editor.revealLineInCenter(line);
@@ -473,9 +541,11 @@
     return tab;
   }
 
-  async function reloadPathIfOpen(filePath) {
+  async function reloadPathIfOpen(filePath, { discard = false } = {}) {
+    const scope = state.scope;
+    const version = state.scopeVersion;
     invalidatePreviewStrings(filePath);
-    const tab = state.tabs.find((t) => t.path === filePath);
+    const tab = visibleTabs().find((t) => t.path === filePath);
     if (!tab) {
       // strings.xml may have changed while a layout tab is active
       if (state.previewOpen && window.LayoutPreview?.isLayoutPath?.(activeTab()?.path)) {
@@ -483,8 +553,13 @@
       }
       return;
     }
-    if (tab.dirty) return;
-    const data = await api.readFile(filePath);
+    if (tab.dirty && !discard) return;
+    const requestedVersion = tab.model.getAlternativeVersionId();
+    const data = await readScopedFile(scope, filePath);
+    if (!scopeIsCurrent(scope, version) || !state.tabs.includes(tab) || tab.model.getAlternativeVersionId() !== requestedVersion) return;
+    tab.revision = data.revision;
+    tab.writable = data.writable;
+    if (tab.id === state.activeId) editor.updateOptions({ readOnly: tab.writable === false });
     const pos = editor && tab.id === state.activeId ? editor.getPosition() : null;
     tab.model.setValue(data.content);
     tab.savedVersionId = tab.model.getAlternativeVersionId();
@@ -494,6 +569,14 @@
     if (tab.id === state.activeId && window.LayoutPreview?.isLayoutPath?.(tab.path)) {
       schedulePreviewRefresh({ immediate: true, force: true });
     }
+  }
+
+  async function reloadActive() {
+    const tab = activeTab();
+    if (!tab?.path) return;
+    if (tab.dirty && !window.confirm("重新加载会丢弃当前文件的未保存修改。请先复制需要保留的草稿，是否继续？")) return;
+    try { await reloadPathIfOpen(tab.path, { discard: true }); }
+    catch (error) { toast(error.message); }
   }
 
   async function closeTab(id) {
@@ -510,7 +593,7 @@
     tab.model.dispose();
     state.tabs.splice(index, 1);
     if (state.activeId === id) {
-      const next = state.tabs[index] || state.tabs[index - 1] || null;
+      const next = visibleTabs().at(-1) || null;
       state.activeId = next ? next.id : null;
       if (next) syncEditorFromTab(next);
       else if (editor) editor.setModel(null);
@@ -522,39 +605,62 @@
 
   async function saveActive({ saveAs = false } = {}) {
     const tab = activeTab();
-    if (!tab) return;
-    let target = tab.path;
-    if (saveAs || !target) {
-      target = await api.saveFileDialog(
-        tab.path || (state.root ? `${state.root}/untitled.txt` : undefined),
-      );
-      if (!target) return;
-    }
-    const content = tab.model.getValue();
-    await api.writeFile(target, content);
-    tab.path = target;
-    tab.title = await api.basename(target);
-    tab.savedVersionId = tab.model.getAlternativeVersionId();
-    tab.dirty = false;
-    monaco.editor.setModelLanguage(tab.model, languageForPath(target));
-    renderTabs();
-    toast("已保存");
-    if (state.root) await refreshTree({ silent: true });
+    if (!tab || tab.saving) return;
+    const scope = tab.scope;
+    const version = state.scopeVersion;
+    if (tab.writable === false) return toast("此文件是只读预览，不能保存");
+    tab.saving = true;
+    try {
+      let target = tab.path;
+      if (scope.kind === "remote" && (saveAs || !target)) {
+        toast("云端编辑器支持保存已有文件；新建或重命名请通过项目 Agent 完成");
+        return;
+      }
+      if (saveAs || !target) {
+        target = await api.saveFileDialog(tab.path || (scope.root ? `${scope.root}/untitled.txt` : undefined));
+        if (!target || !scopeIsCurrent(scope, version)) return;
+      }
+      const content = tab.model.getValue();
+      const savedVersion = tab.model.getAlternativeVersionId();
+      const result = scope.kind === "remote"
+        ? await scope.write(target, content, tab.revision)
+        : await api.writeFile(target, content);
+      if (!state.tabs.includes(tab)) return;
+      tab.revision = result?.revision || tab.revision;
+      tab.path = target;
+      tab.title = basenameSync(target);
+      tab.savedVersionId = savedVersion;
+      tab.dirty = tab.model.getAlternativeVersionId() !== savedVersion;
+      monaco.editor.setModelLanguage(tab.model, languageForPath(target));
+      if (!scopeIsCurrent(scope, version)) return;
+      renderTabs();
+      toast("已保存");
+      if (state.root || scope.kind === "remote") await refreshTree({ silent: true });
+    } catch (error) {
+      if (scopeIsCurrent(scope, version)) toast(error.status === 409
+        ? `${error.message}；草稿已保留，可用“重新加载当前文件”读取最新版本后合并。`
+        : `保存失败：${error.message}；草稿已保留`);
+    } finally { tab.saving = false; }
   }
 
   async function saveAll() {
-    for (const tab of [...state.tabs]) {
+    const scope = state.scope;
+    const version = state.scopeVersion;
+    for (const tab of visibleTabs()) {
+      if (!scopeIsCurrent(scope, version)) break;
       if (!tab.dirty) continue;
-      state.activeId = tab.id;
-      syncEditorFromTab(tab);
+      activateTab(tab.id);
       await saveActive();
     }
   }
 
   function highlightTreePath(absPath) {
     document.querySelectorAll(".tree-item.active").forEach((el) => el.classList.remove("active"));
-    if (!state.root || !absPath) return;
-    api.relative(state.root, absPath).then((rel) => {
+    if ((!state.root && state.scope.kind !== "remote") || !absPath) return;
+    const scope = state.scope;
+    const version = state.scopeVersion;
+    (scope.kind === "remote" ? Promise.resolve(absPath) : api.relative(state.root, absPath)).then((rel) => {
+      if (!scopeIsCurrent(scope, version)) return;
       const row = els.fileTree.querySelector(`.tree-item[data-path="${cssEscape(rel)}"]`);
       if (row) {
         row.classList.add("active");
@@ -581,7 +687,7 @@
     return String(value).replace(/"/g, '\\"');
   }
 
-  function renderTreeNodes(nodes, container, root) {
+  function renderTreeNodes(nodes, container, root, scope = state.scope, version = state.scopeVersion) {
     for (const node of nodes) {
       const row = document.createElement("div");
       row.className = "tree-item";
@@ -606,8 +712,19 @@
         name.textContent = node.name;
 
         row.append(twistie, icon, name);
-        row.addEventListener("click", (ev) => {
+        row.addEventListener("click", async (ev) => {
           ev.stopPropagation();
+          if (!scopeIsCurrent(scope, version)) return;
+          if (scope.kind === "remote" && !node.loaded) {
+            try {
+              const children = await scope.list(node.path);
+              if (!scopeIsCurrent(scope, version)) return;
+              node.children = children;
+              node.loaded = true;
+              kids.textContent = "";
+              renderTreeNodes(children, kids, root, scope, version);
+            } catch (error) { toast(error.message); return; }
+          }
           const open = kids.hidden;
           kids.hidden = !open;
           twistie.textContent = open ? "▾" : "▸";
@@ -616,7 +733,7 @@
 
         container.appendChild(row);
         container.appendChild(kids);
-        if (node.children?.length) renderTreeNodes(node.children, kids, root);
+        if (node.children?.length) renderTreeNodes(node.children, kids, root, scope, version);
       } else {
         const twistie = document.createElement("span");
         twistie.className = "tree-twistie";
@@ -635,8 +752,10 @@
           ev.stopPropagation();
           document.querySelectorAll(".tree-item.active").forEach((el) => el.classList.remove("active"));
           row.classList.add("active");
-          const abs = await api.joinPath(root, node.path);
-          await openPath(abs, { reveal: false });
+          try {
+            const abs = scope.kind === "remote" ? node.path : await api.joinPath(root, node.path);
+            if (scopeIsCurrent(scope, version)) await openPath(abs, { reveal: false });
+          } catch (error) { toast(error.message); }
         });
         container.appendChild(row);
       }
@@ -645,8 +764,7 @@
 
   async function openFolder(rootDir) {
     if (!rootDir) return;
-    state.root = rootDir;
-    els.explorerRootName.textContent = basenameSync(rootDir);
+    setScope({ kind: "local", key: `local:${rootDir}`, root: rootDir, label: `本地 · ${basenameSync(rootDir)}` });
     await refreshTree({ silent: true });
     updateWindowTitle();
     pushRecentWorkspace(rootDir);
@@ -719,12 +837,22 @@
   }
 
   async function refreshTree({ silent = false } = {}) {
-    if (!state.root) return;
-    const tree = await api.readTree(state.root);
-    els.fileTree.innerHTML = "";
-    renderTreeNodes(tree.children || [], els.fileTree, state.root);
-    state.fileIndex = await api.listFiles(state.root);
-    if (!silent) toast("资源管理器已刷新");
+    const scope = state.scope;
+    const version = state.scopeVersion;
+    const request = ++state.treeVersion;
+    if (!state.root && scope.kind !== "remote") return;
+    try {
+      const tree = scope.kind === "remote" ? { children: await scope.list() } : await api.readTree(scope.root);
+      if (!scopeIsCurrent(scope, version) || request !== state.treeVersion) return;
+      els.fileTree.innerHTML = "";
+      renderTreeNodes(tree.children || [], els.fileTree, scope.root, scope, version);
+      const index = scope.kind === "remote" ? await scope.search() : await api.listFiles(scope.root);
+      if (!scopeIsCurrent(scope, version) || request !== state.treeVersion) return;
+      state.fileIndex = scope.kind === "remote" ? (index.entries || []).map((file) => file.path) : index;
+      if (!silent) toast("资源管理器已刷新");
+    } catch (error) {
+      if (scopeIsCurrent(scope, version) && request === state.treeVersion) toast(`读取项目文件失败：${error.message}`);
+    }
   }
 
   function collapseTree() {
@@ -743,7 +871,10 @@
 
   async function openFileDialog() {
     const file = await api.openFileDialog();
-    if (file) await openPath(file);
+    if (file) {
+      if (state.scope.kind === "remote") await openFolder(await api.dirname(file));
+      await openPath(file);
+    }
   }
 
   function toggleSidebar() {
@@ -808,6 +939,8 @@
   function renderPalette(query) {
     let items = [];
     if (state.paletteMode === "file") {
+      const scope = state.scope;
+      const version = state.scopeVersion;
       items = (state.fileIndex || [])
         .map((p) => ({
           id: p,
@@ -815,8 +948,8 @@
           meta: p,
           score: Math.max(fuzzyScore(query, basenameSync(p)), fuzzyScore(query, p) * 0.8),
           run: async () => {
-            const abs = await api.joinPath(state.root, p);
-            await openPath(abs);
+            const abs = scope.kind === "remote" ? p : await api.joinPath(scope.root, p);
+            if (scopeIsCurrent(scope, version)) await openPath(abs);
           },
         }))
         .filter((x) => x.score > 0 || !query)
@@ -1330,6 +1463,12 @@
       // Expose editor bridge for AI panel
       window.EditorApp = {
         getRoot: () => state.root,
+        getWorkspace: () => state.scope,
+        openRemoteProject,
+        openProjectFile,
+        clearRemoteWorkspace,
+        saveActive,
+        reloadActive,
         getActiveTab: () => activeTab(),
         getSelection: () => {
           if (!editor) return null;
@@ -1364,7 +1503,7 @@
       window.CodexiaAgentView?.init?.();
 
       const defaultWs = await api.getDefaultWorkspace();
-      if (defaultWs) await openFolder(defaultWs);
+      if (defaultWs && state.scope.kind === "local" && !state.root) await openFolder(defaultWs);
     });
   }
 

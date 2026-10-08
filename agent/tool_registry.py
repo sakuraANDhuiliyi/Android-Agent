@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from pathlib import Path
 
 
 class ToolHandlerMissingError(RuntimeError):
@@ -137,8 +139,16 @@ class ToolRegistry:
         return tools
 
 
+# Dynamic tools belong to one authenticated project/worktree context. A schema
+# lookup without a scope intentionally exposes only built-ins.
+ToolScope = tuple[str, str, str]
 _builtin_registry = ToolRegistry()
-_dynamic_registry = ToolRegistry()
+_dynamic_registries: dict[ToolScope, ToolRegistry] = {}
+_dynamic_lock = threading.RLock()
+
+
+def tool_scope(user_id: str, project_id: str, workspace: Path) -> ToolScope:
+    return (user_id, project_id, str(Path(workspace).resolve()))
 
 
 def register_tool(spec: ToolSpec) -> ToolSpec:
@@ -146,63 +156,86 @@ def register_tool(spec: ToolSpec) -> ToolSpec:
     return _builtin_registry.register(spec)
 
 
-def upsert_dynamic_tool(spec: ToolSpec) -> ToolSpec:
-    """Register or replace a dynamic tool (e.g. MCP). Built-ins cannot be overwritten."""
+def upsert_dynamic_tool(spec: ToolSpec, *, scope: ToolScope) -> ToolSpec:
+    """Register a dynamic tool within its owner context only."""
     if _builtin_registry.get(spec.name) is not None:
         raise DuplicateToolError(f"不能覆盖内置工具: {spec.name}")
     if not spec.handler:
         raise ToolHandlerMissingError(f"工具缺少 handler: {spec.name}")
-    existing = _dynamic_registry.get(spec.name)
-    if existing is not None:
-        _dynamic_registry._tools[spec.name] = spec  # noqa: SLF001
-        return spec
-    return _dynamic_registry.register(spec)
+    with _dynamic_lock:
+        registry = _dynamic_registries.setdefault(scope, ToolRegistry())
+        registry._tools[spec.name] = spec  # noqa: SLF001
+    return spec
 
 
-def unregister_dynamic_tool(name: str) -> bool:
-    """Remove a dynamic tool by name. Returns True if removed."""
-    return _dynamic_registry._tools.pop(name, None) is not None  # noqa: SLF001
+def unregister_dynamic_tool(name: str, *, scope: ToolScope) -> bool:
+    """Remove a tool from its owner context, never another tenant's tool."""
+    with _dynamic_lock:
+        registry = _dynamic_registries.get(scope)
+        if registry is None:
+            return False
+        removed = registry._tools.pop(name, None) is not None  # noqa: SLF001
+        if not registry._tools:  # noqa: SLF001
+            _dynamic_registries.pop(scope, None)
+        return removed
 
 
-def clear_dynamic_tools(*, prefix: str | None = None) -> list[str]:
-    """Clear dynamic tools, optionally filtering by name prefix."""
+def clear_dynamic_tools(
+    *, prefix: str | None = None, scope: ToolScope | None = None,
+) -> list[str]:
+    """Clear a scoped registry; omitted scope is for process-wide shutdown/tests."""
     removed: list[str] = []
-    for name in list(_dynamic_registry._tools):  # noqa: SLF001
-        if prefix is None or name.startswith(prefix):
-            _dynamic_registry._tools.pop(name, None)  # noqa: SLF001
-            removed.append(name)
+    with _dynamic_lock:
+        scopes = [scope] if scope is not None else list(_dynamic_registries)
+        for owner in scopes:
+            registry = _dynamic_registries.get(owner)
+            if registry is None:
+                continue
+            for name in list(registry._tools):  # noqa: SLF001
+                if prefix is None or name.startswith(prefix):
+                    registry._tools.pop(name, None)  # noqa: SLF001
+                    removed.append(name)
+            if not registry._tools:  # noqa: SLF001
+                _dynamic_registries.pop(owner, None)
     return removed
 
 
-def get_tool_spec(name: str) -> ToolSpec | None:
-    """Return a ToolSpec by name from builtin or dynamic registry."""
-    return _builtin_registry.get(name) or _dynamic_registry.get(name)
+def get_tool_spec(name: str, *, scope: ToolScope | None = None) -> ToolSpec | None:
+    builtin = _builtin_registry.get(name)
+    if builtin is not None:
+        return builtin
+    with _dynamic_lock:
+        registry = _dynamic_registries.get(scope) if scope is not None else None
+        return registry.get(name) if registry is not None else None
 
 
-def list_tool_specs() -> list[ToolSpec]:
-    """Return all registered tools (builtin + dynamic)."""
-    return _builtin_registry.list_tools() + _dynamic_registry.list_tools()
+def list_tool_specs(*, scope: ToolScope | None = None) -> list[ToolSpec]:
+    return _builtin_registry.list_tools() + list_dynamic_tool_specs(scope=scope)
 
 
 def list_builtin_tool_specs() -> list[ToolSpec]:
     return _builtin_registry.list_tools()
 
 
-def list_dynamic_tool_specs() -> list[ToolSpec]:
-    return _dynamic_registry.list_tools()
+def list_dynamic_tool_specs(*, scope: ToolScope | None = None) -> list[ToolSpec]:
+    with _dynamic_lock:
+        registry = _dynamic_registries.get(scope) if scope is not None else None
+        return registry.list_tools() if registry is not None else []
 
 
-def get_openai_tool_definitions(settings: Any = None) -> list[dict[str, Any]]:
-    """Return OpenAI function-calling tool definitions from both registries."""
-    tools = [t.to_openai() for t in list_tool_specs()]
+def get_openai_tool_definitions(
+    settings: Any = None, *, scope: ToolScope | None = None,
+) -> list[dict[str, Any]]:
+    tools = [t.to_openai() for t in list_tool_specs(scope=scope)]
     if settings is not None:
         tools = _builtin_registry._apply_gradle_retry_description(tools, settings)  # noqa: SLF001
     return tools
 
 
-def get_anthropic_tool_definitions(settings: Any = None) -> list[dict[str, Any]]:
-    """Return Anthropic tool definitions from both registries."""
-    tools = [t.to_anthropic() for t in list_tool_specs()]
+def get_anthropic_tool_definitions(
+    settings: Any = None, *, scope: ToolScope | None = None,
+) -> list[dict[str, Any]]:
+    tools = [t.to_anthropic() for t in list_tool_specs(scope=scope)]
     if settings is not None:
         tools = _builtin_registry._apply_gradle_retry_description(tools, settings)  # noqa: SLF001
     return tools

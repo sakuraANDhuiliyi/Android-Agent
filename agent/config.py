@@ -606,7 +606,7 @@ ARTIFACT_BACKENDS = frozenset({"local", "object"})
 
 
 def validate_deployment_settings(settings: Settings) -> None:
-    """Fail closed when a multi-instance mode is missing required URLs."""
+    """Reject deployment modes without a complete runtime store backend."""
     if settings.admin_ui_enabled and len(settings.admin_token) < 24:
         raise ValueError("启用 admin_ui_enabled 时，必须配置至少 24 位的 admin_token")
     mode = (settings.deployment_mode or "sqlite").strip().lower()
@@ -615,6 +615,11 @@ def validate_deployment_settings(settings: Settings) -> None:
             f"deployment_mode 必须是 sqlite、postgres 或 hybrid，收到: {mode}"
         )
     settings.deployment_mode = mode
+    if mode != "sqlite":
+        raise ValueError(
+            f"deployment_mode={mode} 尚未实现完整运行时存储；请使用 sqlite 单实例部署。"
+            "配置 database_url 不会将 TaskStore/UserStore 切换到 PostgreSQL。"
+        )
     backend = (settings.artifact_backend or "local").strip().lower()
     if backend not in ARTIFACT_BACKENDS:
         raise ValueError(
@@ -625,20 +630,6 @@ def validate_deployment_settings(settings: Settings) -> None:
         if backend == "object" and not settings.object_store_url:
             raise ValueError("artifact_backend=object 时必须配置 object_store_url")
         return
-    if mode == "postgres":
-        if not settings.database_url:
-            raise ValueError("deployment_mode=postgres 必须配置 database_url")
-        if not settings.database_url.startswith(("postgres://", "postgresql://")):
-            raise ValueError("database_url 必须以 postgres:// 或 postgresql:// 开头")
-    if mode == "hybrid":
-        if not settings.database_url:
-            raise ValueError("deployment_mode=hybrid 必须配置 database_url")
-        if not settings.redis_url:
-            raise ValueError("deployment_mode=hybrid 必须配置 redis_url")
-        if not settings.redis_url.startswith(("redis://", "rediss://", "memory://")):
-            raise ValueError("redis_url 必须以 redis://、rediss:// 或 memory:// 开头")
-    if backend == "object" and not settings.object_store_url:
-        raise ValueError("artifact_backend=object 时必须配置 object_store_url")
 
 
 def list_configured_providers(settings: Settings) -> list[Settings]:

@@ -5,12 +5,12 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import replace
 from typing import Any, Callable
 
 from agent.config import Settings
 from agent.conversation_events import ConversationEventStore
 from agent.database import TaskStore
+from agent.task_settings import resolve_task_settings
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +96,14 @@ class TaskWorker:
         return task
 
     def _loop(self) -> None:
+        last_recovery = time.monotonic()
         while not self._stop.is_set():
             try:
+                # A lease still live at startup may expire after its old process
+                # exits. Revisit it without requiring another server restart.
+                if time.monotonic() - last_recovery >= HEARTBEAT_INTERVAL:
+                    self.store.recover_interrupted()
+                    last_recovery = time.monotonic()
                 task = self.store.claim_next_task(self.worker_id, self.lease_seconds)
                 if task is None:
                     time.sleep(self.poll_interval)
@@ -309,7 +315,6 @@ class TaskWorker:
     def _create_follow_ups(self, task: dict[str, Any]) -> None:
         messages = self.store.get_pending_messages(task["id"], types=["follow_up"])
         for msg in messages:
-            self.store.consume_message(msg["id"])
             payload = msg.get("payload") or {}
             prompt = (
                 payload.get("prompt")
@@ -318,6 +323,7 @@ class TaskWorker:
                 or ""
             )
             if not prompt:
+                self.store.consume_message(msg["id"])
                 continue
             try:
                 from agent.jobs import start_ask_job
@@ -330,16 +336,14 @@ class TaskWorker:
                     conversation_id=task["conversation_id"],
                     continue_session=True,
                     reset_session=False,
+                    execution_context=task.get("context") or {"run_mode": "workspace"},
                 )
+                self.store.consume_message(msg["id"])
             except Exception:
                 logger.exception("Failed to create follow-up for task %s", task["id"])
 
     def _task_settings(self, task: dict[str, Any]) -> Settings:
-        provider = task.get("provider") or self.settings.provider
-        model = task.get("model") or self.settings.model
-        if provider != self.settings.provider or model != self.settings.model:
-            return replace(self.settings, provider=provider, model=model)
-        return self.settings
+        return resolve_task_settings(self.settings, task)
 
 
 def start_default_worker(

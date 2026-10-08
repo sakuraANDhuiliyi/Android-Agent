@@ -30,6 +30,7 @@ import androidx.recyclerview.widget.SimpleItemAnimator
 import com.androidagent.client.ConversationTimelineBuilder.ExpansionPolicy
 import com.androidagent.client.ConversationTimelineBuilder.Row
 import com.androidagent.client.core.database.AppDatabase
+import com.androidagent.client.core.database.CacheSession
 import com.androidagent.client.databinding.ActivityConversationBinding
 import com.androidagent.client.databinding.ItemApprovalBinding
 import com.androidagent.client.databinding.ViewJobDetailsBinding
@@ -48,6 +49,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private lateinit var binding: ActivityConversationBinding
     private lateinit var prefs: AgentPrefs
     private lateinit var api: AgentApi
+    private lateinit var cacheSession: CacheSession
     private lateinit var viewModel: ConversationViewModel
 
     private var projectId: String = ""
@@ -95,17 +97,26 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             finish()
             return
         }
-        api = AgentApi(prefs.serverUrl, prefs.apiToken)
+        cacheSession = CacheSession.capture(prefs)
+        val previousSession = savedInstanceState?.getString("cache_session")
+        if (previousSession != null && previousSession != cacheSession.sessionKey) {
+            finish()
+            return
+        }
+        api = AgentApi(cacheSession.serverUrl, cacheSession.apiToken)
         prefs.selectedProjectId = projectId
         prefs.selectedConversationId = conversationId
 
-        val db = AppDatabase.get(applicationContext)
+        val db = AppDatabase.get(applicationContext, cacheSession)
+        val session = cacheSession
+        val sessionPrefs = prefs
         val repository = ConversationRepository(
             api = api,
             eventDao = db.conversationEventDao(),
             conversationDao = db.conversationDao(),
             jobDao = db.jobDao(),
             approvalDao = db.approvalDao(),
+            isCurrentSession = { session.isCurrent(sessionPrefs) },
         )
         viewModel = ViewModelProvider(
             this,
@@ -279,6 +290,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     override fun onStart() {
         super.onStart()
         AppForeground.onActivityStarted()
+        if (!::viewModel.isInitialized || !cacheSession.isCurrent(prefs)) {
+            binding.root.visibility = View.INVISIBLE
+            finish()
+            return
+        }
         if (resumedOnce) viewModel.refresh() else resumedOnce = true
     }
 
@@ -286,12 +302,13 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         AppForeground.onActivityStopped()
         // 只落盘游标，不停止 watcher：任务在后台完成时要能触发本地通知
         // （MVP §21）。回到前台时 refresh 会重新接管并复用游标去重。
-        viewModel.persistJobCursor()
+        if (::viewModel.isInitialized && cacheSession.isCurrent(prefs)) viewModel.persistJobCursor()
         super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        if (::cacheSession.isInitialized) outState.putString("cache_session", cacheSession.sessionKey)
         outState.putSerializable(STATE_EXPANSION, HashMap(policy.snapshot()))
         outState.putString(STATE_DRAFT, binding.editPrompt.text?.toString().orEmpty())
         outState.putSerializable(STATE_CONTEXTS, ArrayList(contextAttachments))

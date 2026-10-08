@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 import uuid
@@ -12,6 +13,7 @@ from agent.database import TaskStore
 from agent.paths import workspace_path
 from agent.project_lifecycle import project_operation
 from agent.redaction import redact_sensitive_value
+from agent.task_settings import model_selection
 from agent.subagent_roles import (
     DEFAULT_MAX_SUBAGENTS,
     DEFAULT_WAIT_TIMEOUT_SECONDS,
@@ -89,8 +91,8 @@ def _spawn_subagent_unlocked(
     """Create a child task. Main-agent only (caller must enforce)."""
     store = _task_store()
     parent = store.get_task(parent_task_id, user_id)
-    if not parent:
-        raise ValueError(f"父任务不存在: {parent_task_id}")
+    if not parent or parent.get("project_id") != project_id:
+        raise ValueError(f"父任务不存在或不属于该项目: {parent_task_id}")
     if parent.get("parent_task_id"):
         raise PermissionError("Subagent 不能再创建 Subagent")
     if parent.get("role"):
@@ -101,6 +103,24 @@ def _spawn_subagent_unlocked(
         raise RuntimeError(f"已达到并行 Subagent 上限 ({max_children})")
 
     role = get_role(role_name)
+    parent_context = parent.get("context") or {}
+    parent_mode = parent_context.get("run_mode") or "workspace"
+    parent_profile = parent_context.get("permission_profile")
+    from agent.permissions import VALID_PROFILES
+    if parent_mode not in {"read_only", "workspace", "ask"} or (
+        parent_profile is not None and parent_profile not in VALID_PROFILES
+    ):
+        raise PermissionError("父任务权限配置无效，拒绝创建 Subagent")
+    if parent_mode == "read_only" and not parent_profile and role.permission_mode != "read_only":
+        raise PermissionError("只读父任务只能创建只读 Subagent")
+    # Role restrictions are an upper bound. A parent's safe/ask policy may
+    # tighten a writing role, but full_access cannot widen a read-only role.
+    child_mode = role.permission_mode
+    child_profile = parent_profile
+    if child_mode == "read_only":
+        child_profile = None
+    elif parent_mode == "ask" and not parent_profile:
+        child_mode = "ask"
     workspace = workspace_path(user_id, project_id)
     worktree: WorktreeInfo | None = None
     worktree_id: str | None = None
@@ -135,6 +155,8 @@ def _spawn_subagent_unlocked(
     context = {
         "role": role.name,
         "permission_mode": role.permission_mode,
+        "run_mode": child_mode,
+        "permission_profile": child_profile,
         "isolation": role.isolation,
         "allowed_tools": list(role.allowed_tools),
         "max_turns": role.max_turns,
@@ -146,6 +168,17 @@ def _spawn_subagent_unlocked(
         "system_prompt": role.system_prompt,
         "summary_only": True,
     }
+    selection = copy.deepcopy(parent_context.get("model_selection") or (
+        model_selection(settings) if settings is not None else {}
+    ))
+    limits = dict(selection.get("limits") or {})
+    if settings is not None:
+        for name, value in model_selection(settings)["limits"].items():
+            limits[name] = min(limits.get(name, value), value)
+    limits["max_turns"] = min(role.max_turns, limits.get("max_turns", role.max_turns))
+    limits["max_auto_continuations"] = 0
+    selection["limits"] = limits
+    context["model_selection"] = selection
     provider = (settings.provider if settings else None) or parent.get("provider")
     model = role.model or (settings.model if settings else None) or parent.get("model")
 
@@ -275,14 +308,13 @@ def wait_subagents(
     # The global worker pool executes children concurrently. Tests and embedded
     # callers without that pool get a temporary bounded pool.
     from agent import jobs
-    from agent.config import load_settings
     from agent.worker import TaskWorker
 
     worker = getattr(jobs, "_worker", None)
     local_workers: list[TaskWorker] = []
     if worker is None:
         for _ in range(min(DEFAULT_MAX_SUBAGENTS, max(1, len(child_ids)))):
-            local = TaskWorker(store, jobs._run_job, load_settings())
+            local = TaskWorker(store, jobs._run_job, jobs.worker_settings())
             local.start()
             local_workers.append(local)
 
@@ -356,6 +388,8 @@ def run_subagent_job(
         prompt,
         role_name=role.name,
         max_turns=role.max_turns,
+        run_mode=ctx.get("run_mode"),
+        permission_profile=ctx.get("permission_profile"),
         on_event=on_event,
         cancel_check=cancel_check,
         task_id=task_id,
@@ -389,15 +423,22 @@ def _execute_subagent_agent(
     cancel_check: Callable[[], None] | None,
     task_id: str,
     turn_id: str,
+    run_mode: str | None = None,
+    permission_profile: str | None = None,
 ) -> dict[str, Any]:
-    """Run the restricted child loop; tests replace this function with a fake."""
+    """Run the child loop with both inherited and role restrictions."""
     from dataclasses import replace
 
     from agent.loop import run_agent
 
+    role = get_role(role_name)
+    effective_mode = run_mode or role.permission_mode
+    if role.permission_mode == "read_only":
+        effective_mode = "read_only"
+        permission_profile = None
     limited = settings
     try:
-        limited = replace(settings, max_turns=max_turns, max_auto_continuations=0)
+        limited = replace(settings, max_turns=min(settings.max_turns, max_turns), max_auto_continuations=0)
     except (TypeError, ValueError):
         pass
 
@@ -418,7 +459,8 @@ def _execute_subagent_agent(
             f"{role.system_prompt}\n"
             "只能使用已提供的工具；不得尝试越权、创建子 Agent 或扩大任务范围。"
         ),
-        run_mode=role.permission_mode,
+        run_mode=effective_mode,
+        permission_profile=permission_profile,
     )
     return {
         "text": (answer or "")[:2000],

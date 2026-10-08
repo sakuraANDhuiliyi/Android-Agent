@@ -215,7 +215,7 @@ class ContextPlanner:
                 }
                 cost = _estimate_chars(_format_selection(item))
                 if cost <= available - used and not any(
-                    s["rel_path"] == rel and s["kind"] == "file" for s in selected
+                    s.get("kind") == "file" and s.get("rel_path") == rel for s in selected
                 ):
                     selected.append(item)
                     used += cost
@@ -227,7 +227,7 @@ class ContextPlanner:
                 if available - used <= 0:
                     break
                 rel = row["rel_path"]
-                if any(s["rel_path"] == rel and s["kind"] == "file" for s in selected):
+                if any(s.get("kind") == "file" and s.get("rel_path") == rel for s in selected):
                     continue
                 content = _read_file_fragment(workspace, rel, min(1500, available - used))
                 item = {
@@ -249,7 +249,7 @@ class ContextPlanner:
                 if available - used <= 0:
                     break
                 rel = hit["rel_path"]
-                if any(s["rel_path"] == rel and s["kind"] == "file" for s in selected):
+                if any(s.get("kind") == "file" and s.get("rel_path") == rel for s in selected):
                     continue
                 content = _read_file_fragment(workspace, rel, min(1500, available - used))
                 item = {

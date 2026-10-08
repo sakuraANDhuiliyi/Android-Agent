@@ -183,7 +183,7 @@ sudo systemctl start android-agent
 
 数据库、`workspaces/`、`builds/` 必须作为同一恢复点备份。建议每天增量备份、每周做一次异机快照，并实际演练恢复。
 
-## 9. 何时切换 PostgreSQL / Redis / 对象存储
+## 9. 当前支持的持久存储与备份
 
 单机先保持：
 
@@ -192,22 +192,48 @@ deployment_mode: sqlite
 artifact_backend: local
 ```
 
-需要多实例或更高可用时再切换：
+当前核心用户、任务和会话存储只支持 SQLite 单实例部署。`postgres` / `hybrid`
+尚未实现完整运行时后端，即使配置 URL 也会拒绝启动；不能用它们扩容 API 实例。
 
 | `deployment_mode` | 持久状态 | Ticket / 限流 | 必需配置 |
 |---|---|---|---|
 | `sqlite` | SQLite | SQLite | 无 |
-| `postgres` | PostgreSQL | 共享 SQL | `AGENT_DATABASE_URL` |
-| `hybrid` | PostgreSQL | Redis | `AGENT_DATABASE_URL`、`AGENT_REDIS_URL` |
+| `postgres` | 未实现，拒绝启动 | — | — |
+| `hybrid` | 未实现，拒绝启动 | — | — |
 
-对象存储模式还需 `AGENT_ARTIFACT_BACKEND=object` 与 `AGENT_OBJECT_STORE_URL=s3://...`。切换前使用：
+对象存储模式还需 `AGENT_ARTIFACT_BACKEND=object` 与 `AGENT_OBJECT_STORE_URL=s3://...`。
+迁移脚本仅供离线迁移验证，不代表服务已经支持 PostgreSQL：
 
 ```bash
 python3 scripts/migrate_sqlite_to_postgres.py --data-dir /var/lib/android-agent/data
 python3 scripts/migrate_sqlite_to_postgres.py --data-dir /var/lib/android-agent/data --apply --backup
 ```
 
-核对迁移生成的 `pg-migration/manifest.json` 中表计数、`row_total` 和 `aggregate_hash` 后再切流量。配置缺失时服务会拒绝启动，而不是静默降级。
+核对迁移生成的 `pg-migration/manifest.json` 中表计数、`row_total` 和 `aggregate_hash`。
+在运行时后端完成跨实例验收之前，不应将流量切换到这些模式。
+
+`scripts/backup_data.sh /backup/agent.tar.gz` 读取与服务相同的
+`AGENT_DATA_DIR`、`AGENT_WORKSPACES_DIR`、`AGENT_BUILDS_DIR`，并使用 SQLite backup API
+保存包含 WAL 中已提交事务的一致性副本。归档中的 `backup-manifest.json` 记录来源与已验证数据库。
+可以通过 `PYTHON=/opt/android-agent/.venv/bin/python` 指定运行环境。
+归档权限为 0600；数据库快照分别一致，若要求数据库与工作区文件属于同一恢复点，应先停止服务写入，
+再执行备份。恢复后必须实际核对会话、任务、工作区文件和 APK，不能只检查源库的完整性。
+
+### 离线构建缓存
+
+容器镜像构建时从受信任的 `template/` 联网预热依赖，随后验证离线构建，
+种子保存在 `/opt/gradle-seed`。运行时 `AGENT_GRADLE_CACHE_SEED` 指向该目录，
+首次构建将 wrapper 和依赖缓存复制进项目自己的 `.gradle`；各项目不共享可写缓存，构建仍禁止联网。
+
+非容器部署可由管理员在与服务相同的 OS/JDK/SDK 环境执行：
+
+```bash
+python3 scripts/prepare_gradle_seed.py --output /opt/android-agent/gradle-seed
+export AGENT_GRADLE_CACHE_SEED=/opt/android-agent/gradle-seed
+```
+
+该准备步骤会联网，只运行仓库内受信任模板。新引入的第三方依赖或不同 Gradle 版本需要管理员更新
+受信任模板与种子；不要对租户上传的项目在宿主机直接执行缓存准备。
 
 ## 10. 常见故障
 

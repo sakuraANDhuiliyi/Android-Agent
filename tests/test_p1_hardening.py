@@ -38,6 +38,7 @@ def worker_settings() -> SimpleNamespace:
         provider="openai",
         model="fake",
         provider_fallbacks=[],
+        model_candidates=["fake"],
     )
 
 

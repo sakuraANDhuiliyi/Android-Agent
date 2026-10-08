@@ -110,6 +110,7 @@
 
   // Last selection persisted before shutdown; applied once on the first
   // successful connect after launch so a restart restores the conversation.
+  let projectLoadToken = 0;
   const restoredSelection = { projectId: null, conversationId: null };
 
   const HISTORY_PAGE_LIMIT = 300;
@@ -401,20 +402,10 @@
     async openFile(path, line) {
       if (!path) return;
       try {
-        let abs = path;
-        if (!/^([A-Za-z]:[\\/]|\/)/.test(path)) {
-          const project = state.projects.find((p) => p.id === state.selectedProjectId);
-          const base = project?.workspace || window.EditorApp?.getRoot?.();
-          if (!base) {
-            toast("无法定位文件：未打开工作区");
-            return;
-          }
-          abs = await desktop.joinPath(base, path);
-        }
-        await window.EditorApp?.openPath?.(abs, undefined, line || 0);
-      } catch (err) {
-        toast(`打开文件失败: ${err.message}`);
-      }
+        const project = state.projects.find((p) => p.id === state.selectedProjectId);
+        if (!project) return toast("请先选择项目");
+        await window.EditorApp?.openProjectFile?.(project, path, line || 0);
+      } catch (err) { toast(`打开项目文件失败: ${err.message}`); }
     },
 
     async resolveApproval(item, approved) {
@@ -816,6 +807,16 @@
     const baseUrl = (els.serverUrl.value || "http://127.0.0.1:8000").trim().replace(/\/+$/, "");
     const token = els.apiToken.value.trim();
     els.serverUrl.value = baseUrl;
+    if (client.baseUrl !== baseUrl || client.token !== token) {
+      window.EditorApp?.clearRemoteWorkspace?.();
+      projectLoadToken += 1;
+      state.loadToken += 1;
+      stopWatcher();
+      state.selectedProjectId = null;
+      state.conversationId = null;
+      state.contextChips = [];
+      renderChips();
+    }
     client.configure({ baseUrl, token });
     savePrefs();
     if (!token) {
@@ -912,6 +913,7 @@
       return;
     }
     els.btnAccountLogin.disabled = true;
+    window.EditorApp?.clearRemoteWorkspace?.();
     client.configure({ baseUrl, token: "" });
     try {
       const auth = await client.login(email, password, desktopDevice());
@@ -979,32 +981,39 @@
   }
 
   async function maybeAutoSelectProject() {
-    const root = window.EditorApp?.getRoot?.();
-    if (!root || !state.projects.length) return;
-    for (const p of state.projects) {
-      if (!p.workspace) continue;
-      const rel = await desktop.relative(p.workspace, root).catch(() => null);
-      const rel2 = await desktop.relative(root, p.workspace).catch(() => null);
-      if (root === p.workspace || rel === "" || rel2 === "" || (rel && !rel.startsWith(".."))) {
-        await selectProject(p.id, { openWorkspace: false });
-        return;
-      }
-      const parts = root.split(/[/\\]/);
-      const idx = parts.lastIndexOf("workspaces");
-      if (idx >= 0 && parts[idx + 2] === p.id) {
-        await selectProject(p.id, { openWorkspace: false });
-        return;
-      }
+    const scope = window.EditorApp?.getWorkspace?.();
+    if (scope?.kind === "remote" && scope.userId === state.userId && scope.current() && state.projects.some((p) => p.id === scope.projectId)) {
+      await selectProject(scope.projectId);
     }
   }
 
-  async function selectProject(projectId, { openWorkspace = false } = {}) {
+  async function selectProject(projectId, _options = {}) {
+    const selection = ++projectLoadToken;
+    const restoredConversation = !state.selectedProjectId ? state.conversationId : null;
+    if (projectId !== state.selectedProjectId) {
+      persistDraft();
+      stopWatcher();
+      state.conversationId = null;
+      state.conversations = [];
+      state.currentJobId = null;
+      state.running = false;
+      state.jobStatus = null;
+      els.promptInput.value = "";
+      renderConversationSelect();
+      state.loadToken += 1;
+      state.contextChips = [];
+      renderChips();
+      timeline.reset();
+      view?.reset();
+      renderTimeline();
+    }
     state.selectedProjectId = projectId || null;
     savePrefs();
     if (projectId) els.projectSelect.value = projectId;
     updateComposer();
 
     if (!projectId) {
+      window.EditorApp?.clearRemoteWorkspace?.();
       state.loadToken += 1; // drop any in-flight conversation loads
       state.conversations = [];
       state.conversationId = null;
@@ -1020,11 +1029,10 @@
     }
 
     const project = state.projects.find((p) => p.id === projectId);
-    if (openWorkspace && project?.workspace) {
-      const exists = await desktop.exists(project.workspace);
-      if (exists) await window.EditorApp?.openFolder?.(project.workspace);
-    }
-    await loadConversations(projectId);
+    if (!project) return;
+    await window.EditorApp?.openRemoteProject?.(project, client, state.userId);
+    if (selection !== projectLoadToken) return;
+    await loadConversations(projectId, { preferId: restoredConversation });
   }
 
   function formatConversationLabel(conv) {
@@ -1056,11 +1064,15 @@
   }
 
   async function loadConversations(projectId, { preferId = null, loadHistory = true } = {}) {
+    const selection = projectLoadToken;
+    const current = () => selection === projectLoadToken && state.selectedProjectId === projectId;
     try {
       const data = await client.conversations(projectId);
+      if (!current()) return;
       state.conversations = data.conversations || [];
       if (!state.conversations.length) {
         const created = await client.createConversation(projectId, "默认对话");
+        if (!current()) return;
         state.conversations = [created];
       }
       let preferred =
@@ -1081,6 +1093,7 @@
       }
       await selectConversation(preferred, { loadHistory });
     } catch (err) {
+      if (!current()) return;
       state.conversations = [];
       state.conversationId = null;
       renderConversationSelect();
@@ -1104,10 +1117,12 @@
 
   /** Load the newest page of a conversation. Caller checks the load token. */
   async function loadLatestHistory(conversationId) {
+    const token = state.loadToken;
     const data = await client.conversationEvents(conversationId, {
       beforeSeq: Number.MAX_SAFE_INTEGER,
       limit: HISTORY_PAGE_LIMIT,
     });
+    if (token !== state.loadToken) return;
     const events = data.events || [];
     timeline.ingestConversationEvents(events);
     state.historyCursor = {
@@ -1341,15 +1356,13 @@
   }
 
   async function refreshOpenFilesAfterJob(job) {
-    const files = job?.changed_files || [];
-    const project = state.projects.find((p) => p.id === state.selectedProjectId);
-    const base = project?.workspace || window.EditorApp?.getRoot?.();
-    if (base) await window.EditorApp?.refreshTree?.({ silent: true });
-    for (const file of files) {
+    const scope = window.EditorApp?.getWorkspace?.();
+    if (scope?.kind !== "remote" || scope.projectId !== state.selectedProjectId || (job?.project_id && scope.projectId !== job.project_id)) return;
+    await window.EditorApp?.refreshTree?.({ silent: true });
+    for (const file of job?.changed_files || []) {
+      if (window.EditorApp?.getWorkspace?.() !== scope) return;
       const rel = typeof file === "string" ? file : file.path;
-      if (!rel || !base) continue;
-      const abs = await desktop.joinPath(base, rel);
-      await window.EditorApp?.reloadPathIfOpen?.(abs);
+      if (rel) await window.EditorApp?.reloadPathIfOpen?.(rel);
     }
   }
 
@@ -1560,34 +1573,19 @@
   }
 
   async function addContextChip(kind) {
+    const scope = window.EditorApp?.getWorkspace?.();
+    if ((kind === "file" || kind === "folder") && (scope?.kind !== "remote" || scope.projectId !== state.selectedProjectId || !scope.current())) {
+      return toast("请打开当前云端项目后再添加文件或目录上下文");
+    }
     if (kind === "file") {
       const tab = window.EditorApp?.getActiveTab?.();
       if (!tab?.path) {
         toast("当前没有打开的文件");
         return;
       }
-      const root = window.EditorApp?.getRoot?.();
-      let label = tab.title;
-      if (root) {
-        try {
-          label = await desktop.relative(root, tab.path);
-        } catch (_) {
-          /* keep title */
-        }
-      }
-      pushChip({ key: `file:${tab.path}`, kind: "file", label, path: tab.path });
+      pushChip({ key: `file:${tab.path}`, kind: "file", label: tab.path, path: tab.path });
     } else if (kind === "folder") {
-      const root = window.EditorApp?.getRoot?.();
-      if (!root) {
-        toast("未打开文件夹");
-        return;
-      }
-      pushChip({
-        key: `folder:${root}`,
-        kind: "folder",
-        label: root.split(/[/\\]/).pop() || root,
-        path: root,
-      });
+      pushChip({ key: `folder:${scope.projectId}`, kind: "folder", label: scope.label, path: "." });
     } else if (kind === "selection") {
       const sel = window.EditorApp?.getSelection?.();
       if (!sel?.text) {

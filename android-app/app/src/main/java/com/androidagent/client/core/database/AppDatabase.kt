@@ -26,18 +26,24 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun approvalDao(): ApprovalDao
 
     companion object {
-        @Volatile
-        private var instance: AppDatabase? = null
+        private val instances = mutableMapOf<String, AppDatabase>()
+        private var legacyCacheRemoved = false
 
-        fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(
-                context.applicationContext,
-                AppDatabase::class.java,
-                "agent_cache.db",
-            )
-                .fallbackToDestructiveMigration()
-                .build()
-                .also { instance = it }
+        fun get(context: Context, session: CacheSession): AppDatabase = synchronized(this) {
+            // The old database has no owner metadata and cannot be safely assigned to an account.
+            if (!legacyCacheRemoved) {
+                context.applicationContext.deleteDatabase("agent_cache.db")
+                legacyCacheRemoved = true
+            }
+            instances.getOrPut(session.databaseName) {
+                Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    session.databaseName,
+                )
+                    .fallbackToDestructiveMigration()
+                    .build()
+            }
         }
     }
 }

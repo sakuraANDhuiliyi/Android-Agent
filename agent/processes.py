@@ -527,6 +527,9 @@ def run_command(
     if not executable_exists:
         raise ProcessStartError(f"无法启动进程: 找不到可执行文件 {executable}")
     prepare_workspace_env(workspace, minimal_env)
+    if Path(argv[0]).name == "gradlew":
+        from agent.gradle_cache import seed_gradle_cache
+        seed_gradle_cache(workspace)
     command = build_sandboxed_command(
         argv,
         workspace,

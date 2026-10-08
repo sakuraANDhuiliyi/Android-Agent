@@ -186,7 +186,7 @@ class FakeStdioMcpTests(McpHooksFixture):
         )
         state = mgr.start_server("fake")
         self.assertEqual(state["status"], "ready")
-        self.assertTrue(get_tool_spec("mcp__fake__echo"))
+        self.assertTrue(get_tool_spec("mcp__fake__echo", scope=mgr.registry_scope))
 
         # Force crash mode on reconnect
         mgr._servers["fake"].config.env_refs["FAKE_MCP_MODE"] = "crash"  # noqa: SLF001
@@ -308,7 +308,7 @@ class FakeStdioMcpTests(McpHooksFixture):
             self.user_id, self.project_id, self.workspace, on_event=on_event
         )
         mgr.start_server("fake")
-        spec = get_tool_spec("mcp__fake__echo")
+        spec = get_tool_spec("mcp__fake__echo", scope=mgr.registry_scope)
         self.assertIsNotNone(spec)
         self.assertEqual(spec.approval_kind, "mcp_tool")
         decision = decide_permission(spec, "workspace")

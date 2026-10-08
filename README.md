@@ -4,7 +4,7 @@ Android Agent 由 Python/FastAPI 服务端和 Android 客户端组成。App 使�
 
 ## 创意广场（Android）
 
-Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。底部导航中的“创意”默认读取服务端目录，支持搜索、动态分类、分页、详情、封面和源码复制。后台编辑与上下架可在客户端刷新后生效，无需重新发布 APK。
+Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。底部导航中的“创意”默认进入精选展厅，展示 23 个可交互的 Compose 作品（15 个开源最小移植、8 个独立原创场景）。社区目录入口继续读取服务端，支持搜索、动态分类、分页、详情、封面和源码复制；后台编辑与上下架可在客户端刷新后生效。
 
 - 管理员进入 `/admin/` → **创意目录**，可以新建、编辑草稿、发布指定版本、回滚历史版本、上下架、归档、设置推荐与排序，并管理分类和查看审计记录。
 - 首次使用可点击 **导入内置创意**。默认只导入草稿，勾选“同时上架本次新增条目”才会发布；重复导入跳过已有条目，保留后台修改和下架状态。
@@ -15,13 +15,14 @@ Android 客户端采用 View/XML 与 Jetpack Compose 混合架构。底部导航
 - 新投稿默认暂停。启用 `admin_ui_enabled: true`、配置独立管理员凭据后，设置 `creative_submissions_enabled: true` 或 `AGENT_CREATIVE_SUBMISSIONS_ENABLED=true` 并重启服务。暂停新投稿仍保留草稿、撤回、已有审核和消息访问；`creative_catalog_enabled: false` 会关闭整个创意 API。
 - 社区内容的受管应用和隔离构建验证仍未开放；功能状态以 `/api/creative/capabilities` 为准，人工审核通过不会标成构建验证通过。
 
-独立的 **内置示例** 入口保留原有 500 个示例及离线预览：
+**本地精选** 替换原有 500 个基础与换色示例，全部可离线预览：
 
 - 点击卡片查看实时效果和完整 Compose 源码。
 - “复制代码”把核心 `@Composable` 写入系统剪贴板。
 - “应用到项目”选择已有项目后创建独立对话，把 Recipe 源码、兼容要求和构建验证要求发送给 Agent；Agent 会根据目标项目是 Compose 还是 XML/View 做适配。
 - Recipe 目录位于 `android-app/app/src/main/java/com/androidagent/client/creative/CreativeCatalog.kt`。新增条目时应提供唯一 ID、分类、预览类型、可复制源码和最低 SDK。
-- 当前包含 500 个示例（26 个视觉系列、48 套布局及原有组件），支持分类与风格组合筛选；收录规则、参考来源与生成方式见 [创意广场样式目录](docs/CREATIVE_SQUARE_CATALOG.md)。
+- 新增文字绕流、液态揭幕、纸页翻折、弹跳凹槽导航、数据环流、圆柱透视选择器、黏性气泡滑杆、放射工具盘、星图刮印、引力点阵、全息倾斜通行证、轮廓形变、拖拽排字、分层地貌标本和机械翻牌计数台；详情可追溯视频、锁定的 GitHub 源码与完整许可，复制代码自动携带归属和修改说明。
+- 原创场景包含轨道唱片机、光谱调音台、等高线探索、动态排版海报、艺术展览索引、生长心情签、翻页出发票、流沙专注钟，支持搜索与分类筛选；收录规则与生成方式见 [创意广场样式目录](docs/CREATIVE_SQUARE_CATALOG.md)。
 
 Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有 Activity/Fragment。
 

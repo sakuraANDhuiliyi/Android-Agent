@@ -1,1748 +1,1295 @@
 {
-  "schemaVersion": 1,
-  "researchedOn": "2026-09-09",
+  "schemaVersion": 3,
+  "updatedOn": "2026-10-08",
   "limit": 500,
-  "note": "26 个视觉系列，494 个风格与布局组合，加上原有 6 个互动组件。设计语言参考公开页面，Compose 代码为本项目原创；没有将第三方作品或源码打包进 App。",
+  "note": "15 个可追溯来源的开源最小移植 + 8 个独立原创场景。只移植关键路径、绘制与交互；完整保留许可，不引入整库、网络图片或字体。",
   "patternReference": {
-    "title": "Atlassian Design · 组件基础规范",
-    "url": "https://atlassian.design/components/"
+    "title": "Android Developers · Compose semantics",
+    "url": "https://developer.android.com/develop/ui/compose/accessibility/semantics"
   },
   "styles": [
     {
-      "id": "minimal",
-      "label": "留白极简",
-      "background": "FAFAF8",
-      "surface": "FFFFFF",
-      "ink": "202420",
-      "accent": "315D43",
-      "secondary": "D6E5C6",
+      "id": "lenticular",
+      "label": "折光通行证",
+      "background": "E9ECE7",
+      "surface": "F2F2E7",
+      "ink": "243535",
+      "accent": "A6D6C7",
+      "secondary": "C4BAE3",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "倾斜触点驱动全息印纹、图层视差与方向反光",
+      "reference": {
+        "title": "GitHub · vanilla-tilt.js",
+        "url": "https://github.com/micku7zu/vanilla-tilt.js"
+      },
+      "references": [
+        {
+          "title": "GitHub · vanilla-tilt.js",
+          "url": "https://github.com/micku7zu/vanilla-tilt.js"
+        },
+        {
+          "title": "作者交互演示",
+          "url": "https://micku7zu.github.io/vanilla-tilt.js/index.html"
+        },
+        {
+          "title": "getValues 与反光核心 · 锁定版本",
+          "url": "https://github.com/micku7zu/vanilla-tilt.js/blob/48f4ee931d4d91dcdd2f91803db67a9f3a16587e/src/vanilla-tilt.js"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/micku7zu/vanilla-tilt.js/blob/48f4ee931d4d91dcdd2f91803db67a9f3a16587e/LICENSE"
+        }
+      ],
+      "patterns": [
+        "foiltilt"
+      ],
+      "origin": {
+        "project": "micku7zu/vanilla-tilt.js",
+        "repository": "https://github.com/micku7zu/vanilla-tilt.js",
+        "revision": "48f4ee931d4d91dcdd2f91803db67a9f3a16587e",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/vanilla-tilt.txt",
+        "adaptation": "仅提取 getValues 的触点归一化、双轴角度、atan2 反光方向与纵向位置强度；用 Compose 弹簧和触摸代替浏览器事件/CSS，原创程序印纹与视差图层替换 DOM，不使用陀螺仪、图片或 JS 引擎。",
+        "evidence": "直接搜索 GitHub，核对作者 README、交互演示地址、固定版本源码及 MIT 许可；上游注明源自 Gijs Rogé 的 Tilt.js，源码头保留该归属。未声称存在视频直链。"
+      }
+    },
+    {
+      "id": "formpress",
+      "label": "形态印章",
+      "background": "F8F0E3",
+      "surface": "EEE2D1",
+      "ink": "243651",
+      "accent": "ED593A",
+      "secondary": "C2CEDA",
       "radius": 12,
       "border": 0,
-      "finish": "flat",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "大留白、轻分隔与克制层级，适合阅读和日常工具",
+      "summary": "芒星、十字与徽盾，在指尖连续变化",
       "reference": {
-        "title": "Dribbble · minimal-ui",
-        "url": "https://dribbble.com/tags/minimal-ui"
+        "title": "GitHub · veltman/flubber",
+        "url": "https://github.com/veltman/flubber"
       },
+      "references": [
+        {
+          "title": "GitHub · veltman/flubber",
+          "url": "https://github.com/veltman/flubber"
+        },
+        {
+          "title": "保留顶点的轮廓补点 · 锁定源码",
+          "url": "https://github.com/veltman/flubber/blob/0cadadf3eb15cd5b2ec7c45c70601ff88b76a6c3/src/add.js"
+        },
+        {
+          "title": "环起点对齐 · 锁定源码",
+          "url": "https://github.com/veltman/flubber/blob/0cadadf3eb15cd5b2ec7c45c70601ff88b76a6c3/src/rotate.js"
+        },
+        {
+          "title": "轮廓点插值 · 锁定源码",
+          "url": "https://github.com/veltman/flubber/blob/0cadadf3eb15cd5b2ec7c45c70601ff88b76a6c3/src/math.js"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/veltman/flubber/blob/0cadadf3eb15cd5b2ec7c45c70601ff88b76a6c3/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "profile",
-        "calendar",
-        "timeline",
-        "checklist",
-        "stats",
-        "sparkline",
-        "search",
-        "settings",
-        "tabs",
-        "login",
-        "form",
-        "product",
-        "receipt",
-        "timer",
-        "rating",
-        "accordion",
-        "onboarding",
-        "grid"
-      ]
+        "morphstamp"
+      ],
+      "origin": {
+        "project": "veltman/flubber",
+        "repository": "https://github.com/veltman/flubber",
+        "revision": "0cadadf3eb15cd5b2ec7c45c70601ff88b76a6c3",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/flubber-morphstamp.txt",
+        "adaptation": "仅移植 addPoints 的保留顶点补点、rotate 的最小平方位移环对齐和 interpolatePoint 的逐点插值。用原生 Offset/Path 绘制三个原创轮廓及套色描边，缓存 96 点匹配，新增横向拖动、形状按钮与进度滑块；不复制 SVG 解析器、D3、上游美术或多形状分合引擎。",
+        "evidence": "本轮检索 Bilibili 与抖音未得到可信的视频到仓库直连证据；本项明确采用直接 GitHub 来源，核对作者仓库的固定提交、核心实现与完整 MIT 许可。"
+      }
     },
     {
-      "id": "material",
-      "label": "Material 色块",
-      "background": "FFF8FF",
-      "surface": "F1EAF7",
-      "ink": "241B2C",
-      "accent": "6750A4",
-      "secondary": "D9A7CB",
-      "radius": 28,
+      "id": "typesetter",
+      "label": "排字工坊",
+      "background": "F3EEE2",
+      "surface": "DCCCBC",
+      "ink": "272321",
+      "accent": "D64A30",
+      "secondary": "BAB2DC",
+      "radius": 20,
       "border": 0,
-      "finish": "elevated",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "圆角容器、色调层级与明确行动区，适合通用 App",
+      "summary": "长按字块交换位置，版面弹性让位，用手重新编排一句话",
       "reference": {
-        "title": "Material Design · Components",
-        "url": "https://m3.material.io/components"
+        "title": "YouTube · William Candillon · Chrome Drag-to-Sort",
+        "url": "https://www.youtube.com/watch?v=-39OEXk_mWc"
       },
+      "references": [
+        {
+          "title": "YouTube · William Candillon · Chrome Drag-to-Sort",
+          "url": "https://www.youtube.com/watch?v=-39OEXk_mWc"
+        },
+        {
+          "title": "GitHub · 视频简介中的 Chrome 源码目录",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/tree/72678212d4041f124e1585cdf6360f36737daa5f/season4/src/Chrome"
+        },
+        {
+          "title": "坐标格序 · 锁定源码",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/season4/src/Chrome/Config.tsx"
+        },
+        {
+          "title": "互换与归位 · 锁定源码",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/season4/src/Chrome/Item.tsx"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/LICENSE"
+        }
+      ],
       "patterns": [
-        "bento",
-        "profile",
-        "pricing",
-        "music",
-        "calendar",
-        "checklist",
-        "stats",
-        "ring",
-        "notification",
-        "empty",
-        "search",
-        "settings",
-        "slider",
-        "stepper",
-        "tabs",
-        "dock",
-        "form",
-        "product",
-        "onboarding"
-      ]
+        "typesort"
+      ],
+      "origin": {
+        "project": "wcandillon/can-it-be-done-in-react-native · Chrome",
+        "repository": "https://github.com/wcandillon/can-it-be-done-in-react-native",
+        "revision": "72678212d4041f124e1585cdf6360f36737daa5f",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/candillon-drag-sort.txt",
+        "adaptation": "仅移植 Config 的坐标取整→格序及 Item 的位置互换、拖动层抬升与释放归位。Compose 原生实现长按拖动、轴向限制、有限弹簧和前移/后移/重置按钮；新增双列排字美术，支持 1–12 项，不复制浏览器截图、React 组件、自动滚动基础设施或任何依赖。",
+        "evidence": "直接读取 YouTube -39OEXk_mWc 公开页面 shortDescription：Source code 指向同仓库 season4/src/Chrome。已核对该固定提交的 Config.tsx、Item.tsx、SortableList.tsx 与根目录完整 MIT 许可；核验范围为视频标题/简介及源码，未声称完整播放视频。"
+      }
     },
     {
-      "id": "glass",
-      "label": "通透玻璃",
-      "background": "14233E",
-      "surface": "243651",
-      "ink": "F0F5FF",
-      "accent": "A7C7FF",
-      "secondary": "D8B5FF",
-      "radius": 22,
-      "border": 1,
-      "finish": "glass",
-      "typography": "sans",
-      "summary": "透明叠层、细描边与背景光斑营造玻璃感，兼容旧版 Android",
-      "reference": {
-        "title": "Dribbble · glassmorphism",
-        "url": "https://dribbble.com/tags/glassmorphism"
-      },
-      "patterns": [
-        "bento",
-        "profile",
-        "pricing",
-        "boarding",
-        "music",
-        "equalizer",
-        "stats",
-        "sparkline",
-        "ring",
-        "gauge",
-        "notification",
-        "search",
-        "command",
-        "slider",
-        "dock",
-        "otp",
-        "weather",
-        "timer",
-        "swatches"
-      ]
-    },
-    {
-      "id": "brutal",
-      "label": "新粗野主义",
-      "background": "FFF6D8",
-      "surface": "FFFBEF",
-      "ink": "242116",
-      "accent": "B4E342",
-      "secondary": "FFAD85",
-      "radius": 3,
-      "border": 3,
-      "finish": "hard",
-      "typography": "sans",
-      "summary": "粗黑边框、硬偏移投影和醒目标记构成直接的视觉表达",
-      "reference": {
-        "title": "Agoy Wardhana · Neubrutalism Mobile App Design Exploration",
-        "url": "https://dribbble.com/shots/25960693-Neubrutalism-Mobile-App-Design-Exploration"
-      },
-      "patterns": [
-        "hero",
-        "bento",
-        "pricing",
-        "ticket",
-        "podcast",
-        "kanban",
-        "stats",
-        "bars",
-        "leaderboard",
-        "comparison",
-        "notification",
-        "empty",
-        "command",
-        "tabs",
-        "form",
-        "product",
-        "cart",
-        "poll",
-        "onboarding"
-      ]
-    },
-    {
-      "id": "soft",
-      "label": "柔和拟物",
-      "background": "E9EEF4",
-      "surface": "E9EEF4",
-      "ink": "34415B",
-      "accent": "51699C",
-      "secondary": "B8C8E0",
-      "radius": 22,
+      "id": "stratalab",
+      "label": "景深地貌标本",
+      "background": "EEE9DF",
+      "surface": "F7F2E7",
+      "ink": "2B332F",
+      "accent": "BA704E",
+      "secondary": "91AA92",
+      "radius": 20,
       "border": 0,
-      "finish": "soft",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "同色背景与柔软投影强调控件的轻微浮起感",
+      "summary": "邻页退入景深，地貌在面前逐层展开",
       "reference": {
-        "title": "Dribbble · neumorphism",
-        "url": "https://dribbble.com/tags/neumorphism"
+        "title": "GitHub · Ramotion Expanding Collection",
+        "url": "https://github.com/Ramotion/expanding-collection-android"
       },
+      "references": [
+        {
+          "title": "官方 README 与展开动图",
+          "url": "https://github.com/Ramotion/expanding-collection-android/blob/07ca505e41db1c8d6972731df8834e236dd232c1/README.md"
+        },
+        {
+          "title": "景深缩放与透明度插值",
+          "url": "https://github.com/Ramotion/expanding-collection-android/blob/07ca505e41db1c8d6972731df8834e236dd232c1/expanding-collection/src/main/java/com/ramotion/expandingcollection/AlphaScalePageTransformer.java"
+        },
+        {
+          "title": "邻页推出与延迟展开时序",
+          "url": "https://github.com/Ramotion/expanding-collection-android/blob/07ca505e41db1c8d6972731df8834e236dd232c1/expanding-collection/src/main/java/com/ramotion/expandingcollection/ECPagerCard.java"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/Ramotion/expanding-collection-android/blob/07ca505e41db1c8d6972731df8834e236dd232c1/LICENSE.md"
+        },
+        {
+          "title": "原作者 · Ramotion",
+          "url": "https://www.ramotion.com"
+        }
+      ],
       "patterns": [
-        "profile",
-        "music",
-        "equalizer",
-        "calendar",
-        "checklist",
-        "stats",
-        "ring",
-        "gauge",
-        "settings",
-        "slider",
-        "stepper",
-        "dock",
-        "login",
-        "otp",
-        "cart",
-        "weather",
-        "timer",
-        "rating",
-        "accordion"
-      ]
+        "depthstack"
+      ],
+      "origin": {
+        "project": "Ramotion/expanding-collection-android",
+        "repository": "https://github.com/Ramotion/expanding-collection-android",
+        "revision": "07ca505e41db1c8d6972731df8834e236dd232c1",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/ramotion-expanding-collection.txt",
+        "adaptation": "保留 AlphaScalePageTransformer 的非激活0.8缩放/0.5透明度及连续景深插值，并移植 ECPagerCard 先推邻页、延迟150ms展开和反向收起的时序；改为三个原创Canvas地貌标本和五层展开绘图，删除ViewPager、位图缓存、适配器及全屏依赖。",
+        "evidence": "直接核验官方README动图、固定版本两份核心源码与实际LICENSE.md；MIT版权归属2017 Ramotion。"
+      }
     },
     {
-      "id": "clay",
-      "label": "黏土圆润",
-      "background": "EEE6F8",
-      "surface": "F8F1FF",
-      "ink": "423452",
-      "accent": "8254BA",
-      "secondary": "E4B1D4",
-      "radius": 32,
-      "border": 1,
-      "finish": "clay",
-      "typography": "sans",
-      "summary": "膨润圆角、柔软体积和糖果色块，适合轻松的引导界面",
-      "reference": {
-        "title": "Dribbble · claymorphism",
-        "url": "https://dribbble.com/tags/claymorphism"
-      },
-      "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "pricing",
-        "music",
-        "checklist",
-        "ring",
-        "leaderboard",
-        "chat",
-        "notification",
-        "empty",
-        "settings",
-        "slider",
-        "form",
-        "product",
-        "weather",
-        "rating",
-        "poll",
-        "onboarding"
-      ]
-    },
-    {
-      "id": "editorial",
-      "label": "杂志编辑",
-      "background": "F5F1E8",
-      "surface": "FBF8F1",
-      "ink": "29251E",
-      "accent": "8A392A",
-      "secondary": "CFBA8E",
-      "radius": 0,
+      "id": "mechanical",
+      "label": "机械翻片计数台",
+      "background": "191E24",
+      "surface": "303840",
+      "ink": "EEECE2",
+      "accent": "E7AF63",
+      "secondary": "91BCC3",
+      "radius": 20,
       "border": 0,
-      "finish": "editorial",
-      "typography": "serif",
-      "summary": "衬线标题、纸色底板和细横线突出阅读节奏",
-      "reference": {
-        "title": "Dribbble · editorial-design",
-        "url": "https://dribbble.com/tags/editorial-design"
-      },
-      "patterns": [
-        "hero",
-        "profile",
-        "ticket",
-        "boarding",
-        "podcast",
-        "timeline",
-        "stats",
-        "sparkline",
-        "comparison",
-        "chat",
-        "notification",
-        "search",
-        "product",
-        "receipt",
-        "weather",
-        "rating",
-        "accordion",
-        "story",
-        "grid"
-      ]
-    },
-    {
-      "id": "swiss",
-      "label": "瑞士网格",
-      "background": "F4F4F0",
-      "surface": "FFFFFF",
-      "ink": "171717",
-      "accent": "BA2727",
-      "secondary": "F3C75E",
-      "radius": 0,
-      "border": 1,
-      "finish": "swiss",
-      "typography": "sans",
-      "summary": "强对齐、直角模块和红色强调让信息呈现理性秩序",
-      "reference": {
-        "title": "Dribbble · swiss-style",
-        "url": "https://dribbble.com/tags/swiss-style"
-      },
-      "patterns": [
-        "hero",
-        "bento",
-        "ticket",
-        "calendar",
-        "timeline",
-        "kanban",
-        "stats",
-        "bars",
-        "sparkline",
-        "heatmap",
-        "funnel",
-        "leaderboard",
-        "comparison",
-        "command",
-        "stepper",
-        "tabs",
-        "product",
-        "receipt",
-        "grid"
-      ]
-    },
-    {
-      "id": "bauhaus",
-      "label": "包豪斯几何",
-      "background": "F3EBD4",
-      "surface": "FFF8E7",
-      "ink": "21262E",
-      "accent": "AA2F27",
-      "secondary": "E8B936",
-      "radius": 0,
-      "border": 2,
-      "finish": "bauhaus",
-      "typography": "sans",
-      "summary": "圆与方的几何对照、原色强调和不对称装饰",
-      "reference": {
-        "title": "Paulo Amican · Bauhaus-Styled Mobile App",
-        "url": "https://dribbble.com/shots/22842114-Bauhaus-Styled-Mobile-App"
-      },
-      "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "ticket",
-        "music",
-        "equalizer",
-        "calendar",
-        "stats",
-        "bars",
-        "ring",
-        "leaderboard",
-        "empty",
-        "tabs",
-        "dock",
-        "product",
-        "weather",
-        "swatches",
-        "onboarding",
-        "grid"
-      ]
-    },
-    {
-      "id": "retro",
-      "label": "复古印刷",
-      "background": "EEE0C2",
-      "surface": "F6EBCF",
-      "ink": "3D3026",
-      "accent": "91522A",
-      "secondary": "A8AF79",
-      "radius": 10,
-      "border": 2,
-      "finish": "retro",
-      "typography": "serif",
-      "summary": "暖纸色、棕色墨感和厚实轮廓唤起复古印刷感",
-      "reference": {
-        "title": "Dribbble · retro-ui",
-        "url": "https://dribbble.com/tags/retro-ui"
-      },
-      "patterns": [
-        "hero",
-        "profile",
-        "ticket",
-        "boarding",
-        "music",
-        "podcast",
-        "calendar",
-        "timeline",
-        "checklist",
-        "leaderboard",
-        "chat",
-        "search",
-        "product",
-        "cart",
-        "receipt",
-        "weather",
-        "rating",
-        "story",
-        "grid"
-      ]
-    },
-    {
-      "id": "pixel",
-      "label": "像素街机",
-      "background": "151D2B",
-      "surface": "223246",
-      "ink": "D4F8DF",
-      "accent": "9FEA6B",
-      "secondary": "F9CF6A",
-      "radius": 0,
-      "border": 2,
-      "finish": "pixel",
+      "finish": "source-study",
       "typography": "mono",
-      "summary": "方形像素格、等宽数字和硬边投影，适合游戏化工具",
+      "summary": "上下翻片沿中轴交接，只有变化的数字才翻动",
       "reference": {
-        "title": "Dribbble · pixel-art",
-        "url": "https://dribbble.com/tags/pixel-art"
+        "title": "GitHub · absswds/FlipClock",
+        "url": "https://github.com/absswds/FlipClock"
       },
+      "references": [
+        {
+          "title": "官方 README 与预览",
+          "url": "https://github.com/absswds/FlipClock/blob/4b9b714811fbcb8a6f2e0490a122ce923781a15f/README.md"
+        },
+        {
+          "title": "上游半片翻转核心 · FlipGlyph",
+          "url": "https://github.com/absswds/FlipClock/blob/4b9b714811fbcb8a6f2e0490a122ce923781a15f/app/src/main/java/com/binbi/flipclock/clock/flip/FlipGlyph.kt"
+        },
+        {
+          "title": "上游机械中轴绘制 · UnitFlipCard",
+          "url": "https://github.com/absswds/FlipClock/blob/4b9b714811fbcb8a6f2e0490a122ce923781a15f/app/src/main/java/com/binbi/flipclock/clock/flip/UnitFlipCard.kt"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/absswds/FlipClock/blob/4b9b714811fbcb8a6f2e0490a122ce923781a15f/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "bento",
-        "ticket",
-        "music",
-        "equalizer",
-        "checklist",
-        "kanban",
-        "stats",
-        "bars",
-        "ring",
-        "heatmap",
-        "leaderboard",
-        "notification",
-        "empty",
-        "command",
-        "stepper",
-        "otp",
-        "timer",
-        "poll"
-      ]
+        "flapcounter"
+      ],
+      "origin": {
+        "project": "absswds/FlipClock",
+        "repository": "https://github.com/absswds/FlipClock",
+        "revision": "4b9b714811fbcb8a6f2e0490a122ce923781a15f",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/absswds-flipclock.txt",
+        "adaptation": "移植FlipGlyph的上下半片按完整字面高度测量、90度时换面、180度归并静态字面与独立数位更新；替换时钟、字体、主题和阴影工具为手动00至99计数器、系统等宽字和原生渐层；不使用日期API、后台计时、新依赖或资源。",
+        "evidence": "直接核验官方README、MIT LICENSE与FlipGlyph/UnitFlipCard实现；保留MIT版权归属2026 absswds。上游App的minSDK26来自整App范围，本次提取只使用API24可用Compose布局和3D图层。"
+      }
     },
     {
-      "id": "terminal",
-      "label": "终端字符",
-      "background": "101915",
-      "surface": "172820",
-      "ink": "C9F6DC",
-      "accent": "82E8AD",
-      "secondary": "B7D978",
-      "radius": 0,
-      "border": 1,
-      "finish": "terminal",
-      "typography": "mono",
-      "summary": "等宽字体、暗色细网格和命令式信息层级",
-      "reference": {
-        "title": "Dribbble · terminal",
-        "url": "https://dribbble.com/tags/terminal"
-      },
-      "patterns": [
-        "hero",
-        "timeline",
-        "checklist",
-        "kanban",
-        "stats",
-        "bars",
-        "sparkline",
-        "heatmap",
-        "funnel",
-        "notification",
-        "search",
-        "command",
-        "settings",
-        "stepper",
-        "tabs",
-        "login",
-        "otp",
-        "timer",
-        "accordion"
-      ]
-    },
-    {
-      "id": "cyber",
-      "label": "赛博切角",
-      "background": "111421",
-      "surface": "1F2637",
-      "ink": "E5F7FF",
-      "accent": "70E5F5",
-      "secondary": "EDCE67",
-      "radius": 12,
-      "border": 1,
-      "finish": "cut",
-      "typography": "mono",
-      "summary": "切角容器、冷色高光与仪表信息构成未来控制界面",
-      "reference": {
-        "title": "Dribbble · cyberpunk-ui",
-        "url": "https://dribbble.com/tags/cyberpunk-ui"
-      },
-      "patterns": [
-        "hero",
-        "bento",
-        "boarding",
-        "music",
-        "equalizer",
-        "stats",
-        "bars",
-        "sparkline",
-        "ring",
-        "gauge",
-        "funnel",
-        "leaderboard",
-        "command",
-        "settings",
-        "slider",
-        "dock",
-        "otp",
-        "map",
-        "timer"
-      ]
-    },
-    {
-      "id": "synth",
-      "label": "合成波网格",
-      "background": "231336",
-      "surface": "34204B",
-      "ink": "FCEAFB",
-      "accent": "EEA3E9",
-      "secondary": "7ED4EF",
-      "radius": 8,
-      "border": 1,
-      "finish": "synth",
-      "typography": "mono",
-      "summary": "紫色夜幕、霓虹网格和复古电子配色，适合媒体与游戏",
-      "reference": {
-        "title": "Dribbble · synthwave",
-        "url": "https://dribbble.com/tags/synthwave"
-      },
-      "patterns": [
-        "hero",
-        "ticket",
-        "music",
-        "podcast",
-        "equalizer",
-        "timeline",
-        "stats",
-        "bars",
-        "sparkline",
-        "ring",
-        "leaderboard",
-        "chat",
-        "notification",
-        "empty",
-        "tabs",
-        "dock",
-        "weather",
-        "timer",
-        "story"
-      ]
-    },
-    {
-      "id": "aurora",
-      "label": "极光弥散",
-      "background": "102D35",
-      "surface": "1C4149",
-      "ink": "E6FAF7",
-      "accent": "8EE5CA",
-      "secondary": "B3A9F6",
-      "radius": 26,
+      "id": "magneticfield",
+      "label": "磁场标本",
+      "background": "171526",
+      "surface": "211E34",
+      "ink": "F2EFEB",
+      "accent": "CAEA8C",
+      "secondary": "B4A0E5",
+      "radius": 20,
       "border": 0,
-      "finish": "aurora",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "大面积弥散光斑与深色卡片形成安静的空间感",
+      "summary": "拖动磁场，让点阵聚拢、推开，再弹回原位",
       "reference": {
-        "title": "Dribbble · aurora-ui",
-        "url": "https://dribbble.com/tags/aurora-ui"
+        "title": "GitHub · drawcall/Proton",
+        "url": "https://github.com/drawcall/Proton"
       },
+      "references": [
+        {
+          "title": "Bilibili · 前端 JavaScript 粒子动画引擎 Proton",
+          "url": "https://www.bilibili.com/video/BV1Dd4y1G7se/"
+        },
+        {
+          "title": "GitHub · drawcall/Proton",
+          "url": "https://github.com/drawcall/Proton"
+        },
+        {
+          "title": "径向吸引 · 锁定源码",
+          "url": "https://github.com/drawcall/Proton/blob/b4fdef5e5416d70a788978bec0fb4a1be26514b4/src/behaviour/Attraction.js"
+        },
+        {
+          "title": "反向排斥 · 锁定源码",
+          "url": "https://github.com/drawcall/Proton/blob/b4fdef5e5416d70a788978bec0fb4a1be26514b4/src/behaviour/Repulsion.js"
+        },
+        {
+          "title": "阻尼积分 · 锁定源码",
+          "url": "https://github.com/drawcall/Proton/blob/b4fdef5e5416d70a788978bec0fb4a1be26514b4/src/math/Integration.js"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/drawcall/Proton/blob/b4fdef5e5416d70a788978bec0fb4a1be26514b4/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "pricing",
-        "boarding",
-        "music",
-        "stats",
-        "sparkline",
-        "ring",
-        "gauge",
-        "empty",
-        "search",
-        "slider",
-        "tabs",
-        "weather",
-        "map",
-        "timer",
-        "swatches",
-        "onboarding"
-      ]
+        "fielddots"
+      ],
+      "origin": {
+        "project": "drawcall/Proton",
+        "repository": "https://github.com/drawcall/Proton",
+        "revision": "b4fdef5e5416d70a788978bec0fb4a1be26514b4",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/proton-fielddots.txt",
+        "adaptation": "仅移植 Attraction 的距离平方衰减、Repulsion 的反向力与 Integration 的阻尼 Euler 更新。原生增加回位弹簧、99 粒子固定网格、受控时间步与速度边界、有限速度拖尾、暂停和位置按钮；不复制 Web 引擎、图片或渲染器。",
+        "evidence": "Bilibili 视频 BV1Dd4y1G7se 的已索引简介直接给出 https://github.com/drawcall/Proton.git；核对该仓库固定提交中的三个核心算法文件与完整 MIT 许可。"
+      }
     },
     {
-      "id": "gradient",
-      "label": "鲜活渐变",
-      "background": "FFF0F3",
-      "surface": "FFF9FB",
-      "ink": "4D263C",
-      "accent": "A73269",
-      "secondary": "8D83D8",
-      "radius": 24,
+      "id": "depthscroll",
+      "label": "深度卷轴",
+      "background": "111B24",
+      "surface": "1A2B38",
+      "ink": "F7EDD4",
+      "accent": "FFBC51",
+      "secondary": "98BCE2",
+      "radius": 20,
       "border": 0,
-      "finish": "gradient",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "彩色光晕与大圆角模块强化内容焦点",
+      "summary": "文字随滚筒转入纵深，在琥珀刻度上吸附定位",
       "reference": {
-        "title": "Dribbble · gradient-ui",
-        "url": "https://dribbble.com/tags/gradient-ui"
+        "title": "GitHub · William Candillon / Picker",
+        "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/tree/master/the-10-min/src/Picker"
       },
+      "references": [
+        {
+          "title": "YouTube · William Candillon · iOS-Style Picker",
+          "url": "https://www.youtube.com/watch?v=PVSjPswRn0U"
+        },
+        {
+          "title": "GitHub · can-it-be-done-in-react-native",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native"
+        },
+        {
+          "title": "圆柱透视核心 · 锁定版本",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/the-10-min/src/Picker/Picker.tsx"
+        },
+        {
+          "title": "手势与等距吸附 · 锁定版本",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/the-10-min/src/Picker/GestureHandler.tsx"
+        },
+        {
+          "title": "上游吸附状态 · 锁定版本",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/the-10-min/src/Picker/AnimationHelpers.tsx"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/wcandillon/can-it-be-done-in-react-native/blob/72678212d4041f124e1585cdf6360f36737daa5f/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "pricing",
-        "ticket",
-        "music",
-        "equalizer",
-        "stats",
-        "ring",
-        "leaderboard",
-        "chat",
-        "empty",
-        "stepper",
-        "tabs",
-        "product",
-        "weather",
-        "swatches",
-        "onboarding",
-        "story"
-      ]
+        "depthwheel"
+      ],
+      "origin": {
+        "project": "wcandillon/can-it-be-done-in-react-native · Picker",
+        "repository": "https://github.com/wcandillon/can-it-be-done-in-react-native",
+        "revision": "72678212d4041f124e1585cdf6360f36737daa5f",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/candillon-picker.txt",
+        "adaptation": "提取 Picker.tsx 的 asin 旋转、圆柱 z 深度和透视缩放，以及 GestureHandler/AnimationHelpers 的等距吸附机制；用 Compose graphicsLayer 与有界速度预测、spring 实现，新增机械滚筒、刻度与前后按钮，未复制字体、图片、React或Redash依赖。",
+        "evidence": "已读取 YouTube 公开视频页面 shortDescription，其中 GitHub 链接直接指向该仓库的 the-10-min/src/Picker；已核对 README、上述源码与锁定提交的完整 MIT 许可。未声称观看完整视频画面。"
+      }
     },
     {
-      "id": "mono",
-      "label": "黑白雕刻",
-      "background": "EEEEEC",
-      "surface": "FAFAF8",
-      "ink": "171719",
-      "accent": "29292D",
-      "secondary": "ADADB3",
-      "radius": 16,
-      "border": 1,
-      "finish": "mono",
-      "typography": "sans",
-      "summary": "黑白灰色阶、饱满黑色行动区和简洁轮廓",
-      "reference": {
-        "title": "Dribbble · monochrome",
-        "url": "https://dribbble.com/tags/monochrome"
-      },
-      "patterns": [
-        "hero",
-        "profile",
-        "pricing",
-        "ticket",
-        "boarding",
-        "music",
-        "stats",
-        "sparkline",
-        "comparison",
-        "search",
-        "settings",
-        "dock",
-        "login",
-        "product",
-        "cart",
-        "receipt",
-        "rating",
-        "story",
-        "grid"
-      ]
-    },
-    {
-      "id": "luxury",
-      "label": "墨金奢雅",
-      "background": "191A1C",
-      "surface": "252527",
-      "ink": "F3ECDC",
-      "accent": "DBBC78",
-      "secondary": "93928F",
-      "radius": 6,
-      "border": 1,
-      "finish": "luxury",
-      "typography": "serif",
-      "summary": "墨色底板、细金边和衬线标题，适合精品与会员体验",
-      "reference": {
-        "title": "Dribbble · luxury-app",
-        "url": "https://dribbble.com/tags/luxury-app"
-      },
-      "patterns": [
-        "hero",
-        "profile",
-        "pricing",
-        "ticket",
-        "boarding",
-        "music",
-        "podcast",
-        "stats",
-        "comparison",
-        "notification",
-        "search",
-        "product",
-        "cart",
-        "receipt",
-        "weather",
-        "map",
-        "rating",
-        "story",
-        "grid"
-      ]
-    },
-    {
-      "id": "organic",
-      "label": "自然有机",
-      "background": "EAF0DF",
-      "surface": "F7F8ED",
-      "ink": "2C412F",
-      "accent": "466A3F",
-      "secondary": "C9B981",
-      "radius": 30,
+      "id": "fluidpress",
+      "label": "黏性墨量实验",
+      "background": "EEEFE8",
+      "surface": "E0E3D8",
+      "ink": "262D28",
+      "accent": "6453CA",
+      "secondary": "DDF183",
+      "radius": 20,
       "border": 0,
-      "finish": "organic",
-      "typography": "serif",
-      "summary": "植物系配色、柔软曲面和自然留白，适合生活方式界面",
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "气泡牵起柔软的液桥，滑动即时改变墨量与笔触",
       "reference": {
-        "title": "Dribbble · organic-design",
-        "url": "https://dribbble.com/tags/organic-design"
+        "title": "GitHub · Ramotion/fluid-slider-android",
+        "url": "https://github.com/Ramotion/fluid-slider-android"
       },
+      "references": [
+        {
+          "title": "GitHub · Ramotion Fluid Slider",
+          "url": "https://github.com/Ramotion/fluid-slider-android"
+        },
+        {
+          "title": "官方 README 与动图演示",
+          "url": "https://github.com/Ramotion/fluid-slider-android/blob/20ff3c9bc3e78ded1628053b6f1781ebca4e598d/README.md"
+        },
+        {
+          "title": "上游 drawMetaball 核心 · 锁定版本",
+          "url": "https://github.com/Ramotion/fluid-slider-android/blob/20ff3c9bc3e78ded1628053b6f1781ebca4e598d/fluid-slider/src/main/kotlin/com/ramotion/fluidslider/FluidSlider.kt"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/Ramotion/fluid-slider-android/blob/20ff3c9bc3e78ded1628053b6f1781ebca4e598d/LICENSE"
+        },
+        {
+          "title": "原作者 · Ramotion",
+          "url": "https://www.ramotion.com"
+        }
+      ],
       "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "calendar",
-        "timeline",
-        "checklist",
-        "ring",
-        "heatmap",
-        "empty",
-        "settings",
-        "slider",
-        "form",
-        "product",
-        "weather",
-        "map",
-        "timer",
-        "rating",
-        "onboarding",
-        "grid"
-      ]
+        "fluidknob"
+      ],
+      "origin": {
+        "project": "Ramotion/fluid-slider-android",
+        "repository": "https://github.com/Ramotion/fluid-slider-android",
+        "revision": "20ff3c9bc3e78ded1628053b6f1781ebca4e598d",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/ramotion-fluid-slider.txt",
+        "adaptation": "移植 FluidSlider.drawMetaball 的双圆切线角、上浮收颈比例、控制柄倍率与双三次贝塞尔液桥；用 Compose 手势和有限弹簧替换 View/XML/Parcelable/ValueAnimator，增加墨量笔触反馈、范围语义和 48dp 增减按钮。",
+        "evidence": "直接核验官方 README 动图、固定版本 FluidSlider.kt 与完整 LICENSE；原 README 归属 Ramotion，并注明设计灵感来自 Virgil Pana。"
+      }
     },
     {
-      "id": "pastel",
-      "label": "粉彩轻盈",
-      "background": "F4EDFA",
-      "surface": "FCF8FF",
-      "ink": "494057",
-      "accent": "7555A0",
-      "secondary": "D6B8DE",
-      "radius": 24,
+      "id": "stampfield",
+      "label": "放射印章罗盘",
+      "background": "EAE5DC",
+      "surface": "DED7CB",
+      "ink": "2C352F",
+      "accent": "647B62",
+      "secondary": "CA735D",
+      "radius": 20,
       "border": 0,
-      "finish": "pastel",
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "低饱和粉彩底板搭配清晰深色文字，保持温柔层次",
+      "summary": "四枚印章沿圆轨道错峰弹出，点选即在中心留下图形",
       "reference": {
-        "title": "Dribbble · pastel",
-        "url": "https://dribbble.com/tags/pastel"
+        "title": "GitHub · skydoves/compose-animations",
+        "url": "https://github.com/skydoves/compose-animations"
       },
+      "references": [
+        {
+          "title": "GitHub · skydoves Compose Animations",
+          "url": "https://github.com/skydoves/compose-animations"
+        },
+        {
+          "title": "官方放射菜单示例与动图",
+          "url": "https://github.com/skydoves/compose-animations#14-radial-fab-menu"
+        },
+        {
+          "title": "上游 AnimationExample14.kt · 锁定版本",
+          "url": "https://github.com/skydoves/compose-animations/blob/eb51389891c303a0ad79c73525bd97acfdf96547/app/src/main/kotlin/com/skydoves/hotreloadanimations/animations/AnimationExample14.kt"
+        },
+        {
+          "title": "完整 Apache-2.0 许可证",
+          "url": "https://github.com/skydoves/compose-animations/blob/eb51389891c303a0ad79c73525bd97acfdf96547/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "pricing",
-        "podcast",
-        "calendar",
-        "checklist",
-        "chat",
-        "notification",
-        "empty",
-        "search",
-        "settings",
-        "form",
-        "product",
-        "weather",
-        "timer",
-        "rating",
-        "poll",
-        "onboarding"
-      ]
+        "radialtool"
+      ],
+      "origin": {
+        "project": "skydoves/compose-animations",
+        "repository": "https://github.com/skydoves/compose-animations",
+        "revision": "eb51389891c303a0ad79c73525bd97acfdf96547",
+        "license": "Apache-2.0",
+        "noticePath": "tools/creative/licenses/skydoves-radial-menu.txt",
+        "adaptation": "保留 Example14 的极坐标卫星定位、逐项 Animatable 弹簧、50ms 错峰展开及反序回收；改成四种原创 Canvas 印章的选择工具盘，增加响应式轨道、清晰语义和 48dp 下一枚印章按钮，不带 HotSwan 或其他依赖。",
+        "evidence": "直接核验官方 README 的第14项 GIF、带 2026 Jaewoong Eum 归属的核心文件和根 Apache-2.0 LICENSE；完整固定版本目录无 NOTICE。"
+      }
     },
     {
-      "id": "kawaii",
-      "label": "可爱气泡",
-      "background": "FFF0EE",
-      "surface": "FFF9F0",
-      "ink": "553736",
-      "accent": "A7415C",
-      "secondary": "EAC779",
-      "radius": 36,
-      "border": 2,
-      "finish": "kawaii",
+      "id": "scratchprint",
+      "label": "星图刮印",
+      "background": "EEE9DC",
+      "surface": "18313B",
+      "ink": "173038",
+      "accent": "ABCBC4",
+      "secondary": "D6AE68",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "夸张圆角、糖果色边框和亲切的气泡感",
+      "summary": "擦去有纹理的表层，让星空从手指走过的地方显现",
       "reference": {
-        "title": "Dribbble · kawaii-ui",
-        "url": "https://dribbble.com/tags/kawaii-ui"
+        "title": "GitHub · ScratchCardCompose",
+        "url": "https://github.com/AdamDawi/ScratchCardCompose"
       },
+      "references": [
+        {
+          "title": "GitHub · ScratchCardCompose",
+          "url": "https://github.com/AdamDawi/ScratchCardCompose"
+        },
+        {
+          "title": "作者 README · 演示视频",
+          "url": "https://github.com/AdamDawi/ScratchCardCompose#here-are-some-overview-videos"
+        },
+        {
+          "title": "遮罩与笔触源码 · 锁定版本",
+          "url": "https://github.com/AdamDawi/ScratchCardCompose/blob/162cfd3ea38e5da60a8d9564b690b0174bbb9a4a/app/src/main/java/com/example/scratchcardcompose/ui/scratch_card/ScratchCard.kt"
+        },
+        {
+          "title": "完整 MIT 许可证",
+          "url": "https://github.com/AdamDawi/ScratchCardCompose/blob/162cfd3ea38e5da60a8d9564b690b0174bbb9a4a/LICENSE"
+        }
+      ],
       "patterns": [
-        "hero",
-        "profile",
-        "ticket",
-        "music",
-        "checklist",
-        "ring",
-        "leaderboard",
-        "chat",
-        "notification",
-        "empty",
-        "settings",
-        "form",
-        "product",
-        "cart",
-        "weather",
-        "rating",
-        "poll",
-        "onboarding",
-        "story"
-      ]
+        "scratchmap"
+      ],
+      "origin": {
+        "project": "AdamDawi/ScratchCardCompose",
+        "repository": "https://github.com/AdamDawi/ScratchCardCompose",
+        "revision": "162cfd3ea38e5da60a8d9564b690b0174bbb9a4a",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/scratch-card.txt",
+        "adaptation": "只移植 Offscreen 独立遮罩与 BlendMode.Clear 圆头笔触；以原生绘制星图替换图片，用去重网格估算面积替换重复笔触累计，加入直接揭开与重置操作。",
+        "evidence": "直接搜索 GitHub 并读取作者 README、固定提交源码和 MIT 许可；README 含演示视频，本条不冒称来自视频网站简介。"
+      }
     },
     {
-      "id": "paper",
-      "label": "横线手账",
-      "background": "F4ECD9",
-      "surface": "FAF4E5",
-      "ink": "493D2B",
-      "accent": "8F483B",
-      "secondary": "B1AF84",
-      "radius": 2,
-      "border": 1,
-      "finish": "paper",
-      "typography": "serif",
-      "summary": "横线纸与页边线作为底纹，像翻开一本随身手账",
-      "reference": {
-        "title": "Dribbble · paper-ui",
-        "url": "https://dribbble.com/tags/paper-ui"
-      },
-      "patterns": [
-        "hero",
-        "profile",
-        "ticket",
-        "podcast",
-        "calendar",
-        "timeline",
-        "checklist",
-        "kanban",
-        "heatmap",
-        "chat",
-        "search",
-        "command",
-        "form",
-        "receipt",
-        "timer",
-        "rating",
-        "accordion",
-        "story",
-        "grid"
-      ]
-    },
-    {
-      "id": "blueprint",
-      "label": "工程蓝图",
-      "background": "123665",
-      "surface": "1A4678",
-      "ink": "E2F0FF",
-      "accent": "92CEF7",
-      "secondary": "F0D787",
-      "radius": 2,
-      "border": 1,
-      "finish": "grid",
-      "typography": "mono",
-      "summary": "蓝色坐标网格、细线轮廓与等宽标签强调结构",
-      "reference": {
-        "title": "Dribbble · blueprint",
-        "url": "https://dribbble.com/tags/blueprint"
-      },
-      "patterns": [
-        "bento",
-        "boarding",
-        "timeline",
-        "kanban",
-        "stats",
-        "bars",
-        "sparkline",
-        "ring",
-        "heatmap",
-        "gauge",
-        "funnel",
-        "comparison",
-        "command",
-        "settings",
-        "slider",
-        "stepper",
-        "tabs",
-        "map",
-        "grid"
-      ]
-    },
-    {
-      "id": "industrial",
-      "label": "工业控制",
-      "background": "232A2D",
-      "surface": "303A3E",
-      "ink": "E8F0EE",
-      "accent": "F2B86D",
-      "secondary": "A1C8BD",
-      "radius": 4,
-      "border": 1,
-      "finish": "industrial",
-      "typography": "mono",
-      "summary": "暗金属色、紧凑数值和警示色强调，适合控制面板",
-      "reference": {
-        "title": "Dribbble · industrial-ui",
-        "url": "https://dribbble.com/tags/industrial-ui"
-      },
-      "patterns": [
-        "bento",
-        "boarding",
-        "equalizer",
-        "timeline",
-        "checklist",
-        "kanban",
-        "stats",
-        "bars",
-        "sparkline",
-        "gauge",
-        "funnel",
-        "notification",
-        "command",
-        "settings",
-        "slider",
-        "stepper",
-        "dock",
-        "map",
-        "timer"
-      ]
-    },
-    {
-      "id": "contrast",
-      "label": "黑黄高对比",
-      "background": "080808",
-      "surface": "181818",
-      "ink": "FFFFFF",
-      "accent": "F8E36B",
-      "secondary": "B7DAFF",
-      "radius": 8,
-      "border": 2,
-      "finish": "contrast",
+      "id": "textflow",
+      "label": "文字潮汐",
+      "background": "F6F1E7",
+      "surface": "E9E2D6",
+      "ink": "23251F",
+      "accent": "EA6547",
+      "secondary": "B2BC93",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
       "typography": "sans",
-      "summary": "黑底明字、粗轮廓和黄色行动区，突出信息可见性",
+      "summary": "移动橙色圆片，正文沿轮廓重新排布",
       "reference": {
-        "title": "Dribbble · high-contrast",
-        "url": "https://dribbble.com/tags/high-contrast"
+        "title": "GitHub · chenglou/pretext",
+        "url": "https://github.com/chenglou/pretext"
+      },
+      "references": [
+        {
+          "title": "抖音 · Cooper说 · Pretext 文字贴身动效",
+          "url": "https://jingxuan.douyin.com/m/video/7623065044632243508"
+        },
+        {
+          "title": "GitHub · chenglou/pretext",
+          "url": "https://github.com/chenglou/pretext"
+        },
+        {
+          "title": "上游核心源码 · 锁定版本",
+          "url": "https://github.com/chenglou/pretext/blob/e699e27e7e4b48a50024fca545c6a12bc6ac975d/pages/demos/dynamic-layout.ts"
+        },
+        {
+          "title": "行槽几何源码",
+          "url": "https://github.com/chenglou/pretext/blob/e699e27e7e4b48a50024fca545c6a12bc6ac975d/pages/demos/wrap-geometry.ts"
+        },
+        {
+          "title": "完整许可证",
+          "url": "https://github.com/chenglou/pretext/blob/e699e27e7e4b48a50024fca545c6a12bc6ac975d/LICENSE"
+        }
+      ],
+      "patterns": [
+        "flowtext"
+      ],
+      "origin": {
+        "project": "chenglou/pretext",
+        "repository": "https://github.com/chenglou/pretext",
+        "revision": "e699e27e7e4b48a50024fca545c6a12bc6ac975d",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/pretext.txt",
+        "adaptation": "提取 dynamic-layout 的整行障碍检测与连续文字游标、wrap-geometry 的可用行槽切分；将 logo 多边形换成圆弦，使用 Android Paint 测量和断行，未移植 JS 排版引擎及字形数据。",
+        "evidence": "抖音已索引视频标题明确点名 chenglou 的 Pretext；据此核对作者仓库，并非声称视频简介含直达链接。"
+      }
+    },
+    {
+      "id": "chromatic",
+      "label": "流体海报",
+      "background": "FFFEF5",
+      "surface": "F1F0E7",
+      "ink": "20231D",
+      "accent": "E0F759",
+      "secondary": "FF785F",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "柔软的贝塞尔边缘，揭开下一张色彩海报",
+      "reference": {
+        "title": "GitHub · ashutosh1919/react-liquidswipe",
+        "url": "https://github.com/ashutosh1919/react-liquidswipe"
+      },
+      "references": [
+        {
+          "title": "YouTube · DevSense · Liquid Swipe Animation",
+          "url": "https://www.youtube.com/watch?v=uGoWVz-q2M8"
+        },
+        {
+          "title": "GitHub · ashutosh1919/react-liquidswipe",
+          "url": "https://github.com/ashutosh1919/react-liquidswipe"
+        },
+        {
+          "title": "上游核心源码 · 锁定版本",
+          "url": "https://github.com/ashutosh1919/react-liquidswipe/blob/678cb1fc21d5f0523f189e90347ba9ce483a7cb4/src/components/liquidswipe.js"
+        },
+        {
+          "title": "完整许可证",
+          "url": "https://github.com/ashutosh1919/react-liquidswipe/blob/678cb1fc21d5f0523f189e90347ba9ce483a7cb4/LICENSE"
+        }
+      ],
+      "patterns": [
+        "liquidswipe"
+      ],
+      "origin": {
+        "project": "ashutosh1919/react-liquidswipe",
+        "repository": "https://github.com/ashutosh1919/react-liquidswipe",
+        "revision": "678cb1fc21d5f0523f189e90347ba9ce483a7cb4",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/liquidswipe.txt",
+        "adaptation": "移植 getPath 的两段三次贝塞尔轮廓与拖动提交/回弹机制；比例化尺寸并用 Compose Path 和动画实现，重绘三张原创海报，不带 React、图片或整站。",
+        "evidence": "YouTube 公开视频描述直接链接该 GitHub 项目，仓库 README 也回链同一视频。"
+      }
+    },
+    {
+      "id": "foldpress",
+      "label": "折页印刷室",
+      "background": "EDE8DF",
+      "surface": "F7F2E8",
+      "ink": "262923",
+      "accent": "D44935",
+      "secondary": "B5BD9B",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "指尖牵动纸角，露出折痕背面的印刷图形",
+      "reference": {
+        "title": "GitHub · oleksandrbalan/pagecurl",
+        "url": "https://github.com/oleksandrbalan/pagecurl"
+      },
+      "references": [
+        {
+          "title": "GitHub · oleksandrbalan/pagecurl",
+          "url": "https://github.com/oleksandrbalan/pagecurl"
+        },
+        {
+          "title": "上游核心源码 · 锁定版本",
+          "url": "https://github.com/oleksandrbalan/pagecurl/blob/a390c64508abfc45379070a40591ba3ed0cc686e/pagecurl/src/main/kotlin/eu/wewox/pagecurl/page/CurlDraw.kt"
+        },
+        {
+          "title": "折页几何辅助源码",
+          "url": "https://github.com/oleksandrbalan/pagecurl/blob/a390c64508abfc45379070a40591ba3ed0cc686e/pagecurl/src/main/kotlin/eu/wewox/pagecurl/utils/MathUtils.kt"
+        },
+        {
+          "title": "完整许可证",
+          "url": "https://github.com/oleksandrbalan/pagecurl/blob/a390c64508abfc45379070a40591ba3ed0cc686e/LICENSE"
+        }
+      ],
+      "patterns": [
+        "paperfold"
+      ],
+      "origin": {
+        "project": "oleksandrbalan/pagecurl",
+        "repository": "https://github.com/oleksandrbalan/pagecurl",
+        "revision": "a390c64508abfc45379070a40591ba3ed0cc686e",
+        "license": "Apache-2.0",
+        "noticePath": "tools/creative/licenses/pagecurl.txt",
+        "adaptation": "提取 CurlDraw 的折线裁剪、背面镜像和旋转几何，缩减为固定两页；去除分页状态系统、阴影位图和平台特例，增加按钮操作。",
+        "evidence": "直接检索 GitHub；作者 README 提供翻页演示，源码与许可证已逐项核对。"
+      }
+    },
+    {
+      "id": "softdock",
+      "label": "引力工具台",
+      "background": "EEE8F3",
+      "surface": "DDD1E7",
+      "ink": "292131",
+      "accent": "6F4B9B",
+      "secondary": "F0A57B",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "小球跨越工具槽，底栏跟着改变轮廓",
+      "reference": {
+        "title": "GitHub · exyte/AndroidAnimatedNavigationBar",
+        "url": "https://github.com/exyte/AndroidAnimatedNavigationBar"
+      },
+      "references": [
+        {
+          "title": "GitHub · exyte/AndroidAnimatedNavigationBar",
+          "url": "https://github.com/exyte/AndroidAnimatedNavigationBar"
+        },
+        {
+          "title": "上游核心源码 · 锁定版本",
+          "url": "https://github.com/exyte/AndroidAnimatedNavigationBar/blob/cc65ebd1f8644d8fa173a3cad0a935a050b0e961/animatednavbar/src/main/java/com/exyte/animatednavbar/shape/IndentPath.kt"
+        },
+        {
+          "title": "球体抛物线源码",
+          "url": "https://github.com/exyte/AndroidAnimatedNavigationBar/blob/cc65ebd1f8644d8fa173a3cad0a935a050b0e961/animatednavbar/src/main/java/com/exyte/animatednavbar/animation/balltrajectory/Parabolic.kt"
+        },
+        {
+          "title": "完整许可证",
+          "url": "https://github.com/exyte/AndroidAnimatedNavigationBar/blob/cc65ebd1f8644d8fa173a3cad0a935a050b0e961/LICENSE"
+        }
+      ],
+      "patterns": [
+        "elasticnav"
+      ],
+      "origin": {
+        "project": "exyte/AndroidAnimatedNavigationBar",
+        "repository": "https://github.com/exyte/AndroidAnimatedNavigationBar",
+        "revision": "cc65ebd1f8644d8fa173a3cad0a935a050b0e961",
+        "license": "MIT",
+        "noticePath": "tools/creative/licenses/exyte-navigation.txt",
+        "adaptation": "移植 IndentPath 的双三次贝塞尔凹槽与 Parabolic 的二次贝塞尔球轨迹；以本地 Compose 动画驱动，移除整库配置和导航依赖。",
+        "evidence": "直接检索 GitHub；核对作者 README 动图、凹槽路径与抛物线轨迹源文件。"
+      }
+    },
+    {
+      "id": "dataviz",
+      "label": "环形观测站",
+      "background": "172A29",
+      "surface": "243D3B",
+      "ink": "E8EFE1",
+      "accent": "DCEE80",
+      "secondary": "ED997B",
+      "radius": 20,
+      "border": 0,
+      "finish": "source-study",
+      "typography": "sans",
+      "summary": "可选扇区的轨道数据盘，让数字获得形状",
+      "reference": {
+        "title": "GitHub · developerchunk/Custom-Pie-Chart-Jetpack-Compose",
+        "url": "https://github.com/developerchunk/Custom-Pie-Chart-Jetpack-Compose"
+      },
+      "references": [
+        {
+          "title": "Bilibili · Android_Zero · 动态饼状图",
+          "url": "https://www.bilibili.com/video/BV18nQwYZEJw/"
+        },
+        {
+          "title": "YouTube · Developer Chunk · 原作者教程",
+          "url": "https://www.youtube.com/watch?v=H9cJ9jBzQ3c"
+        },
+        {
+          "title": "GitHub · developerchunk/Custom-Pie-Chart-Jetpack-Compose",
+          "url": "https://github.com/developerchunk/Custom-Pie-Chart-Jetpack-Compose"
+        },
+        {
+          "title": "上游核心源码 · 锁定版本",
+          "url": "https://github.com/developerchunk/Custom-Pie-Chart-Jetpack-Compose/blob/2d14dfb1ccc98eded6412b9f5dbf83f59cdeda8b/app/src/main/java/com/example/custompiechartjc/PieChart.kt"
+        },
+        {
+          "title": "完整许可证",
+          "url": "https://github.com/developerchunk/Custom-Pie-Chart-Jetpack-Compose/blob/2d14dfb1ccc98eded6412b9f5dbf83f59cdeda8b/LICENSE"
+        }
+      ],
+      "patterns": [
+        "arcchart"
+      ],
+      "origin": {
+        "project": "developerchunk/Custom-Pie-Chart-Jetpack-Compose",
+        "repository": "https://github.com/developerchunk/Custom-Pie-Chart-Jetpack-Compose",
+        "revision": "2d14dfb1ccc98eded6412b9f5dbf83f59cdeda8b",
+        "license": "MIT（上游附加说明）",
+        "noticePath": "tools/creative/licenses/developerchunk-pie.txt",
+        "adaptation": "移植 Canvas.drawArc 的分段计算与入场进度；改用 Material 3、增加扇区选择和重播，修复零总量、颜色索引和角度累积边界。上游 MIT 文本含附加说明，完整保留。",
+        "evidence": "Bilibili 已索引简介直接给出项目地址；仓库 README 回链原作者 YouTube。B站正文抓取受限，关联依据为简介索引及作者仓库。"
+      }
+    },
+    {
+      "id": "orbital",
+      "label": "轨道声场",
+      "background": "0D1110",
+      "surface": "19201B",
+      "ink": "F0F3E8",
+      "accent": "D6FA78",
+      "secondary": "94ADA0",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "偏心轨道与巨幅唱片重构播放器",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
       },
       "patterns": [
-        "hero",
-        "profile",
-        "pricing",
-        "calendar",
-        "checklist",
-        "stats",
-        "bars",
-        "ring",
-        "notification",
-        "empty",
-        "search",
-        "settings",
-        "slider",
-        "tabs",
-        "login",
-        "form",
-        "product",
-        "rating",
-        "accordion"
+        "orbit"
       ]
     },
     {
-      "id": "outline",
-      "label": "线框素描",
-      "background": "F8F8FC",
-      "surface": "FFFFFF",
-      "ink": "31354C",
-      "accent": "424E91",
-      "secondary": "B8BDD8",
-      "radius": 14,
-      "border": 2,
-      "finish": "outline",
+      "id": "prismatic",
+      "label": "棱镜实验",
+      "background": "151326",
+      "surface": "25203B",
+      "ink": "F2EDFF",
+      "accent": "CBB5FF",
+      "secondary": "FF956F",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
       "typography": "sans",
-      "summary": "轻底色配连续描边，以形状轮廓区分模块",
+      "summary": "用折射光束和精密刻度构建光的实验台",
       "reference": {
-        "title": "Material Design · Cards",
-        "url": "https://m3.material.io/components/cards/overview"
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
       },
       "patterns": [
-        "hero",
-        "bento",
-        "profile",
-        "pricing",
-        "calendar",
-        "timeline",
-        "checklist",
-        "kanban",
-        "stats",
-        "comparison",
-        "chat",
-        "search",
-        "command",
-        "stepper",
-        "tabs",
-        "product",
-        "cart",
-        "accordion",
-        "grid"
+        "spectrum"
+      ]
+    },
+    {
+      "id": "contour",
+      "label": "地形漫游",
+      "background": "E7EADA",
+      "surface": "D8DFCD",
+      "ink": "213C31",
+      "accent": "395D42",
+      "secondary": "E97345",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "连续等高线与地图坐标构成户外探索界面",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "terrain"
+      ]
+    },
+    {
+      "id": "letterpress",
+      "label": "字形引力",
+      "background": "DFFD71",
+      "surface": "C4E75E",
+      "ink": "151811",
+      "accent": "171C13",
+      "secondary": "F27C50",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "巨幅字形、裁切色块和反向文字构成实验海报",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "kinetic"
+      ]
+    },
+    {
+      "id": "curatorial",
+      "label": "蓝色档案",
+      "background": "F1EFE5",
+      "surface": "E4E1D5",
+      "ink": "1C2BC1",
+      "accent": "2E44DB",
+      "secondary": "FF6B42",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "钴蓝与暖纸色的不对称展览索引",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "archive"
+      ]
+    },
+    {
+      "id": "botanical",
+      "label": "情绪花园",
+      "background": "F5DAD3",
+      "surface": "EAC3B7",
+      "ink": "662F2D",
+      "accent": "AF4F3A",
+      "secondary": "E3A13B",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "花瓣的生长形态把情绪变成可视化植物",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "flora"
+      ]
+    },
+    {
+      "id": "waypoint",
+      "label": "出走车站",
+      "background": "F2EBDF",
+      "surface": "E4DBC9",
+      "ink": "322F29",
+      "accent": "BD4D26",
+      "secondary": "BDCF9F",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "翻页数字、冲孔边缘与路线索引组成旅行票",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "transit"
+      ]
+    },
+    {
+      "id": "ritual",
+      "label": "蓝调仪式",
+      "background": "233EAD",
+      "surface": "1D3296",
+      "ink": "F5F2E9",
+      "accent": "DCE78D",
+      "secondary": "9CAFEA",
+      "radius": 20,
+      "border": 0,
+      "finish": "bespoke",
+      "typography": "sans",
+      "summary": "抽象沙漏与留白构成安静的专注空间",
+      "reference": {
+        "title": "Android Developers · Compose Canvas",
+        "url": "https://developer.android.com/develop/ui/compose/graphics/draw/overview"
+      },
+      "patterns": [
+        "focus"
       ]
     }
   ],
   "patterns": [
     {
-      "id": "hero",
+      "id": "foiltilt",
+      "title": "指尖全息通行证",
+      "headline": "倾斜，让光改变方向",
+      "caption": "FOIL / PERSPECTIVE",
+      "value": "VOL. 023",
+      "action": "改变视角",
+      "items": [
+        "左侧",
+        "正面",
+        "右侧"
+      ],
+      "category": "INPUT",
+      "summary": "拖动改变双轴角度，印纹与反光随位置变化；松手回正，按钮可固定观察方向"
+    },
+    {
+      "id": "morphstamp",
+      "title": "轮廓没有定式",
+      "headline": "轮廓，\n没有定式。",
+      "caption": "把一种形状，慢慢推向另一种可能。",
+      "value": "FORM 03",
+      "action": "改变轮廓",
+      "items": [
+        "芒星",
+        "十字",
+        "徽盾"
+      ],
+      "category": "MOTION",
+      "summary": "三种轮廓的连续变形印章，支持手势、按钮与滑块"
+    },
+    {
+      "id": "typesort",
+      "title": "双列拖拽排字",
+      "headline": "把顺序，交给双手",
+      "caption": "TYPE / IN MOTION",
+      "value": "06 LETTERS",
+      "action": "恢复初始排版",
+      "items": [
+        "把",
+        "想",
+        "法",
+        "变",
+        "成",
+        "光"
+      ],
       "category": "LAYOUT",
-      "title": "封面行动卡",
-      "headline": "出发，去山野",
-      "caption": "周末探索计划",
-      "value": "WEEKEND 01",
-      "action": "加入计划",
-      "items": [
-        "轻装出行",
-        "路线收藏",
-        "周末灵感"
-      ],
-      "summary": "大标题与几何主视觉构成封面，点击切换计划状态"
+      "summary": "长按拖动字块触发邻位互换与弹性归位，点选后可前移、后移或重置"
     },
     {
-      "id": "bento",
+      "id": "depthstack",
+      "title": "景深分层收藏夹",
+      "headline": "把风景，拆成几层",
+      "caption": "STRATA / COLLECTION",
+      "value": "STRATUM 02",
+      "action": "展开层次",
+      "items": [
+        "峡谷",
+        "丘陵",
+        "海湾"
+      ],
       "category": "LAYOUT",
-      "title": "便当信息格",
-      "headline": "今日生活速览",
-      "caption": "把重要信息放在一起",
-      "value": "8,240",
-      "action": "查看今日",
-      "items": [
-        "今日步数",
-        "专注 45 分",
-        "睡眠 7.5 时"
-      ],
-      "summary": "大小不等的信息格组合主指标和辅助摘要"
+      "summary": "选择地貌改变中心标本与邻页景深，点击展开先推出邻页再拆开五层地貌，可合拢返回"
     },
     {
-      "id": "profile",
-      "category": "SOCIAL",
-      "title": "人物名片",
-      "headline": "林间设计师",
-      "caption": "独立创作 · 上海",
-      "value": "128",
-      "action": "关注创作者",
+      "id": "flapcounter",
+      "title": "机械翻片计数器",
+      "headline": "让数字，有机械感",
+      "caption": "MECHANICAL / COUNTING ROOM",
+      "value": "24",
+      "action": "记一次",
       "items": [
-        "作品 24",
-        "关注者 1.2k",
-        "收藏 368"
+        "减一",
+        "加一",
+        "归零"
       ],
-      "summary": "头像、身份和统计分层排布，支持关注切换"
+      "category": "MOTION",
+      "summary": "每次增减只翻转变化数位，90度交接上下片，计数从99回到00；支持归零，没有时钟或循环动画"
     },
     {
-      "id": "pricing",
-      "category": "COMMERCE",
-      "title": "订阅方案卡",
-      "headline": "为创意留点空间",
-      "caption": "STUDIO PLUS",
-      "value": "¥29 / 月",
-      "action": "选择方案",
+      "id": "fielddots",
+      "title": "把秩序轻轻推开",
+      "headline": "把秩序\n轻轻推开。",
+      "caption": "拖动亮点，点阵会偏移、回弹，再重新排列。",
+      "value": "FIELD 03",
+      "action": "拖动磁场",
       "items": [
-        "无限画板",
-        "多端同步",
-        "高清导出"
+        "吸引",
+        "排斥",
+        "归位"
       ],
-      "summary": "价格与权益垂直排列，切换月付和年付方案"
+      "category": "MOTION",
+      "summary": "可拖动的磁场点阵，带吸引、排斥、回位与暂停控制"
     },
     {
-      "id": "ticket",
-      "category": "COMMERCE",
-      "title": "活动撕边票",
-      "headline": "城市声音现场",
-      "caption": "LIVE SESSION",
-      "value": "09.24 · 19:30",
-      "action": "收藏票券",
+      "id": "depthwheel",
+      "title": "圆柱透视选择器",
+      "headline": "把节奏拨到刚刚好",
+      "caption": "DEPTH / WHEEL",
+      "value": "07 PRESETS",
+      "action": "下一档",
       "items": [
-        "A 区",
-        "12 排 08 座",
-        "电子入场"
+        "留白",
+        "慢游",
+        "轻快",
+        "专注",
+        "心流",
+        "冲刺",
+        "自由"
       ],
-      "summary": "虚线分割票面信息，底部用装饰条码模拟纸票"
+      "category": "INPUT",
+      "summary": "垂直滑动带动圆柱透视与有限惯性，松手吸附，前后按钮也可逐档选择"
     },
     {
-      "id": "boarding",
-      "category": "LIFESTYLE",
-      "title": "电子登机牌",
-      "headline": "下一站，东京",
-      "caption": "BOARDING PASS",
-      "value": "准时登机",
-      "action": "查看行程",
+      "id": "fluidknob",
+      "title": "黏性气泡滑杆",
+      "headline": "让手感，有点黏性",
+      "caption": "FLUID / INK LAB",
+      "value": "62%",
+      "action": "调节墨量",
       "items": [
-        "09:45",
-        "GATE 12",
-        "18A"
+        "轻盈",
+        "饱满",
+        "浓烈"
       ],
-      "summary": "机场缩写、航线和登机信息组成可扫读票面"
+      "category": "INPUT",
+      "summary": "按住轨道牵起气泡与液桥，滑动同步改变墨量、线条粗细和状态；支持增减按钮及无障碍范围调节"
     },
     {
-      "id": "music",
-      "category": "MEDIA",
-      "title": "唱片播放器",
-      "headline": "落日慢拍",
-      "caption": "SUNSET RADIO",
-      "value": "03:20",
+      "id": "radialtool",
+      "title": "弹簧放射工具盘",
+      "headline": "工具，也可以有轨道",
+      "caption": "FIELD / STAMP COMPASS",
+      "value": "STAMP 01",
+      "action": "选择印章",
+      "items": [
+        "光芒",
+        "涟漪",
+        "交织",
+        "回声"
+      ],
+      "category": "NAVIGATION",
+      "summary": "点击中心展开或收起四枚弹簧卫星，选择印章更新中心图形并逆序回收；支持下一枚按钮"
+    },
+    {
+      "id": "scratchmap",
+      "title": "刮开一片星空",
+      "headline": "未知，值得亲手发现",
+      "caption": "SCRATCH / OBSERVATORY",
+      "value": "NIGHT 01",
+      "action": "直接揭开",
+      "items": [
+        "探索",
+        "发现",
+        "重置"
+      ],
+      "category": "INPUT",
+      "summary": "拖动或轻点刮开遮罩，约半幅覆盖后自动显现，也可直接揭开和重新覆盖"
+    },
+    {
+      "title": "让文字绕着你走",
+      "headline": "文字也有流动的形状",
+      "caption": "TEXT / IN MOTION",
+      "value": "FLOW 01",
+      "action": "移动圆片",
+      "items": [
+        "左侧",
+        "中央",
+        "右侧"
+      ],
+      "category": "LAYOUT",
+      "id": "flowtext",
+      "summary": "拖动与预设位置共同控制逐行绕排"
+    },
+    {
+      "title": "液态揭幕",
+      "headline": "把边界轻轻推开",
+      "caption": "LIQUID / POSTER",
+      "value": "EDITION 01",
+      "action": "下一张海报",
+      "items": [
+        "松弛",
+        "生长",
+        "跃动"
+      ],
+      "category": "MOTION",
+      "id": "liquidswipe",
+      "summary": "横向拖动过半换页，未过半松手回弹，也可点击换页"
+    },
+    {
+      "title": "掌心翻页",
+      "headline": "纸的一面，还有一面",
+      "caption": "FOLD / PRESS",
+      "value": "ISSUE 01",
+      "action": "翻到另一页",
+      "items": [
+        "版面一",
+        "版面二",
+        "翻页"
+      ],
+      "category": "MOTION",
+      "id": "paperfold",
+      "summary": "拖动翻页并查看背面，也可按钮切换"
+    },
+    {
+      "title": "弹跳凹槽导航",
+      "headline": "每个想法，都有落点",
+      "caption": "SOFT / DOCK",
+      "value": "TOOL 01",
+      "action": "切换创作工具",
+      "items": [
+        "构图",
+        "色彩",
+        "画笔"
+      ],
+      "category": "NAVIGATION",
+      "id": "elasticnav",
+      "summary": "点击导航触发抛物线跳跃、凹槽移动与创作场景切换"
+    },
+    {
+      "title": "数据环流",
+      "headline": "把时间画成一圈",
+      "caption": "DATA / ORBIT",
+      "value": "THIS WEEK",
+      "action": "重播入场",
+      "items": [
+        "创造",
+        "探索",
+        "休息"
+      ],
+      "category": "DATA",
+      "id": "arcchart",
+      "summary": "选择扇区联动中心数值与图例，支持重播"
+    },
+    {
+      "id": "orbit",
+      "title": "轨道唱片机",
+      "headline": "把声音放进轨道",
+      "caption": "ORBIT / RADIO",
+      "value": "SIDE A",
       "action": "播放演示",
       "items": [
-        "夜航",
-        "城市余温",
-        "晚风"
+        "月面漫步",
+        "失重时刻",
+        "深空回声"
       ],
-      "summary": "唱片图形配合时间进度，播放按钮切换状态"
-    },
-    {
-      "id": "podcast",
       "category": "MEDIA",
-      "title": "播客单集列",
-      "headline": "好奇心电台",
-      "caption": "每周一段新对话",
-      "value": "EPISODE 08",
-      "action": "选择单集",
-      "items": [
-        "设计的日常",
-        "在路上思考",
-        "城市里的声音"
-      ],
-      "summary": "单集列表以高亮和播放标记显示当前选择"
+      "summary": "播放状态与曲目切换联动，轨道标记随选择变化"
     },
     {
-      "id": "equalizer",
-      "category": "MEDIA",
-      "title": "音频均衡器",
-      "headline": "找到你的声场",
-      "caption": "SOUND LAB",
-      "value": "12 BANDS",
-      "action": "切换预设",
+      "id": "spectrum",
+      "title": "光谱调音台",
+      "headline": "给光一个方向",
+      "caption": "PRISM / LAB",
+      "value": "LIGHT 01",
+      "action": "调整光谱",
       "items": [
-        "均衡",
-        "低音",
-        "人声"
+        "紫外",
+        "暮光",
+        "日冕"
       ],
-      "summary": "十二段高低柱形构成均衡器，按钮切换预设"
+      "category": "INPUT",
+      "summary": "滑杆改变光束角度和色彩，光学图形同步反馈"
     },
     {
-      "id": "calendar",
+      "id": "terrain",
+      "title": "等高线探索",
+      "headline": "沿着山脊出发",
+      "caption": "FIELD / NOTES",
+      "value": "TRAIL 01",
+      "action": "切换路线",
+      "items": [
+        "山脊线",
+        "林间线",
+        "河谷线"
+      ],
       "category": "LIFESTYLE",
-      "title": "轻量月历",
-      "headline": "2026 年 9 月",
-      "caption": "给生活留出空白",
-      "value": "SEPTEMBER",
-      "action": "选择日期",
-      "items": [
-        "周会",
-        "旅行",
-        "阅读"
-      ],
-      "summary": "紧凑日期网格提供选择反馈与当前日期摘要"
+      "summary": "选择路线后路径、距离与目的地同步变化"
     },
     {
-      "id": "timeline",
-      "category": "LIFESTYLE",
-      "title": "行程时间轴",
-      "headline": "今天，有条不紊",
-      "caption": "DAILY TIMELINE",
-      "value": "今日安排",
-      "action": "查看安排",
+      "id": "kinetic",
+      "title": "动态排版海报",
+      "headline": "让文字成为形状",
+      "caption": "TYPE / PLAY",
+      "value": "VOL. 01",
+      "action": "重排海报",
       "items": [
-        "晨间散步",
-        "创意讨论",
-        "下班阅读"
+        "秩序",
+        "错位",
+        "自由"
       ],
-      "summary": "节点与竖线连接日程，突出当前任务"
-    },
-    {
-      "id": "checklist",
-      "category": "LIFESTYLE",
-      "title": "习惯清单",
-      "headline": "小事，慢慢完成",
-      "caption": "DAILY HABITS",
-      "value": "3 项习惯",
-      "action": "完成习惯",
-      "items": [
-        "喝一杯水",
-        "阅读十分钟",
-        "晚间散步"
-      ],
-      "summary": "复选项与完成进度联动，保持任务状态直观"
-    },
-    {
-      "id": "kanban",
       "category": "LAYOUT",
-      "title": "双栏任务板",
-      "headline": "让想法向前一步",
-      "caption": "CREATIVE WORKFLOW",
-      "value": "SPRINT 03",
-      "action": "完成首项任务",
-      "items": [
-        "整理参考",
-        "绘制草图",
-        "明确目标"
-      ],
-      "summary": "待办和完成两栏展示任务迁移，支持撤回"
+      "summary": "切换排版模式，文字位置、角度和版面一起变化"
     },
     {
-      "id": "stats",
-      "category": "DATA",
-      "title": "关键指标卡",
-      "headline": "每一步都有回响",
-      "caption": "OVERVIEW",
-      "value": "24,680",
-      "action": "查看统计",
+      "id": "archive",
+      "title": "艺术展览索引",
+      "headline": "把偶然收进档案",
+      "caption": "OBJECT / ARCHIVE",
+      "value": "EXHIBIT 01",
+      "action": "切换展品",
       "items": [
-        "新增 1,280",
-        "完成率 86%",
-        "活跃 7 天"
+        "形状研究",
+        "光的切片",
+        "日常物件"
       ],
-      "summary": "醒目的主数字搭配涨幅标记与两张辅助指标卡"
+      "category": "MEDIA",
+      "summary": "切换展品后艺术构图与档案信息一起变化"
     },
     {
-      "id": "bars",
-      "category": "DATA",
-      "title": "周趋势柱图",
-      "headline": "这一周的节奏",
-      "caption": "WEEKLY ACTIVITY",
-      "value": "7 DAYS",
-      "action": "切换周次",
+      "id": "flora",
+      "title": "生长心情签",
+      "headline": "今天，长成什么样",
+      "caption": "GROW / A LITTLE",
+      "value": "DAY 01",
+      "action": "记录心情",
       "items": [
-        "本周",
-        "上周",
-        "日均"
-      ],
-      "summary": "七列柱图突出一天，切换周次更新图形"
-    },
-    {
-      "id": "sparkline",
-      "category": "DATA",
-      "title": "迷你趋势线",
-      "headline": "让增长看得见",
-      "caption": "TREND OVERVIEW",
-      "value": "12,840",
-      "action": "查看趋势",
-      "items": [
-        "09:00",
-        "18:00",
-        "今日"
-      ],
-      "summary": "折线和透明面积呈现示例趋势，配合大数字摘要"
-    },
-    {
-      "id": "ring",
-      "category": "DATA",
-      "title": "目标进度环",
-      "headline": "距离目标更近",
-      "caption": "DAILY GOAL",
-      "value": "72%",
-      "action": "增加进度",
-      "items": [
-        "已完成",
-        "进行中",
-        "待开始"
-      ],
-      "summary": "圆环进度平滑增长，点击按钮演示完成度变化"
-    },
-    {
-      "id": "heatmap",
-      "category": "DATA",
-      "title": "活跃热力格",
-      "headline": "积累的每一天",
-      "caption": "ACTIVITY MAP",
-      "value": "连续 28 天",
-      "action": "查看记录",
-      "items": [
-        "少",
-        "中",
-        "多"
-      ],
-      "summary": "深浅方格编码活动强度，用网格呈现积累感"
-    },
-    {
-      "id": "gauge",
-      "category": "DATA",
-      "title": "半圆仪表盘",
-      "headline": "当前舒适指数",
-      "caption": "COMFORT METER",
-      "value": "65",
-      "action": "调整读数",
-      "items": [
-        "偏低",
-        "舒适",
-        "偏高"
-      ],
-      "summary": "半圆仪表与滑杆联动，展示连续数值反馈"
-    },
-    {
-      "id": "funnel",
-      "category": "DATA",
-      "title": "转化漏斗",
-      "headline": "看见每一步转化",
-      "caption": "FUNNEL REPORT",
-      "value": "示例转化率 24%",
-      "action": "查看详情",
-      "items": [
-        "访问 10k",
-        "意向 6k",
-        "完成 2.4k"
-      ],
-      "summary": "逐层收窄的色块强调阶段数量和转化关系"
-    },
-    {
-      "id": "leaderboard",
-      "category": "SOCIAL",
-      "title": "领奖台榜单",
-      "headline": "本周创作之星",
-      "caption": "CREATOR LEADERBOARD",
-      "value": "你位列第 12",
-      "action": "查看榜单",
-      "items": [
-        "小林",
-        "阿青",
-        "晚风"
-      ],
-      "summary": "三座不同高度的领奖台突出前三名"
-    },
-    {
-      "id": "comparison",
-      "category": "COMMERCE",
-      "title": "并排方案对比",
-      "headline": "选一个适合你的",
-      "caption": "COMPARE PLANS",
-      "value": "2 PLANS",
-      "action": "选择方案",
-      "items": [
-        "轻享版",
-        "进阶版",
-        "团队版"
-      ],
-      "summary": "并排展示基础和进阶权益，点击高亮当前方案"
-    },
-    {
-      "id": "chat",
-      "category": "SOCIAL",
-      "title": "双向聊天气泡",
-      "headline": "一起把想法做出来",
-      "caption": "COLLABORATION",
-      "value": "ONLINE",
-      "action": "发送示例回复",
-      "items": [
-        "这个配色怎么样？",
-        "很喜欢，试试更大的留白。",
-        "收到"
-      ],
-      "summary": "左右交错气泡区分说话人，支持本地示例回复"
-    },
-    {
-      "id": "notification",
-      "category": "FEEDBACK",
-      "title": "消息通知栈",
-      "headline": "你有一些新动态",
-      "caption": "NOTIFICATIONS",
-      "value": "3 NEW",
-      "action": "标记全部已读",
-      "items": [
-        "项目已完成构建",
-        "新评论已到达",
-        "素材同步完成"
-      ],
-      "summary": "层叠通知卡与未读圆点联动，支持全部已读"
-    },
-    {
-      "id": "empty",
-      "category": "FEEDBACK",
-      "title": "空状态引导",
-      "headline": "第一条灵感，从这里开始",
-      "caption": "暂时还没有收藏，遇到喜欢的就收下吧",
-      "value": "START HERE",
-      "action": "创建第一条",
-      "items": [
-        "周末的第一条灵感",
-        "设计想法",
-        "旅行计划"
-      ],
-      "summary": "几何插画、简短说明和行动按钮帮助用户开始"
-    },
-    {
-      "id": "search",
-      "category": "INPUT",
-      "title": "搜索结果面板",
-      "headline": "找到心里的那个想法",
-      "caption": "SEARCH IDEAS",
-      "value": "SEARCH",
-      "action": "搜索",
-      "items": [
-        "海边旅行",
-        "咖啡日记",
-        "城市漫步"
-      ],
-      "summary": "输入框实时筛选本地示例，并提供无结果状态"
-    },
-    {
-      "id": "command",
-      "category": "NAVIGATION",
-      "title": "快捷命令面板",
-      "headline": "一个入口，快速出发",
-      "caption": "QUICK ACTIONS",
-      "value": "COMMAND",
-      "action": "选择命令",
-      "items": [
-        "新建画板",
-        "打开收藏",
-        "导出草稿"
-      ],
-      "summary": "命令列表结合数字标记，点击反馈所选操作"
-    },
-    {
-      "id": "settings",
-      "category": "INPUT",
-      "title": "偏好设置组",
-      "headline": "按你的习惯来",
-      "caption": "PREFERENCES",
-      "value": "PERSONAL",
-      "action": "保存偏好",
-      "items": [
-        "接收提醒",
-        "离线缓存",
-        "自动同步"
-      ],
-      "summary": "开关与分割线组成易扫读设置列表"
-    },
-    {
-      "id": "slider",
-      "category": "INPUT",
-      "title": "亮度调节卡",
-      "headline": "调到舒服的位置",
-      "caption": "LIGHT CONTROL",
-      "value": "60%",
-      "action": "调整亮度",
-      "items": [
-        "柔和",
+        "平静",
         "明亮",
-        "自动"
+        "充满能量"
       ],
-      "summary": "太阳图形、大百分比与滑块共同表达连续调节"
+      "category": "SOCIAL",
+      "summary": "选择心情后花瓣数量、色彩与记录文字联动"
     },
     {
-      "id": "stepper",
-      "category": "NAVIGATION",
-      "title": "分步流程卡",
-      "headline": "三步，开启新计划",
-      "caption": "GET STARTED",
-      "value": "STEP BY STEP",
-      "action": "下一步",
+      "id": "transit",
+      "title": "翻页出发票",
+      "headline": "下一站，随心出发",
+      "caption": "DEPARTURE / CLUB",
+      "value": "ONE WAY",
+      "action": "选择目的地",
       "items": [
-        "选择目标",
-        "安排时间",
-        "确认计划"
+        "东京",
+        "首尔",
+        "香港"
       ],
-      "summary": "编号节点、进度线和内容卡同步呈现当前步骤"
-    },
-    {
-      "id": "tabs",
-      "category": "NAVIGATION",
-      "title": "分段选项卡",
-      "headline": "切换你的视角",
-      "caption": "EXPLORE VIEWS",
-      "value": "3 VIEWS",
-      "action": "切换视角",
-      "items": [
-        "今日",
-        "本周",
-        "本月"
-      ],
-      "summary": "分段导航与下方内容联动，清楚展示选中状态"
-    },
-    {
-      "id": "dock",
-      "category": "NAVIGATION",
-      "title": "悬浮底部导航",
-      "headline": "你的日常入口",
-      "caption": "QUICK NAVIGATION",
-      "value": "3 TABS",
-      "action": "切换页面",
-      "items": [
-        "首页",
-        "发现",
-        "我的"
-      ],
-      "summary": "浮起的导航托盘使用形状、文字和选中点标记入口"
-    },
-    {
-      "id": "login",
-      "category": "INPUT",
-      "title": "邮箱登录卡",
-      "headline": "欢迎回来",
-      "caption": "把今天的灵感接着写下去",
-      "value": "EMAIL SIGN IN",
-      "action": "继续",
-      "items": [
-        "安全登录",
-        "设备同步",
-        "隐私设置"
-      ],
-      "summary": "邮箱表单提供空值和格式反馈，按钮展示本地验证"
-    },
-    {
-      "id": "otp",
-      "category": "INPUT",
-      "title": "四位验证码",
-      "headline": "确认这是你",
-      "caption": "四位数字，完成下一步",
-      "value": "VERIFICATION",
-      "action": "验证",
-      "items": [
-        "输入",
-        "确认",
-        "完成"
-      ],
-      "summary": "分离数字槽映射输入内容，限制四位数字"
-    },
-    {
-      "id": "form",
-      "category": "INPUT",
-      "title": "单选偏好表单",
-      "headline": "你想从哪里开始？",
-      "caption": "CHOOSE YOUR INTEREST",
-      "value": "ONE CHOICE",
-      "action": "保存选择",
-      "items": [
-        "视觉设计",
-        "交互动画",
-        "数据界面"
-      ],
-      "summary": "单选列表和提交反馈组成轻量偏好设置流程"
-    },
-    {
-      "id": "product",
       "category": "COMMERCE",
-      "title": "商品展示卡",
-      "headline": "随身灵感盒",
-      "caption": "轻巧收纳，每一天都装得下",
-      "value": "¥128",
-      "action": "加入购物袋",
-      "items": [
-        "雾白",
-        "深灰",
-        "砂岩"
-      ],
-      "summary": "独立主视觉、价格徽标和行动按钮构成商品卡"
+      "summary": "目的地切换驱动站名、票面与时间同步更新"
     },
     {
-      "id": "cart",
-      "category": "COMMERCE",
-      "title": "数量购物卡",
-      "headline": "购物袋",
-      "caption": "留住今天的喜欢",
-      "value": "¥128 / 件",
-      "action": "调整数量",
-      "items": [
-        "随身灵感盒",
-        "砂岩色",
-        "标准款"
-      ],
-      "summary": "商品摘要配合数量步进器，合计随数量变化"
-    },
-    {
-      "id": "receipt",
-      "category": "COMMERCE",
-      "title": "订单纸质收据",
-      "headline": "谢谢你的喜欢",
-      "caption": "ORDER #20260909",
-      "value": "¥128",
-      "action": "查看订单",
-      "items": [
-        "手工杯",
-        "咖啡豆",
-        "包装"
-      ],
-      "summary": "商品明细和合计以分割线组织，呈现电子收据"
-    },
-    {
-      "id": "weather",
-      "category": "LIFESTYLE",
-      "title": "今日天气卡",
-      "headline": "上海，晴朗的一天",
-      "caption": "GOOD MORNING",
-      "value": "24°",
-      "action": "查看天气",
-      "items": [
-        "体感 25°",
-        "湿度 58%",
-        "风速 3 级"
-      ],
-      "summary": "超大温度和太阳图形为主，底部补充天气指标"
-    },
-    {
-      "id": "map",
-      "category": "LIFESTYLE",
-      "title": "路线示意卡",
-      "headline": "下一站，城市公园",
-      "caption": "WALK A LITTLE",
-      "value": "12 MIN",
-      "action": "显示示例路线",
-      "items": [
-        "起点",
-        "转弯",
-        "公园"
-      ],
-      "summary": "抽象街道和两端节点构成地图，按钮显隐路线"
-    },
-    {
-      "id": "timer",
-      "category": "MOTION",
-      "title": "专注倒计时",
-      "headline": "为自己留二十五分钟",
-      "caption": "FOCUS TIME",
-      "value": "25:00",
+      "id": "focus",
+      "title": "流沙专注钟",
+      "headline": "把这一刻留给自己",
+      "caption": "SLOW / STUDIO",
+      "value": "01:00",
       "action": "开始专注",
       "items": [
-        "专注",
-        "休息",
-        "完成"
+        "开始",
+        "暂停",
+        "重置"
       ],
-      "summary": "倒计时与进度条联动，可开始和暂停计时"
-    },
-    {
-      "id": "swatches",
-      "category": "COMPONENT",
-      "title": "交互配色板",
-      "headline": "今天，喜欢这个颜色",
-      "caption": "COLOR PLAYGROUND",
-      "value": "4 COLORS",
-      "action": "选择颜色",
-      "items": [
-        "主色",
-        "辅助",
-        "文字"
-      ],
-      "summary": "大色块跟随小色卡选择变化，呈现当前主题色板"
-    },
-    {
-      "id": "rating",
-      "category": "FEEDBACK",
-      "title": "星级评分卡",
-      "headline": "这次体验怎么样？",
-      "caption": "YOUR FEEDBACK",
-      "value": "4.0",
-      "action": "选择评分",
-      "items": [
-        "还可以",
-        "很喜欢",
-        "非常棒"
-      ],
-      "summary": "醒目的分值与可点按星级同步更新"
-    },
-    {
-      "id": "poll",
-      "category": "SOCIAL",
-      "title": "即时投票卡",
-      "headline": "周末想做些什么？",
-      "caption": "COMMUNITY POLL",
-      "value": "3 OPTIONS",
-      "action": "参与投票",
-      "items": [
-        "去看一场展",
-        "在家听音乐",
-        "约朋友喝咖啡"
-      ],
-      "summary": "点击选项后展示占比条和已选反馈"
-    },
-    {
-      "id": "accordion",
-      "category": "COMPONENT",
-      "title": "问答折叠组",
-      "headline": "一些常见的小问题",
-      "caption": "QUICK ANSWERS",
-      "value": "FAQ",
-      "action": "展开问题",
-      "items": [
-        "如何开始？",
-        "能离线使用吗？",
-        "可以自定义吗？"
-      ],
-      "summary": "单项展开的问答列表用平滑高度变化节省空间"
-    },
-    {
-      "id": "onboarding",
-      "category": "LAYOUT",
-      "title": "三页引导卡",
-      "headline": "把灵感变成日常",
-      "caption": "每次一个小步骤，慢慢构建喜欢的生活",
-      "value": "WELCOME",
-      "action": "继续",
-      "items": [
-        "发现新的可能",
-        "整理心里的想法",
-        "开始第一步"
-      ],
-      "summary": "插画、标题和分页指示随下一步按钮同步切换"
-    },
-    {
-      "id": "story",
-      "category": "MEDIA",
-      "title": "故事阅读卡",
-      "headline": "一日城市漫游",
-      "caption": "CITY STORIES",
-      "value": "ISSUE 09",
-      "action": "下一则",
-      "items": [
-        "沿着街道走走",
-        "在巷口停留",
-        "把晚风收藏"
-      ],
-      "summary": "分段进度条和封面内容构成可切换故事"
-    },
-    {
-      "id": "grid",
-      "category": "LAYOUT",
-      "title": "错落收藏墙",
-      "headline": "值得留下的片刻",
-      "caption": "COLLECTION WALL",
-      "value": "SELECTED 04",
-      "action": "收藏卡片",
-      "items": [
-        "山野",
-        "日常",
-        "城市"
-      ],
-      "summary": "双列高低错落卡片模拟瀑布流，点击标记收藏"
+      "category": "MOTION",
+      "summary": "一分钟演示计时支持开始、暂停与重置，沙量跟随剩余时间变化"
     }
   ]
 }

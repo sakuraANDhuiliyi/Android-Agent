@@ -34,6 +34,7 @@ from agent.tools import ToolResult, cancel_gradle
 from agent.worker import PauseRequested, TaskLeaseLost, TaskWorker
 from agent.workspace import WorkspaceRepository
 from agent.subagents import configure_subagent_store, run_subagent_job
+from agent.task_settings import inherited_execution_context, model_selection, resolve_task_settings
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ _worker_pool: list[TaskWorker] = []
 _worker_lock = threading.Lock()
 _lock = threading.Lock()
 _project_locks: set[tuple[str, str]] = set()
+_configured_worker_settings: tuple[TaskStore, Settings] | None = None
 
 
 def _release_project_lock(user_id: str, project_id: str) -> None:
@@ -56,11 +58,12 @@ def configure_task_store(
     store: TaskStore | None = None,
     settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
-    global _store
+    global _store, _configured_worker_settings
     if store is not None and store is not _store:
         stop_worker(wait=True, timeout=5.0)
         _store = store
     if settings is not None:
+        _configured_worker_settings = (_store, settings)
         _store.max_events_per_conversation = int(
             getattr(settings, "max_events_per_conversation", 100_000)
         )
@@ -72,8 +75,16 @@ def configure_task_store(
     return recovered
 
 
+def worker_settings(settings: Settings | None = None) -> Settings:
+    """Resolve the complete provider catalog configured for this task store."""
+    if _configured_worker_settings and _configured_worker_settings[0] is _store:
+        return _configured_worker_settings[1]
+    return settings or load_settings()
+
+
 def start_worker(settings: Settings) -> TaskWorker:
     global _worker, _worker_pool
+    settings = worker_settings(settings)
     with _worker_lock:
         if _worker is not None and _worker.store is not _store:
             # Stop the old worker fully before replacing it, otherwise the old
@@ -539,6 +550,7 @@ def start_ask_job(
     run_mode: str | None = None,
     contexts: list[dict[str, Any]] | None = None,
     feedback_requested: bool = False,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with project_operation(user_id, project_id):
         return _start_ask_job_unlocked(
@@ -552,6 +564,7 @@ def start_ask_job(
             run_mode=run_mode,
             contexts=contexts,
             feedback_requested=feedback_requested,
+            execution_context=execution_context,
         )
 
 
@@ -567,10 +580,19 @@ def _start_ask_job_unlocked(
     run_mode: str | None = None,
     contexts: list[dict[str, Any]] | None = None,
     feedback_requested: bool = False,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     load_project_meta(user_id, project_id)
     settings = settings or load_settings()
-    run_mode, permission_profile = _resolve_permission(user_id, project_id, run_mode)
+    inherited = inherited_execution_context(execution_context or {})
+    if execution_context is None:
+        run_mode, permission_profile = _resolve_permission(user_id, project_id, run_mode)
+    else:
+        from agent.permissions import VALID_PROFILES
+        run_mode = _normalize_run_mode(inherited.get("run_mode"))
+        permission_profile = inherited.get("permission_profile")
+        if permission_profile is not None and permission_profile not in VALID_PROFILES:
+            raise RuntimeError("原任务权限档位无效，拒绝创建后续任务")
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -609,12 +631,14 @@ def _start_ask_job_unlocked(
             "created_at": created_at,
             "write_lock_key": write_lock_key,
             "context": {
+                **inherited,
                 "write_lock_key": write_lock_key,
                 "run_mode": run_mode,
                 "permission_profile": permission_profile,
-                "attachments": (contexts or [])[:20],
+                "attachments": (contexts if contexts is not None else inherited.get("attachments", []))[:20],
+                "model_selection": model_selection(settings),
                 "feedback_requested": feedback_requested,
-                "feedback_options": FeedbackStore(_store.db_path).settings(user_id, project_id, bool(getattr(settings, "auto_build_after_edit", False))),
+                "feedback_options": inherited.get("feedback_options") or FeedbackStore(_store.db_path).settings(user_id, project_id, bool(getattr(settings, "auto_build_after_edit", False))),
             },
         })
         task_created = True
@@ -707,6 +731,10 @@ def enqueue_recovery_task(
     project_id = str(recovery["project_id"])
     conversation_id = str(recovery["conversation_id"])
     load_project_meta(user_id, project_id)
+    original = _store.get_task(str(recovery["original_task_id"]), user_id)
+    if not original or original["project_id"] != project_id:
+        raise RuntimeError("原任务不存在或不属于该项目")
+    settings = resolve_task_settings(settings, original)
 
     task_id = uuid.uuid4().hex[:12]
     turn_id: str | None = None
@@ -731,6 +759,9 @@ def enqueue_recovery_task(
             str(recovery["interrupted_turn_id"]),
         )
         context = {
+            **inherited_execution_context(original.get("context") or {}),
+            "model_selection": model_selection(settings),
+            "write_lock_key": f"main:{user_id}:{project_id}",
             "recovery_mode": True,
             "interrupted_turn_id": str(recovery["interrupted_turn_id"]),
             "recovery_replays": replay_guard,
@@ -746,6 +777,7 @@ def enqueue_recovery_task(
                 "provider": settings.provider,
                 "model": settings.model,
                 "created_at": created_at,
+                "write_lock_key": context["write_lock_key"],
                 "recovery_of_task_id": root_task_id,
                 "recovery_attempt": attempt,
                 "context_json": __import__("json").dumps(context, ensure_ascii=False),
@@ -1556,6 +1588,7 @@ def _run_job(
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
             run_mode=run_mode,
+            permission_profile=task_context.get("permission_profile"),
             extra_system_prompt=context_bundle.get("model_context") or None,
         )
         check_cancel()
@@ -1610,6 +1643,7 @@ def _run_job(
                     recovery_replays=recovery_replays,
                     recovery_mode=recovery_mode,
                     run_mode=run_mode,
+                    permission_profile=task_context.get("permission_profile"),
                 )
             except CancellationRequested as exc:
                 on_event(
@@ -1698,6 +1732,7 @@ def _run_job(
                 # on_event still persists every event under the original turn.
                 turn_id=f"{turn_id}:feedback:{attempt}", recovery_replays=recovery_replays,
                 recovery_mode=recovery_mode, run_mode=run_mode,
+                permission_profile=task_context.get("permission_profile"),
                 extra_system_prompt=context_bundle.get("model_context") or None,
             )
 

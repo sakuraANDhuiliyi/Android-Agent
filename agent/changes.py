@@ -4,22 +4,34 @@ import difflib
 import hashlib
 from pathlib import Path
 
+from agent.safe_paths import open_workspace_file, resolve_workspace_path
 from agent.tools import ALLOWED_WRITE_PREFIXES
 
 
 def snapshot_workspace(workspace: Path) -> dict[str, str]:
     """Capture writable-tree file contents (text) or sha256 (binary)."""
+    workspace = workspace.resolve()
     snapshot: dict[str, str] = {}
     for prefix in ALLOWED_WRITE_PREFIXES:
-        target = workspace / prefix.rstrip("/")
+        try:
+            target = resolve_workspace_path(workspace, prefix.rstrip("/"))
+        except (PermissionError, OSError):
+            continue
         paths = target.rglob("*") if target.is_dir() else [target]
         for path in paths:
-            if path.is_file():
-                rel = path.relative_to(workspace).as_posix()
-                try:
-                    snapshot[rel] = path.read_text(encoding="utf-8")
-                except (UnicodeDecodeError, OSError):
-                    snapshot[rel] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            rel = path.relative_to(workspace).as_posix()
+            try:
+                safe = resolve_workspace_path(workspace, rel)
+                if not safe.is_file():
+                    continue
+                with open_workspace_file(workspace, rel) as handle:
+                    contents = handle.read()
+            except (PermissionError, OSError):
+                continue
+            try:
+                snapshot[rel] = contents.decode("utf-8")
+            except UnicodeDecodeError:
+                snapshot[rel] = "sha256:" + hashlib.sha256(contents).hexdigest()
     return snapshot
 
 

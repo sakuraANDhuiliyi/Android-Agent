@@ -53,13 +53,14 @@ class DeploymentConfigTests(unittest.TestCase):
             validate_deployment_settings(
                 _settings(deployment_mode="hybrid", database_url="postgres://db")
             )
-        validate_deployment_settings(
-            _settings(
-                deployment_mode="hybrid",
-                database_url="postgres://db/agent",
-                redis_url="memory://tickets",
+        with self.assertRaisesRegex(ValueError, "尚未实现"):
+            validate_deployment_settings(
+                _settings(
+                    deployment_mode="hybrid",
+                    database_url="postgres://db/agent",
+                    redis_url="memory://tickets",
+                )
             )
-        )
 
     def test_object_backend_requires_url(self) -> None:
         with self.assertRaises(ValueError):

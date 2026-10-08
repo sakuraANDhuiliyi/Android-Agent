@@ -36,17 +36,30 @@ fun RemoteCreativeSquareScreen(
     onCopy: (RemoteCreativeDetail) -> Unit,
     onLogin: () -> Unit = {},
 ) {
+    CreativeGalleryTheme { RemoteCreativeDirectory(viewModel, onLocalExamples, onCopy, onLogin) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RemoteCreativeDirectory(
+    viewModel: CreativeSquareViewModel,
+    onLocalExamples: () -> Unit,
+    onCopy: (RemoteCreativeDetail) -> Unit,
+    onLogin: () -> Unit,
+) {
     val state = viewModel.state
     var reportFor by remember { mutableStateOf<RemoteCreativeCard?>(null) }
     Surface(Modifier.fillMaxSize()) {
         Column {
-            CreativeStudioHeader()
+            Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("社区目录", modifier = Modifier.weight(1f), fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                TextButton(onClick = onLocalExamples) { Text("返回精选  ↗") }
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("在线创意目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("COMMUNITY / 线上作品", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
                     Text(if (state.offline) "离线内容 · 可能已更新" else "当前服务的已发布版本", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                TextButton(onClick = onLocalExamples) { Text("内置示例") }
                 TextButton(onClick = { viewModel.refresh() }, enabled = !state.loading) { Text("刷新") }
             }
             OutlinedTextField(value = state.query, onValueChange = { viewModel.search(query = it) },
@@ -68,8 +81,8 @@ fun RemoteCreativeSquareScreen(
                 Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("✦", fontSize = 48.sp, color = MaterialTheme.colorScheme.primary)
                     Text(if (state.error != null) "暂时无法打开广场" else if (state.query.isNotBlank() || state.category.isNotBlank()) "没有匹配的创意" else "新的创意正在准备中", style = MaterialTheme.typography.titleMedium)
-                    Text("也可以先浏览 App 内置的示例。", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
-                    OutlinedButton(onClick = onLocalExamples) { Text("浏览内置示例") }
+                    Text("本地精选随时可以打开。", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
+                    OutlinedButton(onClick = onLocalExamples) { Text("浏览精选作品") }
                 }
             } else {
                 LazyVerticalGrid(columns = GridCells.Adaptive(164.dp), modifier = Modifier.weight(1f),

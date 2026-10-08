@@ -12,11 +12,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.fragment.app.Fragment
@@ -41,7 +36,7 @@ class CreativeSquareFragment : Fragment() {
 
     private lateinit var prefs: AgentPrefs
     private lateinit var galleryModel: CreativeSquareViewModel
-    private var showLocalExamples by mutableStateOf(false)
+    private var showLocalExamples by mutableStateOf(true)
     private var applyingRecipeId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,7 +51,11 @@ class CreativeSquareFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        galleryModel.connect(prefs.serverUrl,prefs.userId,prefs.apiToken,prefs.guestMode)
+        if (!showLocalExamples) connectCommunity()
+    }
+
+    private fun connectCommunity() {
+        galleryModel.connect(prefs.serverUrl, prefs.userId, prefs.apiToken, prefs.guestMode)
     }
 
     override fun onCreateView(
@@ -68,20 +67,13 @@ class CreativeSquareFragment : Fragment() {
         setContent {
             CreativeSquareTheme {
                 if (showLocalExamples) {
-                    Column(Modifier.fillMaxSize()) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-                            TextButton(onClick = { showLocalExamples = false; galleryModel.refresh() }) { Text("← 返回线上广场") }
-                            Text("内置示例 · 非线上目录", modifier = Modifier.padding(top = 16.dp))
-                        }
-                        Box(Modifier.weight(1f)) {
-                            CreativeSquareScreen(
-                                recipes = CreativeCatalog.recipes,
-                                applyingRecipeId = applyingRecipeId,
-                                onCopy = ::copyRecipe,
-                                onApply = ::chooseTargetProject,
-                            )
-                        }
-                    }
+                    CreativeSquareScreen(
+                        recipes = CreativeCatalog.recipes,
+                        applyingRecipeId = applyingRecipeId,
+                        onCopy = ::copyRecipe,
+                        onApply = ::chooseTargetProject,
+                        onCommunity = { showLocalExamples = false; connectCommunity() },
+                    )
                 } else RemoteCreativeSquareScreen(galleryModel, onLocalExamples = { showLocalExamples = true }, onCopy = ::copyRemoteRecipe,
                     onLogin = { MainActivity.startLogin(requireContext()) })
             }

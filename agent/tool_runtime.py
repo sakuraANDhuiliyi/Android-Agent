@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.permissions import PermissionDecision, RunMode, decide_permission
-from agent.tool_registry import ToolSpec, get_tool_spec
+from agent.tool_registry import ToolSpec, get_tool_spec, tool_scope
 
 
 CancelCheck = Callable[[], None]
@@ -351,7 +351,7 @@ def execute_tool(
 
     started = time.monotonic()
 
-    spec = get_tool_spec(name)
+    spec = get_tool_spec(name, scope=tool_scope(user_id, project_id, workspace))
     if spec is None:
         return ToolResult(False, f"未知工具: {name}")
 

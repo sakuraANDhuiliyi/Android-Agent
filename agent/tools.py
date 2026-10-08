@@ -26,9 +26,10 @@ from agent.processes import (
     run_command as _run_command,
 )
 from agent.project import new_build_id
-from agent.safe_paths import resolve_workspace_path
+from agent.safe_paths import atomic_workspace_file, open_workspace_file, resolve_workspace_path
 from agent.tool_registry import (
     ToolSpec,
+    ToolScope,
     get_anthropic_tool_definitions,
     register_tool,
 )
@@ -970,7 +971,7 @@ def run_gradle(
             "例如: export ANDROID_HOME=$HOME/Library/Android/sdk",
         )
 
-    cmd = [str(gradlew), task, "--no-daemon", "--stacktrace"]
+    cmd = [str(gradlew), task, "--offline", "--no-daemon", "--stacktrace"]
     if task == "testDebugUnitTest":
         # Fresh reports distinguish this attempt from previous failed test runs.
         cmd.append("--rerun-tasks")
@@ -995,11 +996,19 @@ def run_gradle(
 
     apk_out: Path | None = None
     if result.ok and task == "assembleDebug":
-        apk = workspace / "app/build/outputs/apk/debug/app-debug.apk"
+        try:
+            apk = resolve_workspace_path(workspace, "app/build/outputs/apk/debug/app-debug.apk")
+        except PermissionError as exc:
+            return ToolResult(False, f"APK 路径不可访问: {exc}", error_type="PermissionDenied")
         if apk.is_file():
-            apk_out = latest_apk_path(user_id, project_id)
+            apk_out = resolve_workspace_path(user_builds_dir(user_id), f"{project_id}/latest.apk")
             apk_out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(apk, apk_out)
+            try:
+                with open_workspace_file(workspace, "app/build/outputs/apk/debug/app-debug.apk") as source:
+                    with atomic_workspace_file(user_builds_dir(user_id), f"{project_id}/latest.apk") as target:
+                        shutil.copyfileobj(source, target)
+            except (PermissionError, OSError) as exc:
+                return ToolResult(False, f"APK 复制失败: {exc}", error_type="PermissionDenied")
 
     if not result.ok:
         log_body = log_file.read_text(encoding="utf-8") if log_file.is_file() else ""
@@ -1569,9 +1578,9 @@ def dispatch_tool(
         return ToolResult(False, f"工具 {name} 执行异常: {exc}")
 
 
-def get_tool_definitions(settings=None) -> list[dict]:
+def get_tool_definitions(settings=None, *, scope: ToolScope | None = None) -> list[dict]:
     """Return Anthropic-style tool definitions projected from the registry."""
-    tools = get_anthropic_tool_definitions(settings)
+    tools = get_anthropic_tool_definitions(settings, scope=scope)
     if settings is None or not getattr(settings, "tavily_api_key", ""):
         tools = [tool for tool in tools if tool["name"] != "web_search"]
     return tools
