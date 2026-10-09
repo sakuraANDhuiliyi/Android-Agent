@@ -1,0 +1,73 @@
+{
+  "driver": "pause_resume",
+  "auto_approve": true,
+  "assert_pause_evidence": true,
+  "id": "16_pause_edit_evidence",
+  "title": "暂停前后编辑证据完整",
+  "prompt": "修改两个文件，完成后总结",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/test/Before.txt",
+            "content": "before pause\n"
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "import time; time.sleep(2); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "app/src/test/After.txt",
+            "content": "after pause\n"
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "两个文件均已修改完成。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "files_changed": [
+      "app/src/test/Before.txt",
+      "app/src/test/After.txt"
+    ],
+    "diff_files": [
+      "app/src/test/Before.txt",
+      "app/src/test/After.txt"
+    ],
+    "file_lines": {
+      "app/src/test/Before.txt": [
+        "before pause"
+      ],
+      "app/src/test/After.txt": [
+        "after pause"
+      ]
+    },
+    "final_text_contains": "两个文件均已修改完成"
+  }
+}

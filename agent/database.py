@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,7 @@ class TaskStore:
                     output_tokens INTEGER,
                     total_tokens INTEGER,
                     recovery_of_task_id TEXT,
+                    recovery_source_task_id TEXT,
                     recovery_attempt INTEGER NOT NULL DEFAULT 0,
                     context_json TEXT,
                     claim_owner TEXT,
@@ -296,6 +298,7 @@ class TaskStore:
                     ON task_dependencies(depends_on_task_id);
                 """
             )
+            conn.execute("BEGIN IMMEDIATE")
             cols = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
             if "conversation_id" not in cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN conversation_id TEXT")
@@ -303,6 +306,8 @@ class TaskStore:
                 conn.execute(
                     "ALTER TABLE tasks ADD COLUMN recovery_of_task_id TEXT"
                 )
+            if "recovery_source_task_id" not in cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN recovery_source_task_id TEXT")
             if "recovery_attempt" not in cols:
                 conn.execute(
                     "ALTER TABLE tasks ADD COLUMN recovery_attempt INTEGER NOT NULL DEFAULT 0"
@@ -347,6 +352,39 @@ class TaskStore:
             conn.execute(
                 """CREATE INDEX IF NOT EXISTS idx_tasks_recovery
                    ON tasks(recovery_of_task_id, recovery_attempt)"""
+            )
+            # Older recovery jobs identify their direct source through the
+            # interrupted turn. Preserve the earliest mapping if an old race
+            # produced duplicates; never remove historical tasks.
+            for recovery in conn.execute(
+                "SELECT * FROM tasks WHERE recovery_of_task_id IS NOT NULL "
+                "AND recovery_source_task_id IS NULL ORDER BY created_at, id"
+            ).fetchall():
+                try:
+                    context = json.loads(recovery["context_json"] or "{}")
+                except (ValueError, TypeError):
+                    context = {}
+                if not isinstance(context, dict):
+                    context = {}
+                source = conn.execute(
+                    "SELECT task_id FROM conversation_turns WHERE id=? AND user_id=? "
+                    "AND project_id=? AND conversation_id=?",
+                    (context.get("interrupted_turn_id"), recovery["user_id"],
+                     recovery["project_id"], recovery["conversation_id"]),
+                ).fetchone()
+                source_id = source["task_id"] if source else (
+                    recovery["recovery_of_task_id"] if recovery["recovery_attempt"] == 1 else None
+                )
+                if source_id and not conn.execute(
+                    "SELECT 1 FROM tasks WHERE user_id=? AND recovery_source_task_id=?",
+                    (recovery["user_id"], source_id),
+                ).fetchone():
+                    conn.execute("UPDATE tasks SET recovery_source_task_id=? WHERE id=?",
+                                 (source_id, recovery["id"]))
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recovery_source "
+                "ON tasks(user_id, recovery_source_task_id) "
+                "WHERE recovery_source_task_id IS NOT NULL"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)"
@@ -1066,21 +1104,21 @@ class TaskStore:
             )
         return event_store.project_legacy_turns(conversation_id)
 
-    def create_task(self, task: dict[str, Any]) -> None:
+    def create_task(self, task: dict[str, Any], *, _conn: sqlite3.Connection | None = None) -> None:
         safe_task = redact_sensitive_value(task)
         context = safe_task.get("context_json")
         if context is None and isinstance(safe_task.get("context"), dict):
             context = safe_task["context"]
         if isinstance(context, dict):
             context = json.dumps(context, ensure_ascii=False)
-        with self._connect() as conn:
+        with nullcontext(_conn) if _conn is not None else self._connect() as conn:
             conn.execute(
                 """INSERT INTO tasks
                    (id,user_id,project_id,conversation_id,prompt,status,provider,
                     model,created_at,recovery_of_task_id,recovery_attempt,context_json,
                     claim_owner,lease_expires_at,heartbeat_at,attempt,
-                    parent_task_id,role,write_lock_key)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    parent_task_id,role,write_lock_key,recovery_source_task_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     safe_task["id"],
                     safe_task["user_id"],
@@ -1101,8 +1139,43 @@ class TaskStore:
                     safe_task.get("parent_task_id"),
                     safe_task.get("role"),
                     safe_task.get("write_lock_key"),
+                    safe_task.get("recovery_source_task_id"),
                 ),
             )
+    def recovery_state(self, task_id: str, user_id: str, *, _conn=None) -> dict[str, Any]:
+        """The same scoped eligibility rule is used by the API and transaction."""
+        with nullcontext(_conn) if _conn is not None else self._connect() as conn:
+            source = conn.execute(
+                """SELECT j.*, t.id AS turn_id, t.status AS turn_status
+                   FROM tasks j JOIN conversation_turns t ON t.task_id=j.id
+                   JOIN conversations c ON c.id=j.conversation_id
+                   WHERE j.id=? AND j.user_id=? AND t.user_id=j.user_id
+                     AND t.project_id=j.project_id AND t.conversation_id=j.conversation_id
+                     AND c.user_id=j.user_id AND c.project_id=j.project_id""",
+                (task_id, user_id),
+            ).fetchone()
+            if source is None:
+                return {"can_recover": False, "recovery_job_id": None}
+            child = conn.execute(
+                """SELECT id FROM tasks WHERE recovery_source_task_id=? AND user_id=?
+                   AND project_id=? AND conversation_id=? ORDER BY created_at,id LIMIT 1""",
+                (task_id, user_id, source["project_id"], source["conversation_id"]),
+            ).fetchone()
+            eligible = (source["status"] in {"failed", "interrupted"}
+                        and source["turn_status"] == "interrupted"
+                        and not source["cancel_requested"])
+            root_id = source["recovery_of_task_id"] or task_id
+            active_branch = conn.execute(
+                """SELECT 1 FROM tasks WHERE user_id=? AND project_id=?
+                   AND conversation_id=? AND recovery_of_task_id=? AND id!=?
+                   AND status IN ('queued','running','awaiting_approval','paused','succeeded')
+                   LIMIT 1""",
+                (user_id, source["project_id"], source["conversation_id"], root_id, task_id),
+            ).fetchone()
+            eligible = eligible and not active_branch
+            return {"can_recover": bool(eligible and not child),
+                    "recovery_job_id": child["id"] if child else None}
+
     def update_task(self, task_id: str, **values: Any) -> None:
         if not values:
             return
@@ -1311,7 +1384,7 @@ class TaskStore:
                 cursor = conn.execute(
                     """UPDATE tasks SET status='running', claim_owner=?,
                        claim_token=?, lease_expires_at=?, heartbeat_at=?,
-                       pause_requested=0, attempt=?, started_at=?
+                       pause_requested=0, attempt=?, started_at=COALESCE(started_at, ?)
                        WHERE id=? AND (status='queued' OR (status='running' AND lease_expires_at<?))""",
                     (
                         worker_id,

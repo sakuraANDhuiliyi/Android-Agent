@@ -1,0 +1,60 @@
+{
+  "driver": "pause_resume",
+  "auto_approve": true,
+  "assert_pause_evidence": true,
+  "id": "20_pause_failed_build",
+  "title": "暂停前失败构建不能在恢复后变为成功",
+  "prompt": "跑一次构建验证工程",
+  "pause_after_tool": "run_gradle",
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\necho 'BUILD FAILED: E2E deterministic build failure'\nexit 1\n"
+    }
+  },
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_gradle",
+          "arguments": {
+            "task": "assembleDebug"
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "import time; time.sleep(2); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "构建失败，需要修复。"
+    }
+  ],
+  "expect": {
+    "job_status": "failed",
+    "has_apk": false,
+    "has_build_log": true,
+    "build_summary_success": false,
+    "build_log_contains": "BUILD FAILED",
+    "event_types_include": [
+      "turn_failed"
+    ],
+    "event_types_exclude": [
+      "turn_completed"
+    ]
+  }
+}

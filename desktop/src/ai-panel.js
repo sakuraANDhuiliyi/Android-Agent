@@ -58,6 +58,7 @@
     btnActivitySettings: document.getElementById("btnActivitySettings"),
     btnPauseJob: document.getElementById("btnPauseJob"),
     btnResumeJob: document.getElementById("btnResumeJob"),
+    btnRecoverJob: document.getElementById("btnRecoverJob"),
     btnHeaderStop: document.getElementById("btnHeaderStop"),
     btnSidebarNewConversation: document.getElementById("btnSidebarNewConversation"),
     createProjectDialog: document.getElementById("createProjectDialog"),
@@ -85,6 +86,7 @@
     conversations: [],
     conversationId: null,
     currentJobId: null,
+    currentJob: null,
     jobStatus: null,
     running: false,
     pauseRequested: false,
@@ -111,6 +113,43 @@
   // Last selection persisted before shutdown; applied once on the first
   // successful connect after launch so a restart restores the conversation.
   let projectLoadToken = 0;
+  let navigationEpoch = 0;
+  let watcherEpoch = 0;
+  let controlEpoch = 0;
+
+  function selectionGuard() {
+    const session = client.sessionVersion;
+    const token = state.loadToken;
+    const navigation = navigationEpoch;
+    const project = state.selectedProjectId;
+    const conversation = state.conversationId;
+    return () => session === client.sessionVersion && token === state.loadToken && navigation === navigationEpoch
+      && project === state.selectedProjectId && conversation === state.conversationId;
+  }
+
+  function applyJob(job) {
+    if (!job?.id) return;
+    state.currentJobId = job.id;
+    state.currentJob = { ...job, can_recover: job.can_recover === true,
+      recovery_job_id: job.recovery_job_id || null };
+    state.jobStatus = resolveJobStatus(job);
+    state.pauseRequested = Boolean(job.pause_requested);
+    state.cancelRequested = state.jobStatus === "cancel_requested";
+  }
+
+  function adoptJob(job, { preserveControl = false } = {}) {
+    if (!job?.id || job.project_id !== state.selectedProjectId
+        || job.conversation_id !== state.conversationId) return false;
+    if (!preserveControl) { controlEpoch += 1; state.controlBusy = null; }
+    stopWatcher();
+    applyJob(job);
+    if (isJobActive(job)) watchJob(job.id);
+    else setRunning(false);
+    updateComposer();
+    updateStatusDot();
+    return true;
+  }
+
   const restoredSelection = { projectId: null, conversationId: null };
 
   const HISTORY_PAGE_LIMIT = 300;
@@ -348,6 +387,14 @@
     const canPause = active && !state.cancelRequested && (status === "queued" || status === "running");
     const canResume = active && !state.cancelRequested && status === "paused";
     const canStop = active;
+    const recoverable = state.connected && state.currentJob?.id === state.currentJobId
+      && (state.currentJob.can_recover === true || Boolean(state.currentJob.recovery_job_id));
+    if (els.btnRecoverJob) {
+      els.btnRecoverJob.hidden = !recoverable;
+      els.btnRecoverJob.disabled = busy;
+      els.btnRecoverJob.textContent = state.controlBusy === "recover" ? "恢复中…"
+        : state.currentJob?.recovery_job_id ? "查看恢复任务" : "恢复任务";
+    }
 
     if (els.btnPauseJob) {
       els.btnPauseJob.hidden = !canPause;
@@ -365,7 +412,7 @@
       els.btnHeaderStop.textContent = state.cancelRequested ? "停止中…" : "停止";
     }
     if (els.aiTaskControls) {
-      els.aiTaskControls.hidden = !(canPause || canResume || canStop);
+      els.aiTaskControls.hidden = !(canPause || canResume || canStop || recoverable);
     }
   }
 
@@ -817,6 +864,11 @@
       stopWatcher();
       state.selectedProjectId = null;
       state.conversationId = null;
+      state.currentJobId = null;
+      state.currentJob = null;
+      state.jobStatus = null;
+      state.controlBusy = null;
+      state.running = false;
       state.contextChips = [];
       renderChips();
     }
@@ -832,8 +884,10 @@
       return;
     }
     setConn("busy", "连接中");
+    const sessionVersion = client.sessionVersion;
     try {
       const health = await client.health();
+      if (sessionVersion !== client.sessionVersion) return;
       state.connected = true;
       state.userId = health.user_id || "local";
       setConn("ok", "已连接");
@@ -877,6 +931,7 @@
       }
       if (!silent) toast("已连接 Agent");
     } catch (err) {
+      if (sessionVersion !== client.sessionVersion) return;
       state.connected = false;
       setConn("err", "连接失败");
       els.settingsHint.textContent = err.message;
@@ -991,6 +1046,10 @@
   }
 
   async function selectProject(projectId, _options = {}) {
+    const navigation = _options.navigation ?? ++navigationEpoch;
+    if (navigation !== navigationEpoch) return;
+    controlEpoch += 1;
+    state.controlBusy = null;
     const selection = ++projectLoadToken;
     const restoredConversation = !state.selectedProjectId ? state.conversationId : null;
     if (projectId !== state.selectedProjectId) {
@@ -999,6 +1058,8 @@
       state.conversationId = null;
       state.conversations = [];
       state.currentJobId = null;
+      state.currentJob = null;
+      state.controlBusy = null;
       state.running = false;
       state.jobStatus = null;
       els.promptInput.value = "";
@@ -1035,7 +1096,7 @@
     if (!project) return;
     await window.EditorApp?.openRemoteProject?.(project, client, state.userId);
     if (selection !== projectLoadToken) return;
-    await loadConversations(projectId, { preferId: restoredConversation });
+    await loadConversations(projectId, { preferId: restoredConversation, navigation });
   }
 
   function formatConversationLabel(conv) {
@@ -1066,9 +1127,11 @@
     if (state.conversationId) select.value = state.conversationId;
   }
 
-  async function loadConversations(projectId, { preferId = null, loadHistory = true } = {}) {
+  async function loadConversations(projectId, { preferId = null, loadHistory = true, navigation = navigationEpoch } = {}) {
     const selection = projectLoadToken;
-    const current = () => selection === projectLoadToken && state.selectedProjectId === projectId;
+    const session = client.sessionVersion;
+    const current = () => navigation === navigationEpoch && session === client.sessionVersion
+      && selection === projectLoadToken && state.selectedProjectId === projectId;
     try {
       const data = await client.conversations(projectId);
       if (!current()) return;
@@ -1094,7 +1157,7 @@
         renderConversationSelect();
         return;
       }
-      await selectConversation(preferred, { loadHistory });
+      await selectConversation(preferred, { loadHistory, navigation });
     } catch (err) {
       if (!current()) return;
       state.conversations = [];
@@ -1173,8 +1236,12 @@
     }
   }
 
-  async function selectConversation(conversationId, { loadHistory = true } = {}) {
+  async function selectConversation(conversationId, { loadHistory = true, navigation } = {}) {
     if (!conversationId) return;
+    navigation ??= ++navigationEpoch;
+    if (navigation !== navigationEpoch) return;
+    controlEpoch += 1;
+    state.controlBusy = null;
     const switching = conversationId !== state.conversationId;
     if (switching) {
       persistDraft();
@@ -1184,6 +1251,7 @@
       stopWatcher();
       setRunning(false);
       state.currentJobId = null;
+      state.currentJob = null;
       state.jobStatus = null;
       state.pauseRequested = false;
       state.cancelRequested = false;
@@ -1234,19 +1302,16 @@
 
   async function resumeActiveJobForConversation(conversationId) {
     if (!conversationId || !state.selectedProjectId || !state.connected) return;
+    const current = selectionGuard();
     try {
       const data = await client.jobs(state.selectedProjectId, conversationId);
-      const active = (data.jobs || []).find((j) => isJobActive(j));
-      if (!active) return;
-      state.currentJobId = active.id;
-      state.jobStatus = resolveJobStatus(active);
-      state.pauseRequested = Boolean(active.pause_requested);
-      state.cancelRequested = resolveJobStatus(active) === "cancel_requested";
-      if (els.jobHistory) els.jobHistory.value = active.id;
-      watchJob(active.id);
-    } catch (_) {
-      /* ignore */
-    }
+      if (!current()) return;
+      const jobs = data.jobs || [];
+      const job = jobs.find(isJobActive) || jobs[0];
+      if (!job) return;
+      adoptJob(job);
+      if (els.jobHistory) els.jobHistory.value = job.id;
+    } catch (_) { /* retry on the next selection */ }
   }
 
   async function createNewConversation() {
@@ -1255,10 +1320,12 @@
       toast("请先连接并选择项目");
       return;
     }
+    const current = selectionGuard();
     stopWatcher();
     setRunning(false);
     try {
       const conv = await client.createConversation(projectId, "新对话");
+      if (!current()) return null;
       state.conversations = [conv, ...state.conversations.filter((c) => c.id !== conv.id)];
       await selectConversation(conv.id, { loadHistory: true });
       toast("已开新对话");
@@ -1270,8 +1337,10 @@
   }
 
   async function loadJobHistory(projectId, conversationId = state.conversationId) {
+    const current = selectionGuard();
     try {
       const data = await client.jobs(projectId, conversationId || undefined);
+      if (!current()) return;
       const jobs = data.jobs || [];
       els.jobHistory.textContent = "";
       const placeholder = document.createElement("option");
@@ -1287,7 +1356,7 @@
       }
       els.jobHistory.disabled = false;
     } catch (_) {
-      els.jobHistory.disabled = true;
+      if (current()) els.jobHistory.disabled = true;
     }
   }
 
@@ -1296,12 +1365,14 @@
    * through older history when the turn is not in the initially loaded page.
    */
   async function revealJobTurn(job) {
+    const current = selectionGuard();
     const turnId = job.turn_id || null;
     if (!turnId) {
       toast("该任务缺少轮次信息，无法定位");
       return false;
     }
     for (let guard = 0; guard < 25; guard += 1) {
+      if (!current()) return false;
       if (view && view.revealTurn(turnId)) return true;
       if (!state.historyCursor || !state.historyCursor.hasMore) break;
       await loadEarlierHistory({ silent: true });
@@ -1312,33 +1383,36 @@
 
   async function loadHistoricalJob(jobId) {
     if (!jobId) return;
+    const navigation = ++navigationEpoch;
+    controlEpoch += 1;
+    state.controlBusy = null;
+    updateJobControls();
+    const session = client.sessionVersion;
+    const current = () => navigation === navigationEpoch && session === client.sessionVersion;
     try {
       const data = await client.job(jobId);
+      if (!current()) return;
       const job = data.job;
       if (!job) {
         toast("任务不存在或已归档");
         return;
       }
       if (job.project_id && job.project_id !== state.selectedProjectId) {
-        await selectProject(job.project_id);
+        await selectProject(job.project_id, { navigation });
+        if (!current()) return;
       }
       if (job.conversation_id && job.conversation_id !== state.conversationId) {
-        await selectConversation(job.conversation_id, { loadHistory: true });
+        await selectConversation(job.conversation_id, { loadHistory: true, navigation });
+        if (!current()) return;
       } else if (!state.conversationId && job.conversation_id) {
-        await selectConversation(job.conversation_id, { loadHistory: true });
+        await selectConversation(job.conversation_id, { loadHistory: true, navigation });
+        if (!current()) return;
       }
-      if (isJobActive(job)) {
-        // Still active: re-attach the live watcher instead of just showing history.
-        state.currentJobId = job.id;
-        state.jobStatus = resolveJobStatus(job);
-        state.pauseRequested = Boolean(job.pause_requested);
-        state.cancelRequested = resolveJobStatus(job) === "cancel_requested";
-        watchJob(job.id);
-      }
+      adoptJob(job);
       if (els.jobHistory) els.jobHistory.value = "";
       await revealJobTurn(job);
     } catch (err) {
-      toast(err.message);
+      if (current()) toast(err.message);
     }
   }
 
@@ -1352,6 +1426,7 @@
   }
 
   function stopWatcher() {
+    watcherEpoch += 1;
     if (state.watcher) {
       state.watcher.close();
       state.watcher = null;
@@ -1376,6 +1451,8 @@
 
   async function syncPendingApprovals(jobId, { force = false } = {}) {
     if (!jobId || !state.connected) return;
+    const current = selectionGuard();
+    const epoch = watcherEpoch;
     const now = Date.now();
     if (
       !force &&
@@ -1388,6 +1465,7 @@
     approvalSyncThrottle.at = now;
     try {
       const data = await client.listApprovals(jobId);
+      if (!current() || epoch !== watcherEpoch || state.currentJobId !== jobId) return;
       const pending = data.approvals || [];
       const liveIds = new Set(pending.map((p) => p.id));
       // Re-sync: approvals still pending server-side must be present locally…
@@ -1421,28 +1499,32 @@
   function watchJob(jobId) {
     stopWatcher();
     state.currentJobId = jobId;
+    const current = selectionGuard();
+    const epoch = watcherEpoch;
+    const live = () => current() && epoch === watcherEpoch && state.currentJobId === jobId;
     setRunning(true);
     syncPendingApprovals(jobId, { force: true });
     state.watcher = client.watchJob(jobId, async (payload) => {
-      if (state.currentJobId !== jobId) return;
+      if (!live()) return;
       if (payload.kind === "event" && payload.event) {
         timeline.ingestTaskEvents([payload.event], { jobId });
         renderTimeline();
         return;
       }
       if (payload.kind === "job" && payload.job) {
-        state.jobStatus = resolveJobStatus(payload.job);
-        state.pauseRequested = Boolean(payload.job.pause_requested);
-        state.cancelRequested = resolveJobStatus(payload.job) === "cancel_requested";
+        applyJob(payload.job);
         if (payload.job.status === "awaiting_approval") {
           await syncPendingApprovals(jobId);
         }
+        if (!live()) return;
         updateComposer();
         updateStatusDot();
         return;
       }
       if (payload.kind === "done") {
         stopWatcher();
+        const completedEpoch = watcherEpoch;
+        const settled = () => current() && completedEpoch === watcherEpoch && state.currentJobId === jobId;
         setRunning(false);
         state.jobStatus = payload.status;
         state.pauseRequested = false;
@@ -1450,7 +1532,9 @@
         state.controlBusy = null;
         try {
           const data = await client.job(jobId);
-          if (state.currentJobId !== jobId) return;
+          if (!settled()) return;
+          applyJob(data.job);
+          updateStatusDot();
           // Authoritative reconciliation: persisted conversation events are the
           // source of truth. Re-ingest the newest page (idempotent by seq) so
           // the final assistant message, after_turn checkpoint and lifecycle
@@ -1461,24 +1545,26 @@
                 beforeSeq: Number.MAX_SAFE_INTEGER,
                 limit: HISTORY_PAGE_LIMIT,
               });
-              if (state.currentJobId !== jobId && state.currentJobId !== null) return;
+              if (!settled()) return;
               timeline.ingestConversationEvents(tail.events || []);
             } catch (_) {
               /* fall back to task events below */
             }
           }
+          if (!settled()) return;
           timeline.ingestTaskEvents(data.job?.events || [], { jobId });
           renderTimeline();
           await refreshOpenFilesAfterJob(data.job);
+          if (!settled()) return;
           await loadJobHistory(state.selectedProjectId, state.conversationId);
-          if (state.selectedProjectId) {
+          if (settled() && state.selectedProjectId) {
             await loadConversations(state.selectedProjectId, {
               preferId: state.conversationId,
               loadHistory: false,
             });
           }
         } catch (_) {
-          renderTimeline();
+          if (settled()) renderTimeline();
         }
         return;
       }
@@ -1517,7 +1603,7 @@
     els.btnSend.hidden = false;
     els.btnStop.hidden = !controllable;
     if (els.composerModes) els.composerModes.hidden = !running;
-    els.btnSend.disabled = !ready;
+    els.btnSend.disabled = !ready || state.controlBusy === "recover";
     els.btnStop.disabled = !controllable || Boolean(state.controlBusy) || state.cancelRequested;
     els.btnStop.textContent = state.cancelRequested ? "停止中…" : "停止";
     els.btnAddContext.disabled = !state.selectedProjectId;
@@ -1626,6 +1712,8 @@
   }
 
   async function sendAsk() {
+    if (state.controlBusy === "recover") return;
+    let current = selectionGuard();
     const projectId = state.selectedProjectId;
     let conversationId = state.conversationId;
     const rawDraft = els.promptInput.value;
@@ -1642,9 +1730,11 @@
     if (!conversationId) {
       try {
         const conv = await client.createConversation(projectId, "新对话");
+        if (!current()) return;
         state.conversations = [conv, ...state.conversations];
         state.conversationId = conv.id;
         conversationId = conv.id;
+        current = selectionGuard();
         renderConversationSelect();
       } catch (err) {
         toast(err.message);
@@ -1673,16 +1763,19 @@
 
     try {
       const data = await client.askConversation(conversationId, body);
+      if (!current()) return;
       const job = data.job;
       state.currentJobId = job.id;
       state.jobStatus = resolveJobStatus(job);
       state.pauseRequested = Boolean(job.pause_requested);
       state.cancelRequested = resolveJobStatus(job) === "cancel_requested";
       if (data.conversation_id) state.conversationId = data.conversation_id;
+      applyJob(job);
       watchJob(job.id);
       await loadJobHistory(projectId, state.conversationId);
       return job;
     } catch (err) {
+      if (!current()) return;
       setRunning(false);
       els.promptInput.value = rawDraft;
       persistDraft();
@@ -1730,45 +1823,60 @@
   }
 
   async function controlJob(action) {
-    if (!state.currentJobId || state.controlBusy) return;
+    const jobId = state.currentJobId;
+    if (!jobId || state.controlBusy) return;
+    if (action === "recover" && !(state.currentJob?.can_recover === true || state.currentJob?.recovery_job_id)) return;
+    const current = selectionGuard();
+    const operation = ++controlEpoch;
+    const valid = () => current() && operation === controlEpoch;
     state.controlBusy = action;
     if (action === "cancel") state.cancelRequested = true;
     updateComposer();
     updateStatusDot();
     try {
-      const data =
-        action === "pause"
-          ? await client.pauseJob(state.currentJobId)
-          : action === "resume"
-            ? await client.resumeJob(state.currentJobId)
-            : await client.cancel(state.currentJobId);
+      const data = action === "recover" ? await (state.currentJob?.recovery_job_id
+        ? client.job(state.currentJob.recovery_job_id) : client.recoverJob(jobId))
+        : action === "pause" ? await client.pauseJob(jobId)
+        : action === "resume" ? await client.resumeJob(jobId) : await client.cancel(jobId);
+      if (!valid() || state.currentJobId !== jobId) return;
       const job = data?.job;
-      if (job) {
-        state.jobStatus = resolveJobStatus(job);
-        state.pauseRequested = Boolean(job.pause_requested) || (action === "pause" && job.status === "running");
-        state.cancelRequested = resolveJobStatus(job) === "cancel_requested" || action === "cancel";
-      } else if (action === "pause") {
-        state.pauseRequested = true;
-      }
-      if (action === "cancel") {
-        timeline.cancelPending();
-        renderTimeline();
-        toast("已请求停止，任务将在安全检查点结束");
-      } else if (action === "pause") {
-        toast(state.jobStatus === "paused" ? "任务已暂停" : "已请求暂停");
+      if (action === "recover") {
+        if (!job || !adoptJob(job, { preserveControl: true })) throw new Error("恢复任务不属于当前会话");
+        await loadJobHistory(state.selectedProjectId, state.conversationId);
+        if (!valid()) return;
+        toast(job.status === "paused" ? "恢复任务已暂停，可点击继续" : "已打开恢复任务");
       } else {
-        state.pauseRequested = false;
-        state.cancelRequested = false;
-        toast("已请求继续");
+        if (job) applyJob(job);
+        if (action === "cancel") {
+          state.cancelRequested = true;
+          timeline.cancelPending();
+          renderTimeline();
+          toast("已请求停止，任务将在安全检查点结束");
+        } else if (action === "pause") {
+          state.pauseRequested = job?.status !== "paused";
+          toast(state.jobStatus === "paused" ? "任务已暂停" : "已请求暂停");
+        } else {
+          state.pauseRequested = false;
+          toast("已请求继续");
+        }
       }
     } catch (err) {
+      if (!valid()) return;
       if (action === "cancel") state.cancelRequested = false;
       if (action === "pause") state.pauseRequested = false;
-      toast(`${action === "pause" ? "暂停" : action === "resume" ? "继续" : "停止"}失败: ${err.message}`);
+      toast(`${action === "recover" ? "恢复" : action === "pause" ? "暂停" : action === "resume" ? "继续" : "停止"}失败: ${err.message}`);
+      if (action === "recover" && err.status === 409) {
+        try {
+          const data = await client.job(jobId);
+          if (valid() && state.currentJobId === jobId) applyJob(data.job);
+        } catch (_) { /* preserve the last known job when offline */ }
+      }
     } finally {
-      state.controlBusy = null;
-      updateComposer();
-      updateStatusDot();
+      if (valid()) {
+        state.controlBusy = null;
+        updateComposer();
+        updateStatusDot();
+      }
     }
   }
 
@@ -1991,6 +2099,7 @@
     els.btnSidebarNewConversation?.addEventListener("click", () => createNewConversation());
     els.btnPauseJob?.addEventListener("click", () => controlJob("pause"));
     els.btnResumeJob?.addEventListener("click", () => controlJob("resume"));
+    els.btnRecoverJob?.addEventListener("click", () => controlJob("recover"));
     els.btnHeaderStop?.addEventListener("click", () => stopJob());
     els.conversationSelect?.addEventListener("change", async () => {
       const id = els.conversationSelect.value;
@@ -2192,6 +2301,7 @@
     onActiveFileChanged,
     onWorkspaceChanged,
     openJob: loadHistoricalJob,
+    adoptJob,
     startAgent: startAgentFromWindow,
     selectProject: (projectId, options) => selectProject(projectId, options),
     selectConversation: (conversationId, options) => selectConversation(conversationId, options),

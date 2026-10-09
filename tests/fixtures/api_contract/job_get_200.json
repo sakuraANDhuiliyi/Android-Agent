@@ -19,6 +19,8 @@
     "has_apk": true,
     "has_build_log": true,
     "apk_url": "/api/jobs/job-001/apk",
-    "build_log_url": "/api/jobs/job-001/log"
+    "build_log_url": "/api/jobs/job-001/log",
+    "can_recover": false,
+    "recovery_job_id": null
   }
 }

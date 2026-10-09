@@ -224,17 +224,19 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending
+                binding.btnSend.isEnabled = !st.sending && !st.recovering
+                binding.btnStop.isEnabled = !st.recovering
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
-                    st.sending -> "sending"
+                    st.sending || st.recovering -> "sending"
                     else -> st.job?.resolvedStatus() ?: "idle"
                 })
                 if (st.job !== lastJobInstance) {
                     lastJobInstance = st.job
                     renderJobChrome(st.job)
                 }
+                updateMenuVisibility(st.job)
                 scheduleRender()
             }
         }
@@ -300,6 +302,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             finish()
             return
         }
+        // Returning from another conversation makes this page the active selection again.
+        prefs.selectedProjectId = projectId
+        prefs.selectedConversationId = conversationId
         if (resumedOnce) viewModel.refresh() else resumedOnce = true
     }
 
@@ -397,12 +402,28 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     private fun updateMenuVisibility(job: JobInfo?) {
         val menu = binding.toolbar.menu
+        val state = viewModel.state.value
+        val busy = state.recovering || state.sending
         val active = job != null && job.resolvedStatus() in ConversationViewModel.ACTIVE_STATUSES
         menu.findItem(R.id.action_pause)?.isVisible = job?.resolvedStatus() == "running"
         menu.findItem(R.id.action_resume)?.isVisible = job?.resolvedStatus() == "paused"
         menu.findItem(R.id.action_stop)?.isVisible = active
         menu.findItem(R.id.action_task_details)?.isVisible = job != null
         menu.findItem(R.id.action_build_log)?.isVisible = job != null
+        menu.findItem(R.id.action_recover)?.apply {
+            isVisible = job?.let { it.recoveryJobId != null ||
+                (it.canRecover && it.status in setOf("failed", "interrupted")) } == true
+            isEnabled = !busy
+            setTitle(when {
+                state.recovering && job?.recoveryJobId != null -> R.string.menu_opening_recovery
+                state.recovering -> R.string.menu_recovering
+                job?.recoveryJobId != null -> R.string.menu_view_recovery
+                else -> R.string.menu_recover
+            })
+        }
+        for (id in listOf(R.id.action_pause, R.id.action_resume, R.id.action_stop)) {
+            menu.findItem(id)?.isEnabled = !busy
+        }
     }
 
     private fun onMenuItem(item: MenuItem): Boolean {
@@ -430,6 +451,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             }
             R.id.action_pause -> { viewModel.controlJob("pause"); true }
             R.id.action_resume -> { viewModel.controlJob("resume"); true }
+            R.id.action_recover -> { viewModel.recoverJob(); true }
             R.id.action_stop -> { viewModel.controlJob("cancel"); true }
             else -> false
         }

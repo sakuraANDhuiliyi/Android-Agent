@@ -248,6 +248,7 @@ def build_provider_messages(
         prompt_recorded = any(
             event.get("turn_id") == current_turn_id
             and event.get("event_type") == EventType.USER_MESSAGE
+            and (event.get("payload") or {}).get("source") != "task_message"
             for event in events
         )
         messages = (

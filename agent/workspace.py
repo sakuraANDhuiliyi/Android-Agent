@@ -69,6 +69,13 @@ def _load_blob(user_id: str, sha256: str) -> bytes:
     return path.read_bytes()
 
 
+def workspace_fingerprint(workspace: Path, user_id: str) -> str:
+    """Digest only reviewed source files, excluding build outputs and symlinks."""
+    entries = sorted((item["path"], item["sha256"])
+                     for item in _capture_manifest(workspace, user_id))
+    return hashlib.sha256(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()
+
+
 def _is_inside_workspace(path: Path, workspace: Path) -> bool:
     try:
         path.resolve().relative_to(workspace.resolve())

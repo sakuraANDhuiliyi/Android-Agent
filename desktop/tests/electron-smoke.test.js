@@ -361,8 +361,10 @@ async function main() {
   await waitUntil(
     () =>
       page.evaluate(() => {
-        const btns = [...document.querySelectorAll(".tl-changes button")];
-        return btns.some((b) => b.textContent.includes("审查改动") && !b.disabled);
+        const state = window.AiPanel.getState();
+        const btns = [...document.querySelectorAll(".tl-changes button.primary-btn")];
+        return !state.running && state.jobStatus === "succeeded"
+          && btns.some((b) => b.textContent.includes("审查改动") && !b.disabled);
       }),
     60000,
     "review button ready",
@@ -388,7 +390,14 @@ async function main() {
     () => page.evaluate(() => !document.getElementById("monacoDiffHost").hidden),
     20000,
     "diff host visible",
-  );
+  ).catch(async error => {
+    const diagnostics = await page.evaluate(() => ({
+      changes: [...document.querySelectorAll(".tl-changes")].map(node => node.outerHTML),
+      toasts: [...document.querySelectorAll(".toast")].map(node => node.textContent),
+      state: { project: AiPanel.getState().selectedProjectId, conversation: AiPanel.getState().conversationId, job: AiPanel.getState().currentJobId },
+    }));
+    throw new Error(`${error.message}: ${JSON.stringify(diagnostics)}`);
+  });
   await page.waitForTimeout(800);
   const review = await page.evaluate(() => {
     const models = window.monaco.editor.getModels().map((m) => m.getValue());

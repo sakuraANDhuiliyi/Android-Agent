@@ -14,7 +14,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,7 +64,7 @@ from agent.jobs import (
     list_jobs,
     pause_job,
     request_cancel,
-    recover_job_explicitly,
+    recover_job_with_status,
     restore_checkpoint,
     restore_conversation,
     restore_file,
@@ -1907,20 +1907,23 @@ def create_app(
             "has_more": False,
         }
 
-    @app.post("/api/jobs/{job_id}/recover", status_code=201)
+    @app.post("/api/jobs/{job_id}/recover", status_code=201,
+              responses={200: {"description": "Existing recovery task"}})
     def recover_interrupted_job(
         job_id: str,
+        response: Response,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
         try:
-            recovered = recover_job_explicitly(job_id, user_id, settings)
+            recovered, created = recover_job_with_status(job_id, user_id, settings)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not recovered:
             raise HTTPException(
-                status_code=409,
-                detail="任务不是可显式恢复的中断任务",
+                status_code=404,
+                detail="任务不存在",
             )
+        response.status_code = 201 if created else 200
         return {"job": job_to_dict(recovered)}
 
     @app.delete("/api/projects/{project_id}", status_code=204)

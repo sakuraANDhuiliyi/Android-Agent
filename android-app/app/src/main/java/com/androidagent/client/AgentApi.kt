@@ -205,6 +205,8 @@ data class JobInfo(
     val role: String? = null,
     val turnId: String? = null,
     val buildStatus: String? = null,
+    val canRecover: Boolean = false,
+    val recoveryJobId: String? = null,
 ) {
     fun resolvedStatus(): String {
         if (displayStatus.isNotBlank()) return displayStatus
@@ -760,6 +762,11 @@ class AgentApi(
 
     fun resumeJob(jobId: String): JobInfo {
         val json = postJson("/api/jobs/$jobId/resume", JSONObject())
+        return parseJob(json.getJSONObject("job"))
+    }
+
+    fun recoverJob(jobId: String): JobInfo {
+        val json = postJson("/api/jobs/$jobId/recover", JSONObject())
         return parseJob(json.getJSONObject("job"))
     }
 
@@ -1498,6 +1505,8 @@ class AgentApi(
             role = json.optString("role").takeIf { it.isNotBlank() && it != "null" },
             turnId = json.optString("turn_id").takeIf { it.isNotBlank() && it != "null" },
             buildStatus = build?.optString("status")?.takeIf { it.isNotBlank() && it != "null" },
+            canRecover = json.optBoolean("can_recover", false),
+            recoveryJobId = json.optString("recovery_job_id").takeIf { it.isNotBlank() && it != "null" },
         )
     }
 

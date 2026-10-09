@@ -45,6 +45,7 @@ const AgentApi = context.window.AgentApi;
 let server = null;
 let requests = [];
 let lastResponse = { status: "ok" };
+let lastStatus = 200;
 
 function startServer(handler) {
   return new Promise((resolve) => {
@@ -71,7 +72,7 @@ function stopServer() {
 
 async function run() {
   const port = await startServer((req, res, body) => {
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(lastStatus, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ...lastResponse, path: req.url, method: req.method, body }));
   });
 
@@ -111,6 +112,20 @@ async function run() {
   await api.pauseJob("j1");
   const pauseReq = requests.find((r) => r.url === "/api/jobs/j1/pause" && r.method === "POST");
   assert.ok(pauseReq);
+
+  lastStatus = 201;
+  lastResponse = { job: { id: "new-recovery", status: "queued" } };
+  const firstRecovery = api.recoverJob("job/with space");
+  assert.strictEqual(api.recoverJob("job/with space"), firstRecovery, "concurrent recovery clicks share a request");
+  assert.strictEqual((await firstRecovery).job.id, "new-recovery");
+  lastStatus = 200;
+  lastResponse = { job: { id: "new-recovery", status: "paused" } };
+  assert.strictEqual((await api.recoverJob("job/with space")).job.status, "paused");
+  const recoveryRequests = requests.filter(r => r.url === "/api/jobs/job%2Fwith%20space/recover");
+  assert.strictEqual(recoveryRequests.length, 2);
+  assert.ok(recoveryRequests.every(r => r.method === "POST"));
+  assert.ok(!requests.some(r => r.url.endsWith("/resume")), "existing recovery must not resume implicitly");
+  lastResponse = { status: "ok" };
 
   await api.steerJob("j1", "focus");
   const steerReq = requests.find((r) => r.url === "/api/jobs/j1/messages" && r.method === "POST");
@@ -153,6 +168,7 @@ async function run() {
     () => api.resolveApproval("j1", "a1", true),
     (error) => error.status === 409 && error.message === "已在其他端处理",
   );
+  await assert.rejects(() => api.recoverJob("ineligible"), error => error.status === 409);
   await stopServer();
   console.log("agent-api.test: OK");
 }

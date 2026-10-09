@@ -22,6 +22,10 @@
         android:id="@+id/action_resume"
         android:title="@string/menu_resume" />
     <item
+        android:id="@+id/action_recover"
+        android:title="@string/menu_recover"
+        android:visible="false" />
+    <item
         android:id="@+id/action_stop"
         android:title="@string/menu_stop" />
 </menu>

@@ -1,0 +1,54 @@
+{
+  "driver": "pause_after_steer",
+  "auto_approve": true,
+  "assert_pause_evidence": true,
+  "id": "19_pause_steer_evidence",
+  "title": "已消费引导消息暂停恢复后保留",
+  "prompt": "运行两段脚本并总结",
+  "steer": "最终总结必须标注蓝色方案",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "import time; time.sleep(2); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "import time; time.sleep(2); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "引导仍然保留：蓝色方案。",
+      "requires_user_text": "最终总结必须标注蓝色方案"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "final_text_contains": "引导仍然保留",
+    "tool_calls": [
+      "run_command",
+      "run_command"
+    ]
+  }
+}

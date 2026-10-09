@@ -1,0 +1,42 @@
+{
+  "id": "18_service_recovery",
+  "title": "服务崩溃后显式且幂等恢复",
+  "driver": "service_recovery",
+  "prompt": "运行一段脚本并总结结果",
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; p=Path('app/build/recovery-effects.log'); p.parent.mkdir(parents=True,exist_ok=True)\nwith p.open('a') as f: f.write('once\\n')\nprint('COMPLETED-BEFORE-CRASH')"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "恢复任务完成，之前的命令无需重跑。",
+      "delay_ms": 5000
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "file_lines": {
+      "app/build/recovery-effects.log": [
+        "once"
+      ]
+    },
+    "final_text_contains": "恢复任务完成",
+    "event_types_include": [
+      "recovery_note",
+      "turn_completed"
+    ]
+  }
+}

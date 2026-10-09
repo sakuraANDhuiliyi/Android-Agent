@@ -39,6 +39,7 @@
     initialized: false,
     visible: false,
     busy: false,
+    controlBusy: null,
     layout: "solo",
     selectedId: null,
     selectedProjectId: null,
@@ -80,6 +81,42 @@
   };
 
   const els = {};
+  let selectionEpoch = 0;
+  let watcherEpoch = 0;
+  let dataEpoch = 0;
+  let accountVersion = null;
+  // Every selection change invalidates responses, including A → B → A.
+  for (const key of ["selectedId", "selectedProjectId", "selectedConversationId"]) {
+    let value = state[key];
+    Object.defineProperty(state, key, { enumerable: true, get: () => value, set(next) {
+      if (next !== value) { selectionEpoch += 1; state.controlBusy = null; }
+      value = next;
+    } });
+  }
+
+  function selectionGuard() {
+    const version = window.AiPanel?.client?.sessionVersion;
+    const epoch = selectionEpoch;
+    return () => version === window.AiPanel?.client?.sessionVersion && epoch === selectionEpoch;
+  }
+
+  function syncAccount() {
+    const version = window.AiPanel?.client?.sessionVersion;
+    if (accountVersion !== null && version !== accountVersion) {
+      closeJobWatcher();
+      dataEpoch += 1;
+      state.jobs = [];
+      state.jobDetails.clear();
+      state.models = [];
+      state.projects = [];
+      state.selectedId = null;
+      state.selectedProjectId = null;
+      state.selectedConversationId = null;
+      state.controlBusy = null;
+    }
+    accountVersion = version;
+  }
+
 
   function displayStatus(job) {
     if (!job) return "queued";
@@ -111,6 +148,8 @@
       .map((job) => ({
         ...job,
         id: String(job.id),
+        can_recover: job.can_recover === true,
+        recovery_job_id: job.recovery_job_id || null,
         project: projectMap.get(job.project_id) || null,
         displayStatus: displayStatus(job),
         statusClass: statusClass(job),
@@ -713,6 +752,7 @@
   }
 
   function closeJobWatcher() {
+    watcherEpoch += 1;
     try { state.jobWatcher?.close?.(); } catch (_) {}
     state.jobWatcher = null;
     state.watchedJobId = null;
@@ -723,6 +763,7 @@
     const id = String(nextJob.id);
     const current = state.jobs.find((job) => String(job.id) === id) || {};
     const merged = { ...current, ...nextJob, id };
+    dataEpoch += 1;
     state.jobDetails.set(id, merged);
     state.jobs = [merged, ...state.jobs.filter((job) => String(job.id) !== id)];
   }
@@ -733,10 +774,16 @@
       closeJobWatcher();
       return;
     }
-    if (state.watchedJobId === job.id) return;
+    if (state.watchedJobId === job.id && state.watchedSelectionEpoch === selectionEpoch
+        && state.watchedSession === window.AiPanel.client.sessionVersion) return;
     closeJobWatcher();
     state.watchedJobId = job.id;
+    state.watchedSelectionEpoch = selectionEpoch;
+    state.watchedSession = window.AiPanel.client.sessionVersion;
+    const currentSelection = selectionGuard();
+    const epoch = watcherEpoch;
     state.jobWatcher = window.AiPanel.client.watchJob(job.id, (payload) => {
+      if (!currentSelection() || epoch !== watcherEpoch || state.watchedJobId !== job.id) return;
       const current = state.jobs.find((item) => String(item.id) === job.id) || job;
       if (payload.kind === "event" && payload.event) {
         const events = Array.isArray(current.events) ? current.events.slice() : [];
@@ -758,36 +805,69 @@
     if (!els.taskControls) return;
     const job = selectedJob();
     const active = Boolean(job && ACTIVE_STATUSES.has(job.displayStatus));
-    els.taskControls.hidden = !active;
-    if (!active) return;
-    els.taskStatus.textContent = job.displayStatus.replaceAll("_", " ");
-    els.pauseTask.hidden = job.displayStatus === "paused" || job.displayStatus === "cancel_requested";
-    els.resumeTask.hidden = job.displayStatus !== "paused";
-    els.stopTask.disabled = job.displayStatus === "cancel_requested";
+    const recoverable = Boolean(job && (job.can_recover === true || job.recovery_job_id));
+    const busy = Boolean(state.controlBusy);
+    els.taskControls.hidden = !(active || recoverable);
+    els.taskStatus.textContent = job?.displayStatus.replaceAll("_", " ") || "";
+    els.pauseTask.hidden = !active || !["queued", "running"].includes(job.displayStatus);
+    els.resumeTask.hidden = !active || job.displayStatus !== "paused";
+    els.stopTask.hidden = !active;
+    els.pauseTask.disabled = busy || Boolean(job?.pause_requested);
+    els.resumeTask.disabled = busy;
+    els.stopTask.disabled = busy || job?.displayStatus === "cancel_requested";
+    els.recoverTask.hidden = !recoverable;
+    els.recoverTask.disabled = busy;
+    els.recoverTask.textContent = state.controlBusy === "recover" ? "恢复中…"
+      : job?.recovery_job_id ? "查看恢复任务" : "恢复任务";
   }
 
   async function controlSelectedJob(action) {
     const job = selectedJob();
     const client = window.AiPanel?.client;
-    if (!job || !client) return;
-    const target = action === "pause" ? els.pauseTask : action === "resume" ? els.resumeTask : els.stopTask;
-    target.disabled = true;
+    if (!job || !client || state.controlBusy) return;
+    if (action === "recover" && !(job.can_recover === true || job.recovery_job_id)) return;
+    let current = selectionGuard();
+    const panelBinding = window.AiPanel?.getState?.().loadToken;
+    state.controlBusy = action;
+    updateTaskControls();
+    updateSendButton();
     try {
-      const result = action === "pause"
-        ? await client.pauseJob(job.id)
-        : action === "resume"
-          ? await client.resumeJob(job.id)
-          : await client.cancel(job.id);
-      mergeJob(result?.job || {
-        ...job,
-        status: action === "resume" ? "running" : action === "pause" ? "paused" : job.status,
-        cancel_requested: action === "cancel",
-      });
+      const result = action === "recover" ? await (job.recovery_job_id
+        ? client.job(job.recovery_job_id) : client.recoverJob(job.id))
+        : action === "pause" ? await client.pauseJob(job.id)
+        : action === "resume" ? await client.resumeJob(job.id) : await client.cancel(job.id);
+      if (!current()) return;
+      const next = result?.job;
+      if (!next?.id) throw new Error("服务未返回任务状态");
+      if (action === "recover") {
+        if (next.project_id !== job.project_id || next.conversation_id !== job.conversation_id) {
+          throw new Error("恢复任务不属于当前会话");
+        }
+        mergeJob({ ...job, can_recover: false, recovery_job_id: next.id });
+        mergeJob(next);
+        state.selectedId = String(next.id);
+        state.selectedConversationId = next.conversation_id;
+        current = selectionGuard();
+        // Adopt without clearing the existing chat or draft when it is open.
+        if (window.AiPanel?.getState?.().loadToken === panelBinding) window.AiPanel?.adoptJob?.(next);
+        persistState();
+      } else mergeJob(next);
       renderAgents();
     } catch (error) {
+      if (!current()) return;
       toast(error.message || error);
+      if (action === "recover" && error.status === 409) {
+        try {
+          const data = await client.job(job.id);
+          if (current() && data?.job) mergeJob(data.job);
+        } catch (_) { /* retain the last known state while offline */ }
+      }
     } finally {
-      target.disabled = false;
+      if (current()) {
+        state.controlBusy = null;
+        renderAgents();
+        updateSendButton();
+      }
     }
   }
 
@@ -1236,6 +1316,9 @@
   }
 
   async function loadRemoteData() {
+    const version = window.AiPanel?.client?.sessionVersion;
+    const epoch = dataEpoch;
+    const current = () => version === window.AiPanel?.client?.sessionVersion && epoch === dataEpoch;
     const client = window.AiPanel?.client;
     const aiState = window.AiPanel?.getState?.() || {};
     if (!client || !aiState.connected) return { projects: aiState.projects || [], jobs: state.jobs, models: state.models };
@@ -1244,28 +1327,34 @@
       client.projects().catch(() => ({ projects: aiState.projects || [] })),
       state.models.length ? Promise.resolve({ models: state.models }) : client.models().catch(() => ({ models: [] })),
     ]);
+    if (!current()) return null;
     const summaries = normalizeJobs(jobsResult.jobs || [], projectsResult.projects || [], state.dismissedIds);
     const details = await Promise.all(summaries.map(async (summary, index) => {
       const cached = state.jobDetails.get(summary.id);
-      if (cached && !ACTIVE_STATUSES.has(summary.displayStatus)) return { ...summary, ...cached };
-      if (index >= 8 && !ACTIVE_STATUSES.has(summary.displayStatus)) return { ...summary, ...(cached || {}) };
+      if (cached && !ACTIVE_STATUSES.has(summary.displayStatus)) return { ...cached, ...summary };
+      if (index >= 8 && !ACTIVE_STATUSES.has(summary.displayStatus)) return { ...(cached || {}), ...summary };
       try {
         const result = await client.job(summary.id);
         const detail = { ...summary, ...(result.job || summary) };
+        if (!current()) return null;
         state.jobDetails.set(summary.id, detail);
         return detail;
       } catch (_) {
-        return { ...summary, ...(cached || {}) };
+        return { ...(cached || {}), ...summary };
       }
     }));
-    return { projects: projectsResult.projects || [], jobs: details, models: modelsResult.models || [] };
+    if (!current()) return null;
+    return { projects: projectsResult.projects || [], jobs: details.filter(Boolean), models: modelsResult.models || [] };
   }
 
   async function refresh({ quiet = false } = {}) {
     if (!state.initialized || state.busy) return;
+    syncAccount();
+    const version = window.AiPanel?.client?.sessionVersion;
     state.busy = true;
     try {
       const data = state.debugData || await loadRemoteData();
+      if (!data || version !== window.AiPanel?.client?.sessionVersion) return;
       state.projects = data.projects || [];
       state.jobs = data.jobs || [];
       state.models = data.models || state.models;
@@ -1286,7 +1375,7 @@
 
   function updateSendButton() {
     if (!els.send) return;
-    els.send.disabled = !els.prompt.value.trim() || !state.selectedProjectId || state.busy;
+    els.send.disabled = !els.prompt.value.trim() || !state.selectedProjectId || state.busy || state.controlBusy === "recover";
   }
 
   async function startAgent() {
@@ -1296,7 +1385,7 @@
     if (state.planMode) context.push("请先给出清晰、可验证的实施计划，再按计划执行。");
     if (state.contextFiles.length) context.push(state.contextFiles.map((path) => `Relevant file: ${path}`).join("\n"));
     const prompt = context.length ? `${context.join("\n")}\n\n${rawPrompt}` : rawPrompt;
-    if (!prompt || !state.selectedProjectId || state.busy) return;
+    if (!prompt || !state.selectedProjectId || state.busy || state.controlBusy === "recover") return;
     state.busy = true;
     updateSendButton();
     try {
@@ -1509,6 +1598,7 @@
     els.mic.addEventListener("click", startVoiceInput);
     els.pauseTask.addEventListener("click", () => controlSelectedJob("pause"));
     els.resumeTask.addEventListener("click", () => controlSelectedJob("resume"));
+    els.recoverTask.addEventListener("click", () => controlSelectedJob("recover"));
     els.stopTask.addEventListener("click", () => controlSelectedJob("cancel"));
     els.send.addEventListener("click", startAgent);
     els.prompt.addEventListener("input", updateSendButton);
@@ -1575,6 +1665,7 @@
     els.taskStatus = document.getElementById("cxTaskStatus");
     els.pauseTask = document.getElementById("cxPauseTask");
     els.resumeTask = document.getElementById("cxResumeTask");
+    els.recoverTask = document.getElementById("cxRecoverTask");
     els.stopTask = document.getElementById("cxStopTask");
     els.layoutButtons = Array.from(document.querySelectorAll(".cx-layout-button"));
     els.panelTabs = Array.from(document.querySelectorAll("[data-panel]"));

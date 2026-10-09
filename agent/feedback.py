@@ -149,6 +149,10 @@ def capture_gradle_result(store: Any, user_id: str, project_id: str, task_id: st
             pass
     report = parse_log(log, workspace_path(user_id, project_id), task, bool(payload.get("ok")), payload.get("duration_ms"))
     report.update({"created_at": time.time(), "log_path": log_path})
+    if task == "assembleDebug" and payload.get("ok"):
+        from agent.workspace import workspace_fingerprint
+        report["source_fingerprint"] = workspace_fingerprint(workspace_path(user_id, project_id), user_id)
+
     if task == "lintDebug":
         for path in workspace_path(user_id, project_id).glob("**/build/reports/lint-results*.xml"):
             try:

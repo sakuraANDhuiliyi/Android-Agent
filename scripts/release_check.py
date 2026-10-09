@@ -82,6 +82,7 @@ def main() -> int:
         steps.append(run(["npm", "run", "check"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:unit"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:emotion"], cwd=ROOT / "desktop", timeout=120))
+        steps.append(run(["npm", "run", "test:recovery"], cwd=ROOT / "desktop", timeout=180))
         steps.append(run(["npm", "run", "test:studio"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:creative-live"], cwd=ROOT / "desktop", timeout=180,
                          env={**os.environ, "CREATIVE_TEST_PYTHON": sys.executable}))
@@ -102,6 +103,8 @@ def main() -> int:
         for smoke in ("electron-smoke.test.js", "electron-scenario-smoke.test.js"):
             steps.append(run(["node", "tests/" + smoke], cwd=ROOT / "desktop", timeout=300,
                              env=desktop_test_env))
+        steps.append(run(["npm", "run", "test:recovery-smoke"], cwd=ROOT / "desktop", timeout=300,
+                         env=desktop_test_env))
     if not args.skip_android:
         android = ROOT / "android-app"
         if (android / "gradlew").is_file():

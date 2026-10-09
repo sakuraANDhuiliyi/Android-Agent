@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import json
+import sqlite3
 import copy
 import shutil
 import threading
 import time
 import uuid
 from typing import Any
+from pathlib import Path
 
 from agent.approvals import (
     ApprovalEventPersistenceError,
@@ -32,7 +35,7 @@ from agent.project_lifecycle import project_operation
 from agent.redaction import redact_sensitive_value
 from agent.tools import ToolResult, cancel_gradle
 from agent.worker import PauseRequested, TaskLeaseLost, TaskWorker
-from agent.workspace import WorkspaceRepository
+from agent.workspace import WorkspaceRepository, workspace_fingerprint
 from agent.subagents import configure_subagent_store, run_subagent_job
 from agent.task_settings import inherited_execution_context, model_selection, resolve_task_settings
 
@@ -171,6 +174,7 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
         "lease_expires_at",
         "heartbeat_at",
         "write_lock_key",
+        "recovery_source_task_id",
     }
     result = {
         key: value
@@ -189,6 +193,13 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     # The desktop needs the turn identity to locate the Turn in the timeline
     # and to request the checkpoint-based diff review.
     result["turn_id"] = _turn_id_for_task(task_id)
+    result.update(can_recover=False, recovery_job_id=None)
+    try:
+        result.update(_store.recovery_state(task_id, str(job.get("user_id") or "")))
+    except sqlite3.Error:
+        # A detached DTO (or an unavailable store) must not advertise an
+        # unverified recovery action. The mutation always rechecks the DB.
+        logger.debug("Recovery metadata unavailable for task %s", task_id, exc_info=True)
     result["has_apk"] = bool(job.get("apk_path"))
     result["has_build_log"] = bool(job.get("build_log_path"))
     result["apk_url"] = f"/api/jobs/{task_id}/apk" if job.get("apk_path") else None
@@ -723,162 +734,116 @@ def _schedule_recovery_jobs(
             )
 
 
-def enqueue_recovery_task(
-    recovery: dict[str, Any],
-    settings: Settings,
-) -> dict[str, Any]:
+def _enqueue_recovery_task(
+    recovery: dict[str, Any], settings: Settings,
+) -> tuple[dict[str, Any], bool]:
+    """Commit the source mapping, queued task, turn and note as one unit."""
     user_id = str(recovery["user_id"])
     project_id = str(recovery["project_id"])
-    conversation_id = str(recovery["conversation_id"])
+    source_id = str(recovery["original_task_id"])
     load_project_meta(user_id, project_id)
-    original = _store.get_task(str(recovery["original_task_id"]), user_id)
+    original = _store.get_task(source_id, user_id)
     if not original or original["project_id"] != project_id:
         raise RuntimeError("原任务不存在或不属于该项目")
     settings = resolve_task_settings(settings, original)
-
-    task_id = uuid.uuid4().hex[:12]
-    turn_id: str | None = None
-    task_created = False
     event_store = ConversationEventStore(_store)
-    try:
-        conv = _store.get_conversation(conversation_id, user_id)
-        if not conv or conv["project_id"] != project_id:
-            raise RuntimeError("中断任务的 Conversation 已不存在")
+    with _store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        state = _store.recovery_state(source_id, user_id, _conn=conn)
+        if state["recovery_job_id"]:
+            row = conn.execute("SELECT * FROM tasks WHERE id=? AND user_id=?",
+                               (state["recovery_job_id"], user_id)).fetchone()
+            return _store._row_to_task(row), False
+        if not state["can_recover"]:
+            raise RuntimeError("任务不是可显式恢复的中断任务")
+        original = _store._row_to_task(conn.execute(
+            "SELECT * FROM tasks WHERE id=? AND user_id=?", (source_id, user_id)
+        ).fetchone())
+        conversation_id = original["conversation_id"]
+        source_turn = conn.execute(
+            "SELECT id FROM conversation_turns WHERE task_id=? AND user_id=?",
+            (source_id, user_id),
+        ).fetchone()
+        interrupted_turn_id = source_turn["id"]
+        root_id = original.get("recovery_of_task_id") or source_id
+        attempt = conn.execute(
+            "SELECT COALESCE(MAX(recovery_attempt),0)+1 FROM tasks "
+            "WHERE user_id=? AND recovery_of_task_id=?", (user_id, root_id)
+        ).fetchone()[0]
+        task_id = uuid.uuid4().hex[:12]
         created_at = time.time()
-        attempt = int(recovery.get("recovery_attempt") or 1)
-        root_task_id = str(
-            recovery.get("recovery_root_task_id")
-            or recovery["original_task_id"]
-        )
-        history_events = event_store.list_events(
-            conversation_id,
-            user_id=user_id,
-        )
-        replay_guard = _recovery_replay_guard(
-            history_events,
-            str(recovery["interrupted_turn_id"]),
-        )
+        history = event_store.list_events(conversation_id, user_id=user_id)
         context = {
             **inherited_execution_context(original.get("context") or {}),
             "model_selection": model_selection(settings),
             "write_lock_key": f"main:{user_id}:{project_id}",
             "recovery_mode": True,
-            "interrupted_turn_id": str(recovery["interrupted_turn_id"]),
-            "recovery_replays": replay_guard,
+            "interrupted_turn_id": interrupted_turn_id,
+            "recovery_replays": _recovery_replay_guard(history, interrupted_turn_id),
         }
-        _store.create_task(
-            {
-                "id": task_id,
-                "user_id": user_id,
-                "project_id": project_id,
-                "conversation_id": conversation_id,
-                "prompt": f"用户确认恢复中断任务（第 {attempt} 次）",
-                "status": "queued",
-                "provider": settings.provider,
-                "model": settings.model,
-                "created_at": created_at,
-                "write_lock_key": context["write_lock_key"],
-                "recovery_of_task_id": root_task_id,
-                "recovery_attempt": attempt,
-                "context_json": __import__("json").dumps(context, ensure_ascii=False),
-            }
-        )
-        task_created = True
+        prompt = f"用户确认恢复中断任务（第 {attempt} 次）"
+        _store.create_task({
+            "id": task_id, "user_id": user_id, "project_id": project_id,
+            "conversation_id": conversation_id, "prompt": prompt, "status": "queued",
+            "provider": settings.provider, "model": settings.model, "created_at": created_at,
+            "write_lock_key": context["write_lock_key"], "recovery_of_task_id": root_id,
+            "recovery_source_task_id": source_id, "recovery_attempt": attempt, "context": context,
+        }, _conn=conn)
         turn = event_store.create_turn(
-            conversation_id,
-            user_id,
-            project_id,
-            task_id=task_id,
-            status="queued",
-            provider=settings.provider,
-            model=settings.model,
-            created_at=created_at,
+            conversation_id, user_id, project_id, task_id=task_id,
+            status="queued", provider=settings.provider, model=settings.model,
+            created_at=created_at, _conn=conn,
         )
-        turn_id = turn["id"]
+        # Persist the recovery request itself so later steers cannot be
+        # mistaken for this turn's initial user prompt.
         event_store.append_event_idempotent(
-            conversation_id,
-            turn_id,
-            EventType.RECOVERY_NOTE,
-            f"recovery:{turn_id}:resume",
-            {
-                "content": (
-                    "Agent 服务已重启。请根据已保存的完整上下文继续任务。"
-                    "中断前未完成的工具调用已记录为失败；不要假设它已成功。"
-                    "只读工具可以重新调用，有副作用的相同工具调用必须重新获得用户确认。"
-                ),
-                "source": "explicit_service_recovery",
-                "interrupted_turn_id": recovery["interrupted_turn_id"],
-                "original_task_id": recovery["original_task_id"],
-                "recovery_attempt": attempt,
-            },
-            task_id=task_id,
-            context_visible=True,
-            created_at=created_at,
+            conversation_id, turn["id"], EventType.USER_MESSAGE,
+            f"turn:{turn['id']}:user_message",
+            {"message_id": f"recovery:{task_id}:prompt", "content": prompt, "source": "explicit_service_recovery"},
+            task_id=task_id, role="user", context_visible=True, created_at=created_at, _conn=conn,
         )
-    except Exception as exc:
-        if task_created:
-            _store.update_task(
-                task_id,
-                status="failed",
-                finished_at=time.time(),
-                error_message=f"自动恢复初始化失败: {exc}",
-            )
-        if turn_id:
-            event_store.update_turn_status(
-                turn_id,
-                "failed",
-                user_id=user_id,
-                finished_at=time.time(),
-                error_message=str(exc),
-            )
-        raise
-    return _store.get_task(task_id, user_id) or {}
+        event_store.append_event_idempotent(
+            conversation_id, turn["id"], EventType.RECOVERY_NOTE,
+            f"recovery:{turn['id']}:resume",
+            {"content": (
+                "Agent 服务已重启。请根据已保存的完整上下文继续任务。"
+                "中断前未完成的工具调用已记录为失败；不要假设它已成功。"
+                "只读工具可以重新调用，有副作用的相同工具调用必须重新获得用户确认。"
+             ), "source": "explicit_service_recovery", "interrupted_turn_id": interrupted_turn_id,
+             "original_task_id": source_id, "recovery_attempt": attempt},
+            task_id=task_id, context_visible=True, created_at=created_at, _conn=conn,
+        )
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        result = _store._row_to_task(row)
+    return result, True
 
 
-def start_recovery_job(
-    recovery: dict[str, Any],
-    settings: Settings,
-) -> dict[str, Any]:
-    """Compatibility entrypoint that enqueues a recovery task instead of starting a thread."""
+def enqueue_recovery_task(recovery: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    return _enqueue_recovery_task(recovery, settings)[0]
+
+
+def start_recovery_job(recovery: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Compatibility entrypoint that enqueues without starting a thread."""
     return enqueue_recovery_task(recovery, settings)
 
 
-def recover_job_explicitly(
-    task_id: str,
-    user_id: str,
-    settings: Settings | None = None,
-) -> dict[str, Any] | None:
+def recover_job_with_status(
+    task_id: str, user_id: str, settings: Settings | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
     original = _store.get_task(task_id, user_id)
     if not original:
-        return None
+        return None, False
     with project_operation(user_id, original["project_id"]):
-        if original["status"] not in {"failed", "interrupted"}:
-            return None
-        event_store = ConversationEventStore(_store)
-        turn = event_store.get_turn_by_task(task_id, user_id=user_id)
-        if not turn or turn["status"] != "interrupted":
-            return None
-        root_task_id = original.get("recovery_of_task_id") or task_id
-        for existing in _store.list_tasks(user_id, original["project_id"]):
-            if (
-                existing.get("recovery_of_task_id") == root_task_id
-                and existing["id"] != task_id
-                and existing["status"]
-                in {"queued", "running", "awaiting_approval", "succeeded"}
-            ):
-                raise RuntimeError("该中断任务已有恢复任务")
-        return enqueue_recovery_task(
-            {
-                "user_id": user_id,
-                "project_id": original["project_id"],
-                "conversation_id": original["conversation_id"],
-                "original_task_id": task_id,
-                "interrupted_turn_id": turn["id"],
-                "recovery_root_task_id": root_task_id,
-                "recovery_attempt": int(original.get("recovery_attempt") or 0) + 1,
-            },
-            settings or load_settings(),
+        return _enqueue_recovery_task(
+            {"user_id": user_id, "project_id": original["project_id"],
+             "original_task_id": task_id}, settings or load_settings(),
         )
+
+
+def recover_job_explicitly(
+    task_id: str, user_id: str, settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    return recover_job_with_status(task_id, user_id, settings)[0]
 
 
 def _recovery_replay_guard(
@@ -1072,10 +1037,38 @@ def _run_job(
     for provider_settings in [settings, *settings.provider_fallbacks]:
         provider_settings.auto_build_after_edit = False
     before = snapshot_workspace(workspace)
-    task_started = time.time()
+    invocation_started = time.time()
     build_state = {"attempted": False, "succeeded": False}
     token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     edit_state: dict[str, Any] = {"successful_edits": 0, "approval_decisions": []}
+    prior_events = event_store.list_turn_events(turn_id, user_id=user_id)
+    resumed = any(event["event_type"] == EventType.TURN_STARTED for event in prior_events)
+    applied_events: set[str] = set()
+
+    def apply_evidence(event: dict[str, Any]) -> bool:
+        identity = str(event.get("event_key") or event.get("id"))
+        if identity in applied_events:
+            return False
+        applied_events.add(identity)
+        event_type, payload = event["event_type"], event.get("payload") or {}
+        if event_type == EventType.TOOL_RESULT:
+            if payload.get("name") in {"write_file", "str_replace"} and payload.get("ok"):
+                edit_state["successful_edits"] += 1
+            if payload.get("name") == "run_gradle" and (payload.get("input") or {}).get("task", "assembleDebug") == "assembleDebug":
+                build_state.update(attempted=True, succeeded=bool(payload.get("ok")))
+        elif event_type == EventType.APPROVAL_RESOLVED and payload.get("decision"):
+            edit_state["approval_decisions"].append(str(payload["decision"]))
+        if event_type == EventType.USAGE:
+            usage = payload.get("usage") or {}
+            for key in token_usage:
+                value = usage.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    token_usage[key] += value
+        return True
+
+    for prior_event in prior_events:
+        apply_evidence(prior_event)
+    before_checkpoint = None
     changes_recorded = False
     after_checkpoint_done = False
     after_checkpoint_status: dict[str, Any] = {"diff_status": "preparing"}
@@ -1129,15 +1122,7 @@ def _run_job(
             raise PauseRequested("任务已暂停")
 
     def get_steers() -> list[str]:
-        messages = _store.get_pending_messages(task_id, types=["steer"])
-        texts: list[str] = []
-        for msg in messages:
-            payload = msg.get("payload") or {}
-            text = payload.get("text") or payload.get("content") or ""
-            if text:
-                texts.append(str(text))
-                _store.consume_message(msg["id"])
-        return texts
+        return event_store.consume_steers(task_id, turn_id, user_id)
 
     def set_status(status: str) -> None:
         _store.update_task(task_id, status=status)
@@ -1146,7 +1131,6 @@ def _run_job(
                 turn_id,
                 status,
                 user_id=user_id,
-                started_at=time.time() if status == "running" else None,
             )
 
     def append_canonical(
@@ -1200,11 +1184,12 @@ def _run_job(
             ui_payload.setdefault("trace_id", trace_id)
         _store.add_event(task_id, event_type, ui_payload)
 
+        canonical = None
         if event_type == EventType.ASSISTANT_MESSAGE:
             message_id = payload.get("message_id")
             if not message_id:
                 raise RuntimeError("assistant_message 缺少 message_id")
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 role="assistant",
@@ -1212,14 +1197,14 @@ def _run_job(
                 event_key=f"assistant:{message_id}",
             )
         elif event_type == EventType.TOOL_CALL and payload.get("tool_call_id"):
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 context_visible=True,
                 event_key=f"tool_call:{payload['tool_call_id']}",
             )
         elif event_type == EventType.TOOL_RESULT and payload.get("tool_call_id"):
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 context_visible=True,
@@ -1250,7 +1235,7 @@ def _run_job(
             event_type == EventType.MALFORMED_TOOL_CALL
             and payload.get("tool_call_id")
         ):
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 context_visible=False,
@@ -1263,7 +1248,7 @@ def _run_job(
                 raise RuntimeError(
                     "approval_required 缺少 approval_id 或 tool_call_id"
                 )
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 event_key=f"approval:{approval_id}:required",
@@ -1275,7 +1260,7 @@ def _run_job(
                 raise RuntimeError(
                     "approval_resolved 缺少 approval_id 或 tool_call_id"
                 )
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 event_key=f"approval:{approval_id}:resolved",
@@ -1285,9 +1270,13 @@ def _run_job(
             EventType.PROVIDER_SWITCH,
             EventType.MODEL_SWITCH,
         }:
-            append_canonical(event_type, payload)
+            canonical = append_canonical(
+                event_type, payload,
+                event_key=(f"usage:{payload['message_id']}"
+                           if event_type == EventType.USAGE and payload.get("message_id") else None),
+            )
         elif event_type in {"subagent_spawned", "subagent_completed"} and payload.get("child_task_id"):
-            append_canonical(
+            canonical = append_canonical(
                 EventType.SYSTEM_NOTE,
                 {**payload, "agent_event": event_type},
                 context_visible=False,
@@ -1295,56 +1284,40 @@ def _run_job(
             )
         elif event_type == EventType.SYSTEM_NOTE:
             kind = payload.get("kind") or "note"
-            append_canonical(
+            canonical = append_canonical(
                 event_type,
                 payload,
                 context_visible=False,
                 event_key=f"system_note:{turn_id}:{kind}:{payload.get('skill') or 'rules'}",
             )
 
-        if (
-            event_type == EventType.TOOL_RESULT
-            and payload.get("name") in {"write_file", "str_replace"}
-            and payload.get("ok")
-        ):
-            edit_state["successful_edits"] += 1
-        if event_type == EventType.APPROVAL_RESOLVED:
-            decision = payload.get("decision")
-            if decision:
-                edit_state["approval_decisions"].append(str(decision))
-        if (
-            event_type == EventType.TOOL_RESULT
-            and payload.get("name") == "run_gradle"
-        ):
-            task_name = (payload.get("input") or {}).get("task") or "assembleDebug"
-            # Only assembleDebug counts toward the success gate
-            if task_name == "assembleDebug":
-                build_state["attempted"] = True
-                build_state["succeeded"] = bool(payload.get("ok"))
-            try:
-                capture_gradle_result(_store, user_id, project_id, task_id, payload, task_started)
-            except (OSError, ValueError) as exc:
-                logger.warning("Build report unavailable for %s: %s", task_id, exc)
-        usage = payload.get("usage")
-        if isinstance(usage, dict):
-            for key in token_usage:
-                value = usage.get(key)
-                if isinstance(value, int):
-                    token_usage[key] += value
-            _store.update_task(
-                task_id,
-                input_tokens=token_usage["input_tokens"],
-                output_tokens=token_usage["output_tokens"],
-                total_tokens=token_usage["total_tokens"],
-            )
+        if canonical is not None and apply_evidence(canonical):
+            if event_type == EventType.TOOL_RESULT and payload.get("name") == "run_gradle":
+                try:
+                    capture_gradle_result(_store, user_id, project_id, task_id, payload, invocation_started)
+                except (OSError, ValueError) as exc:
+                    logger.warning("Build report unavailable for %s: %s", task_id, exc)
+            if event_type == EventType.USAGE:
+                _store.update_task(task_id, **token_usage)
 
-    def record_changes() -> list[dict[str, Any]]:
+    def current_changes() -> tuple[list[dict[str, Any]], str]:
+        if before_checkpoint:
+            repo = WorkspaceRepository(user_id, project_id, task_store=_store)
+            result = repo.checkpoint_diff(before_checkpoint["id"])
+            if not result.get("ok"):
+                raise RuntimeError("本轮初始快照不可用，无法确认完整改动")
+            return ([{"path": item["path"], "change": item["change"]}
+                     for item in result["files"]], result["diff"])
+        if resumed:
+            raise RuntimeError("恢复任务缺少初始快照，无法确认完整改动")
+        return compare_snapshots(workspace, before, snapshot_workspace(workspace))
+
+    def record_changes(*, final: bool = True) -> list[dict[str, Any]]:
         nonlocal changes_recorded
         if changes_recorded:
             task = _store.get_task(task_id, user_id) or {}
             return list(task.get("changed_files") or [])
-        after = snapshot_workspace(workspace)
-        changed, diff = compare_snapshots(workspace, before, after)
+        changed, diff = current_changes()
         _store.update_task(task_id, changed_files=changed, diff=diff)
         stats = diff_stats(diff)
         _store.add_event(
@@ -1352,12 +1325,13 @@ def _run_job(
             EventType.CHANGES,
             {"message": f"改动 {len(changed)} 个文件", "files": changed, **stats},
         )
-        append_canonical(
-            EventType.CHANGES,
-            {"files": changed, **stats},
-            event_key=f"turn:{turn_id}:changes",
-        )
-        changes_recorded = True
+        if final:
+            append_canonical(
+                EventType.CHANGES,
+                {"files": changed, **stats},
+                event_key=f"turn:{turn_id}:changes:final",
+            )
+            changes_recorded = True
         return changed
 
     def ensure_final_assistant(final_answer: str) -> None:
@@ -1409,8 +1383,8 @@ def _run_job(
         if after_checkpoint_done:
             return dict(after_checkpoint_status)
         after_checkpoint_done = True
-        cp = create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
-        if cp:
+        cp = create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}:final")
+        if cp and before_checkpoint:
             after_checkpoint_status.clear()
             after_checkpoint_status.update(
                 {"diff_status": "ready", "after_checkpoint_id": cp["id"]}
@@ -1420,7 +1394,8 @@ def _run_job(
             after_checkpoint_status.update(
                 {
                     "diff_status": "unavailable",
-                    "diff_reason": "after_turn checkpoint 创建失败",
+                    "diff_reason": ("before_turn checkpoint 不可用" if not before_checkpoint
+                                    else "after_turn checkpoint 创建失败"),
                 }
             )
             try:
@@ -1519,9 +1494,14 @@ def _run_job(
             "plan",
             {"message": "理解需求 -> 定位/修改代码 -> 需要时再 assembleDebug"},
         )
-        before_checkpoint = create_checkpoint(
-            "before_turn", idempotency_key=f"before:{turn_id}"
-        )
+        if resumed:
+            before_checkpoint = WorkspaceRepository(
+                user_id, project_id, task_store=_store
+            ).get_checkpoint(f"before:{turn_id}")
+        else:
+            before_checkpoint = create_checkpoint(
+                "before_turn", idempotency_key=f"before:{turn_id}"
+            )
         check_cancel()
         check_pause()
         from agent.explicit_context import build_context_bundle
@@ -1710,7 +1690,7 @@ def _run_job(
             return result.ok
 
         options = feedback_options
-        changes_now, _ = compare_snapshots(workspace, before, snapshot_workspace(workspace))
+        changes_now, _ = current_changes()
 
         def fix_feedback(attempt: int, failed_task: str) -> None:
             nonlocal answer
@@ -1742,21 +1722,27 @@ def _run_job(
                 or (build_state["attempted"] and not build_state["succeeded"] and options.get("fix_failures"))):
             run_feedback_cycle(options, automatic_gradle, fix_feedback, check_cancel)
 
+        # A successful build verifies the source revision it actually built.
+        # Pausing releases the workspace writer, so another task may edit it.
+        saved_job = _store.get_task(task_id, user_id) or {}
+        build_runs = [run for run in (saved_job.get("context") or {}).get("feedback_runs", [])
+                      if run.get("task") == "assembleDebug"]
+        if build_state["succeeded"] and build_runs:
+            fingerprint = build_runs[-1].get("source_fingerprint")
+            if fingerprint and fingerprint != workspace_fingerprint(workspace, user_id):
+                _store.update_task(task_id, apk_path=None)
+                raise RuntimeError("代码在最后一次成功构建后已变化，请重新构建以验证当前版本")
         # Relaxed gate: only fail if gradle was attempted and failed
         if build_state["attempted"] and not build_state["succeeded"]:
             raise RuntimeError("assembleDebug 未成功，请查看构建日志和已尝试的修复")
 
+        saved_job = _store.get_task(task_id, user_id) or {}
         task_apk = None
-        if build_state["succeeded"]:
-            apk = latest_apk_path(user_id, project_id)
-            if apk.is_file() and apk.stat().st_mtime >= task_started:
-                task_apk = user_builds_dir(user_id) / project_id / f"{task_id}.apk"
-                temp_apk = task_apk.with_suffix(".apk.part")
-                try:
-                    shutil.copy2(apk, temp_apk)
-                    temp_apk.replace(task_apk)
-                finally:
-                    temp_apk.unlink(missing_ok=True)
+        if build_state["succeeded"] and saved_job.get("apk_path"):
+            candidate = Path(saved_job["apk_path"])
+            expected = user_builds_dir(user_id) / project_id / f"{task_id}.apk"
+            if candidate == expected and candidate.is_file():
+                task_apk = candidate
         if task_apk is not None and task_apk.is_file():
             artifact_payload: dict[str, Any] = {
                 "kind": "apk",
@@ -1777,8 +1763,7 @@ def _run_job(
             key=lambda p: p.stat().st_mtime,
         )
         # Snapshot early so honesty check can use real disk changes
-        after_preview = snapshot_workspace(workspace)
-        changed_preview, _diff_preview = compare_snapshots(workspace, before, after_preview)
+        changed_preview, _diff_preview = current_changes()
         answer = sanitize_final_answer(
             answer,
             changed_files=changed_preview,
@@ -1851,8 +1836,11 @@ def _run_job(
                 )
         except Exception as mem_exc:
             logger.warning("Memory candidate generation failed: %s", mem_exc)
-        recent_logs = [p for p in logs if p.stat().st_mtime >= task_started]
+        recent_logs = [p for p in logs if p.stat().st_mtime >= invocation_started]
         attached_log = _pick_task_log(recent_logs)
+        saved_log = saved_job.get("build_log_path")
+        if saved_log and Path(saved_log).is_file():
+            attached_log = Path(saved_log)
         event_store.finalize_lifecycle(
             conversation_id=conversation_id,
             turn_id=turn_id,
@@ -1898,7 +1886,7 @@ def _run_job(
                 )
             )
     except PauseRequested as exc:
-        record_changes()
+        record_changes(final=False)
         paused_at = time.time()
         event_store.update_turn_status(
             turn_id,
@@ -1938,16 +1926,15 @@ def _run_job(
                     task_id=task_id,
                     turn_id=turn_id,
                 )
-            # Fallback for paths that did not create it before the terminal
-            # state (e.g. pause). Idempotent via the stable idempotency key.
-            if not after_checkpoint_done:
-                create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}")
             logs = sorted(
                 (user_builds_dir(user_id) / project_id).glob("*.log"),
                 key=lambda path: path.stat().st_mtime,
             )
-            recent = [p for p in logs if p.stat().st_mtime >= task_started]
+            recent = [p for p in logs if p.stat().st_mtime >= invocation_started]
             chosen = _pick_task_log(recent)
+            bound_log = (_store.get_task(task_id, user_id) or {}).get("build_log_path")
+            if bound_log and Path(bound_log).is_file():
+                chosen = Path(bound_log)
             if chosen:
                 _store.update_task(task_id, build_log_path=str(chosen))
             keep = int(

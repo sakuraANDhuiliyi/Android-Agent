@@ -258,6 +258,12 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(step, dict) or step.get("type") not in {"tool", "final"}:
                 step = {"type": "final", "text": DEFAULT_FINAL}
 
+        required = step.get("requires_user_text")
+        if required:
+            user_contents = [message.get("content") for message in messages if message.get("role") == "user"]
+            if str(required) not in json.dumps(user_contents, ensure_ascii=False):
+                step = {"type": "final", "text": "E2E: required user instruction was lost on resume."}
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")

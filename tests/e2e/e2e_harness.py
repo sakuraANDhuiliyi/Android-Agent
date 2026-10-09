@@ -112,6 +112,38 @@ class E2EStack:
         )
         wait_tcp(self.stub_port)
 
+        self.agent_env = {
+            **env,
+            "AGENT_CONFIG_PATH": str(self.config_path),
+            "AGENT_DATA_DIR": str(self.data_dir),
+            "AGENT_WORKSPACES_DIR": str(self.workspaces_dir),
+            "AGENT_BUILDS_DIR": str(self.builds_dir),
+            "AGENT_BASE_URL": f"http://127.0.0.1:{self.stub_port}",
+            "AGENT_API_KEY": "sk-e2e-stub",
+            "AGENT_MAX_REQUESTS_PER_MINUTE": "100000",
+            "ANDROID_HOME": str(self.fake_sdk),
+            "ANDROID_SDK_ROOT": str(self.fake_sdk),
+        }
+        self._start_agent()
+
+    def restart_agent_after_crash(self, task_id: str) -> None:
+        """Crash our service and simulate its five-minute lease having expired."""
+        import sqlite3
+
+        assert self.agent_process is not None
+        self.agent_process.kill()
+        self.agent_process.wait(timeout=10)
+        # No live worker remains. Advance just this test task's lease boundary
+        # instead of spending five minutes waiting; startup recovery is real.
+        with sqlite3.connect(self.data_dir / "agent.db") as conn:
+            changed = conn.execute(
+                "UPDATE tasks SET lease_expires_at=? WHERE id=? AND status='running'",
+                (time.time() - 1, task_id),
+            ).rowcount
+            assert changed == 1, "crash test did not stop an in-flight task"
+        self._start_agent()
+
+    def _start_agent(self) -> None:
         self.agent_process = subprocess.Popen(
             [
                 self.python_bin,
@@ -124,19 +156,8 @@ class E2EStack:
                 str(self.agent_port),
             ],
             cwd=str(REPO_ROOT),
-            env={
-                **env,
-                "AGENT_CONFIG_PATH": str(self.config_path),
-                "AGENT_DATA_DIR": str(self.data_dir),
-                "AGENT_WORKSPACES_DIR": str(self.workspaces_dir),
-                "AGENT_BUILDS_DIR": str(self.builds_dir),
-                "AGENT_BASE_URL": f"http://127.0.0.1:{self.stub_port}",
-                "AGENT_API_KEY": "sk-e2e-stub",
-                "AGENT_MAX_REQUESTS_PER_MINUTE": "100000",
-                "ANDROID_HOME": str(self.fake_sdk),
-                "ANDROID_SDK_ROOT": str(self.fake_sdk),
-            },
-            stdout=open(self.agent_log_path, "wb"),
+            env=self.agent_env,
+            stdout=open(self.agent_log_path, "ab"),
             stderr=subprocess.STDOUT,
         )
         deadline = time.monotonic() + 180

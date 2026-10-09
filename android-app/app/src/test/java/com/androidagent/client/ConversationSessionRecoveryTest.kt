@@ -15,7 +15,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import okhttp3.MediaType.Companion.toMediaType
@@ -35,6 +36,7 @@ import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -74,10 +76,11 @@ class ConversationSessionRecoveryTest {
     private val gates = ArrayList<CountDownLatch>()
     private val viewModels = ArrayList<ConversationViewModel>()
     private val collectors = ArrayList<CoroutineScope>()
+    private val mainDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        Dispatchers.setMain(mainDispatcher)
     }
 
     @After
@@ -89,6 +92,7 @@ class ConversationSessionRecoveryTest {
         }
         collectors.forEach { it.cancel() }
         Dispatchers.resetMain()
+        mainDispatcher.close()
     }
 
     private fun gate(): CountDownLatch = CountDownLatch(1).also { gates += it }
@@ -134,7 +138,9 @@ class ConversationSessionRecoveryTest {
 
     private fun awaitTrue(message: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (!condition()) {
+        // TimelineStore is main-thread confined, just as it is in production. An unconfined
+        // dispatcher can resume on an IO thread and race a test-thread HashMap traversal.
+        while (!runBlocking { withContext(Dispatchers.Main) { condition() } }) {
             if (System.nanoTime() >= deadline) throw AssertionError(message)
             Thread.sleep(10)
         }

@@ -15,7 +15,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 
-/** Offline visual fixtures. Debug source set only; no credentials, API or task execution. */
+/** Debug visual fixtures; conversation-live is restricted to a developer's loopback test service. */
 class WorkbenchPreviewActivity : AppCompatActivity() {
     private var emotionView: AgentEmotionView? = null
 
@@ -44,6 +44,19 @@ class WorkbenchPreviewActivity : AppCompatActivity() {
             androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES else androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("screen") ?: "activity_project_detail"
+        if (name == "conversation-live") {
+            val host = android.net.Uri.parse(AgentPrefs(this).serverUrl).host
+            if (host in setOf("127.0.0.1", "localhost", "10.0.2.2")) {
+                startActivity(DeepLink.conversationIntent(
+                    this, intent.getStringExtra("project_id").orEmpty(),
+                    intent.getStringExtra("conversation_id").orEmpty(),
+                    intent.getStringExtra("conversation_title").orEmpty(),
+                    intent.getStringExtra("job_id"),
+                ))
+            }
+            finish()
+            return
+        }
         if (name == "appearance-live") {
             startActivity(android.content.Intent(this, AppearanceActivity::class.java))
             finish()

@@ -48,6 +48,7 @@ data class ConversationUiState(
     val source: Source = Source.NONE,
     val offline: Boolean = false,
     val sending: Boolean = false,
+    val recovering: Boolean = false,
 ) {
     enum class Source { NONE, CACHE, FRESH }
 }
@@ -65,6 +66,7 @@ class ConversationViewModel(
     private val trackNewJob: (String) -> Unit,
     private val scheduleTaskSync: () -> Unit,
     private val watcherFactory: JobWatcherFactory,
+    private val isSelectedConversation: (String, String) -> Boolean = { _, _ -> true },
 ) : ViewModel() {
 
     var store = TimelineStore()
@@ -87,6 +89,8 @@ class ConversationViewModel(
 
     private var historyMinSeq: Int? = null
     private var watcher: JobEventWatcher? = null
+    private var bindingGeneration = 0L
+    private var recoveryRequest = 0L
     private val submittingApprovals = HashSet<String>()
     private val refreshingApprovals = HashSet<String>()
 
@@ -118,7 +122,7 @@ class ConversationViewModel(
 
     /** 回到前台时重新同步（缓存不重放，仅增量拉取最新页）。 */
     fun refresh() {
-        if (!started || !hasCurrentSession()) return
+        if (!started || !hasCurrentSession() || _state.value.recovering) return
         val token = ++loadToken
         earlierRequests.invalidate()
         earlierJob?.cancel()
@@ -164,7 +168,11 @@ class ConversationViewModel(
         if (watcher == null) {
             try {
                 val cachedJobs = repository.cachedJobs(conversationId)
-                cachedJobs.firstOrNull { it.status in ACTIVE_STATUSES }?.let { cachedActive ->
+                val selected = session.selectedJobId
+                // A cached active child must not replace an explicitly opened interrupted job
+                // before the authoritative list can expose its recovery link.
+                cachedJobs.firstOrNull { it.status in ACTIVE_STATUSES &&
+                    (selected.isNullOrBlank() || it.id == selected) }?.let { cachedActive ->
                     if (watcher == null && token == loadToken) attachJob(cachedActive.id, resume = true)
                 }
             } catch (cancelled: CancellationException) {
@@ -179,8 +187,9 @@ class ConversationViewModel(
             val jobs = withContext(Dispatchers.IO) { api.listJobs(projectId, conversationId) }
             repository.saveJobs(jobs)
             if (token != loadToken) return
-            val preferred = session.selectedJobId
-            val active = jobs.firstOrNull { it.id == preferred && it.resolvedStatus() in ACTIVE_STATUSES }
+            val preferred = _state.value.jobId ?: session.selectedJobId
+            val active = jobs.firstOrNull { it.id == preferred &&
+                (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null) }
                 ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
                 ?: jobs.firstOrNull()
             when {
@@ -243,41 +252,57 @@ class ConversationViewModel(
 
     // ---------- 任务绑定与实时事件 ----------
 
-    private fun attachJob(jobId: String, resume: Boolean) {
+    private fun attachJob(jobId: String, resume: Boolean, initialJob: JobInfo? = null) {
         if (!hasCurrentSession()) return
+        flushPendingTaskEvents()
+        val generation = ++bindingGeneration
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
-        updateState { it.copy(jobId = jobId) }
-        session.selectedJobId = jobId
+        updateState { it.copy(jobId = jobId, job = initialJob) }
+        rememberSelectedJob(jobId)
         watcher?.stop()
         val cursor = if (resume) session.eventCursor(jobId) else 0L
         watcher = watcherFactory.create(
             api = api,
             scope = viewModelScope,
-            onEvent = { event -> onMain { handleTaskEvent(jobId, event) } },
-            onJob = { job -> onMain { applyJob(job) } },
+            onEvent = { event -> onMain { if (isBoundJob(jobId, generation)) handleTaskEvent(jobId, event) } },
+            onJob = { job -> onMain { if (isBoundJob(jobId, generation)) applyJob(job) } },
             onDone = { job ->
                 onMain {
+                    if (!isBoundJob(jobId, generation)) return@onMain
                     applyJob(job)
                     scheduleTaskSync()
                     session.setEventCursor(job.id, watcher?.currentCursor() ?: session.eventCursor(job.id))
                     syncFinalConversationEvents(job.id)
                 }
             },
-            onError = { err -> onMain { emitSignal(ConversationSignal.ToastText("同步中断: ${err.message}")) } },
+            onError = { err -> onMain {
+                if (isBoundJob(jobId, generation)) emitSignal(ConversationSignal.ToastText("同步中断: ${err.message}"))
+            } },
         ).also { it.start(jobId, cursor) }
 
         viewModelScope.launch {
             try {
                 val job = withContext(Dispatchers.IO) { api.getJob(jobId) }
+                if (!isBoundJob(jobId, generation)) return@launch
                 applyJob(job)
                 refreshApprovals(jobId)
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
                 throw cancelled
             } catch (e: Exception) {
-                emitSignal(errorSignal(e))
+                if (isBoundJob(jobId, generation)) emitSignal(errorSignal(e))
             }
         }
+    }
+
+    private fun isBoundJob(jobId: String, generation: Long): Boolean =
+        hasCurrentSession() && generation == bindingGeneration && _state.value.jobId == jobId
+
+    private fun belongsToConversation(job: JobInfo): Boolean =
+        job.projectId == projectId && job.conversationId == conversationId
+
+    private fun rememberSelectedJob(jobId: String) {
+        if (isSelectedConversation(projectId, conversationId)) session.selectedJobId = jobId
     }
 
     /** WS 回调可能来自 OkHttp 线程，统一切回主线程后再触碰 store。 */
@@ -328,8 +353,9 @@ class ConversationViewModel(
 
     private fun applyJob(job: JobInfo) {
         if (!hasCurrentSession()) return
+        if (job.id != _state.value.jobId || !belongsToConversation(job)) return
         updateState { it.copy(job = job, jobId = job.id) }
-        session.selectedJobId = job.id
+        rememberSelectedJob(job.id)
         viewModelScope.launch { repository.saveJob(job) }
         if (job.resolvedStatus() == "awaiting_approval") {
             refreshApprovals(job.id)
@@ -365,8 +391,10 @@ class ConversationViewModel(
     }
 
     fun controlJob(action: String) {
-        if (!hasCurrentSession()) return
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            _state.value.recovering || action !in setOf("pause", "resume", "cancel")) return
         val jobId = _state.value.jobId ?: return
+        val generation = bindingGeneration
         viewModelScope.launch {
             try {
                 val job = withContext(Dispatchers.IO) {
@@ -376,12 +404,61 @@ class ConversationViewModel(
                         else -> api.cancelJob(jobId)
                     }
                 }
-                applyJob(job)
+                if (isBoundJob(jobId, generation)) applyJob(job)
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
                 throw cancelled
             } catch (e: Exception) {
-                emitSignal(errorSignal(e))
+                if (isBoundJob(jobId, generation)) emitSignal(errorSignal(e))
+            }
+        }
+    }
+
+    /** Continue the interrupted turn in this conversation, or open its existing recovery. */
+    fun recoverJob() {
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val original = current.job ?: return
+        if (current.recovering || current.sending || !belongsToConversation(original)) return
+        val existingId = original.recoveryJobId
+        if (existingId == null && (!original.canRecover || original.status !in setOf("failed", "interrupted"))) return
+        val generation = bindingGeneration
+        val request = ++recoveryRequest
+        // A pre-recovery list response must not rebind the old task after this request.
+        ++loadToken
+        earlierRequests.invalidate()
+        earlierJob?.cancel()
+        earlierJob = null
+        updateState { it.copy(recovering = true, loadingEarlier = false) }
+        viewModelScope.launch {
+            var refreshAfterConflict = false
+            try {
+                val recovered = withContext(Dispatchers.IO) {
+                    repository.requireCurrentSession()
+                    if (existingId != null) api.getJob(existingId) else api.recoverJob(original.id)
+                }
+                repository.requireCurrentSession()
+                if (!isBoundJob(original.id, generation) || !isSelectedConversation(projectId, conversationId)) return@launch
+                check(belongsToConversation(recovered) && recovered.id.isNotBlank()) {
+                    "恢复任务不属于当前会话"
+                }
+                repository.saveJob(recovered)
+                if (!isBoundJob(original.id, generation) || !isSelectedConversation(projectId, conversationId)) return@launch
+                attachJob(recovered.id, resume = existingId != null, initialJob = recovered)
+                syncFinalConversationEvents(recovered.id)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
+            } catch (e: Exception) {
+                if (isBoundJob(original.id, generation) && isSelectedConversation(projectId, conversationId)) {
+                    emitSignal(errorSignal(e))
+                    refreshAfterConflict = e is ApiException && e.isConflict
+                }
+            } finally {
+                if (request == recoveryRequest) {
+                    updateState { it.copy(recovering = false) }
+                    if (refreshAfterConflict) refresh()
+                }
             }
         }
     }
@@ -396,7 +473,8 @@ class ConversationViewModel(
     // ---------- 发送 ----------
 
     fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
-        if (!hasCurrentSession()) return
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            _state.value.sending || _state.value.recovering) return
         val text = prompt.trim()
         if (text.isBlank()) return
         if (session.guestMode && session.guestRemaining <= 0) {
@@ -415,6 +493,7 @@ class ConversationViewModel(
         val optimisticKey = store.addLocalUserMessage(prompt, null)
         bumpTimeline()
         updateState { it.copy(sending = true) }
+        val generation = bindingGeneration
         viewModelScope.launch {
             try {
                 val job = withContext(Dispatchers.IO) {
@@ -426,10 +505,14 @@ class ConversationViewModel(
                     )
                 }
                 repository.requireCurrentSession()
+                if (generation != bindingGeneration || !isSelectedConversation(projectId, conversationId)) return@launch
+                check(belongsToConversation(job)) { "任务不属于当前会话" }
                 if (session.guestMode) session.guestRemaining = session.guestRemaining - 1
                 repository.saveJob(job)
+                if (generation != bindingGeneration || !isSelectedConversation(projectId, conversationId)) return@launch
                 emitSignal(ConversationSignal.ComposerReset)
-                attachJob(job.id, resume = false)
+                ++loadToken
+                attachJob(job.id, resume = false, initialJob = job)
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
                 throw cancelled
@@ -484,11 +567,12 @@ class ConversationViewModel(
         // 并发双请求会造成双 resolve（第二次 409）后重复弹出审批卡
         if (!refreshingApprovals.add(jobId)) return
         val token = loadToken
+        val generation = bindingGeneration
         viewModelScope.launch {
             try {
                 val approvals = withContext(Dispatchers.IO) { api.listApprovals(jobId) }
                 repository.saveApprovals(jobId, approvals)
-                if (token != loadToken) return@launch
+                if (token != loadToken || !isBoundJob(jobId, generation)) return@launch
                 for (approval in approvals) {
                     if (approval.status != "pending") continue
                     if (allowlist.allows(approval.kind, approval.payload) &&
@@ -499,6 +583,7 @@ class ConversationViewModel(
                                 api.resolveApproval(jobId, approval.id, true)
                             }
                             repository.setApprovalStatus(approval.id, "approved")
+                            if (!isBoundJob(jobId, generation)) return@launch
                             store.setApprovalDecision(approval.id, "approved")
                             continue
                         } catch (cancelled: CancellationException) {
@@ -574,6 +659,8 @@ class ConversationViewModel(
 
     private fun clearConversationState() {
         loadToken++
+        bindingGeneration++
+        recoveryRequest++
         earlierRequests.invalidate()
         earlierJob?.cancel()
         earlierJob = null
@@ -607,7 +694,7 @@ class ConversationViewModel(
     }
 
     private fun emitSignal(signal: ConversationSignal) {
-        if (!hasCurrentSession()) return
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         _signals.tryEmit(signal)
     }
 
@@ -652,6 +739,9 @@ class ConversationViewModel(
                 trackNewJob = { TaskRepository(appContext).track(it) },
                 scheduleTaskSync = { TaskSync.schedule(appContext) },
                 watcherFactory = DefaultJobWatcherFactory,
+                isSelectedConversation = { project, conversation ->
+                    prefs.selectedProjectId == project && prefs.selectedConversationId == conversation
+                },
             ) as T
         }
     }

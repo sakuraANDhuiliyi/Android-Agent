@@ -763,7 +763,7 @@ def _run_openai_compatible(
             input_tokens = getattr(usage, "prompt_tokens", None)
             output_tokens = getattr(usage, "completion_tokens", None)
             cached_tokens = _extract_cached_tokens(usage)
-            _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
+            _emit(on_event, EventType.USAGE, message_id=message_id, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": getattr(usage, "total_tokens", None),
@@ -1320,7 +1320,7 @@ def _run_anthropic(
             output_tokens = getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None)
             cache_read = getattr(usage, "cache_read_input_tokens", None)
             cache_creation = getattr(usage, "cache_creation_input_tokens", None)
-            _emit(on_event, EventType.USAGE, provider=settings.provider, model=active_model, usage={
+            _emit(on_event, EventType.USAGE, message_id=message_id, provider=settings.provider, model=active_model, usage={
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": (input_tokens + output_tokens) if input_tokens is not None and output_tokens is not None else None,

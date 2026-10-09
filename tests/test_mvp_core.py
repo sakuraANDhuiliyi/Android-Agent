@@ -173,6 +173,7 @@ class ConversationStoreTests(unittest.TestCase):
                     on_event(
                         "tool_result",
                         {
+                            "tool_call_id": "failed-gradle-call",
                             "name": "run_gradle",
                             "ok": False,
                             "input": {"task": "assembleDebug"},
@@ -209,6 +210,7 @@ class ConversationStoreTests(unittest.TestCase):
                     on_event(
                         "tool_result",
                         {
+                            "tool_call_id": "failed-gradle-call",
                             "name": "run_gradle",
                             "ok": False,
                             "input": {"task": "clean"},

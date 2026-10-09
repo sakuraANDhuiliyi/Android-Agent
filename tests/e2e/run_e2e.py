@@ -206,6 +206,9 @@ class E2ERunner:
 
     def refresh_events(self, context: ScenarioContext) -> list[dict[str, Any]]:
         events = context.client.conversation_events(context.conversation_id)
+        if context.extra.get("event_turn_id"):
+            context.events = [event for event in events if event.get("turn_id") == context.extra["event_turn_id"]]
+            return context.events
         marker = f"[[{context.scenario['id']}]]"
         turn_id = None
         for event in events:
@@ -284,9 +287,15 @@ class E2ERunner:
         job_id = str(job["id"])
         context.client.wait_event(
             context.conversation_id,
-            lambda event: event.get("event_type") == "tool_result",
+            lambda event: event.get("event_type") == "tool_result" and (
+                not context.scenario.get("pause_after_tool")
+                or (event.get("payload") or {}).get("name") == context.scenario["pause_after_tool"]
+            ),
             timeout=30,
         )
+        self.pause_and_resume(context, job_id)
+
+    def pause_and_resume(self, context: ScenarioContext, job_id: str) -> None:
         context.client.pause_job(job_id)
         paused_seen = False
         deadline = time.monotonic() + 20
@@ -299,9 +308,81 @@ class E2ERunner:
                 break
             time.sleep(0.1)
         context.check(paused_seen, f"job never reached paused (status={context.client.get_job(job_id).get('status')})")
+        if context.scenario.get("assert_pause_evidence"):
+            turn_id = context.client.get_job(job_id)["turn_id"]
+            response = context.client.http.get(f"/api/projects/{context.project_id}/checkpoints")
+            response.raise_for_status()
+            after = [item for item in response.json()["checkpoints"]
+                     if item.get("turn_id") == turn_id and item.get("kind") == "after_turn"]
+            context.check(not after, "paused task prematurely froze its final after_turn checkpoint")
+            events = context.client.conversation_events(context.conversation_id)
+            context.check(not any(event.get("turn_id") == turn_id and event.get("event_type") == "changes"
+                                  for event in events), "pause prematurely published final canonical changes")
         context.client.resume_job(job_id)
         context.job = context.client.wait_job(job_id, timeout=90)
         self.wait_terminal_events(context)
+
+    def driver_pause_after_steer(self, context: ScenarioContext) -> None:
+        job = self.send_prompt(context)
+        job_id = str(job["id"])
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_call")
+        steer = str(context.scenario["steer"])
+        body = {"message_key": "e2e-resume-steer", "type": "steer", "payload": {"text": steer}}
+        first = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        first.raise_for_status()
+        repeat = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        repeat.raise_for_status()
+        context.check(first.json()["message"]["id"] == repeat.json()["message"]["id"], "steer retry was not idempotent")
+        context.client.wait_event(context.conversation_id, lambda event:
+                                  event.get("event_type") == "user_message"
+                                  and steer in payload_strings(event.get("payload")), timeout=20)
+        self.pause_and_resume(context, job_id)
+        recorded = [event for event in context.events if event.get("event_type") == "user_message"
+                    and steer in payload_strings(event.get("payload"))]
+        context.check(len(recorded) == 1, f"consumed steer persisted {len(recorded)} times instead of once")
+
+    def driver_service_recovery(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        original = self.send_prompt(context)
+        source_id = str(original["id"])
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_result")
+        self.stack.restart_agent_after_crash(source_id)
+        interrupted = context.client.wait_job(source_id, until={"failed", "interrupted"})
+        context.check(interrupted.get("can_recover") is True, "restarted source is not explicitly recoverable")
+
+        # Recovery must never reveal or act on another account's source job.
+        stranger = E2EClient(self.stack)
+        try:
+            stranger.register_account()
+            forbidden = stranger.http.post(f"/api/jobs/{source_id}/recover")
+            context.check(forbidden.status_code == 404, f"cross-account recovery returned {forbidden.status_code}")
+        finally:
+            stranger.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = [pool.submit(context.client.http.post, f"/api/jobs/{source_id}/recover") for _ in range(2)]
+            responses = [request.result() for request in requests]
+        context.check(sorted(response.status_code for response in responses) == [200, 201],
+                      f"concurrent recover statuses {[response.status_code for response in responses]}")
+        recovered = [response.json()["job"] for response in responses]
+        recovery_id = str(recovered[0]["id"])
+        context.check(recovery_id != source_id and recovered[1]["id"] == recovery_id, "duplicate recovery task created")
+        context.check(all(job["conversation_id"] == context.conversation_id and job["project_id"] == context.project_id
+                          for job in recovered), "recovery changed conversation/project")
+        context.extra["event_turn_id"] = recovered[0]["turn_id"]
+        context.check(recovered[0]["turn_id"] != interrupted["turn_id"], "recovery did not create a new turn")
+        self.pump.watch(recovery_id)
+        context.job = context.client.wait_job(recovery_id)
+        self.wait_terminal_events(context)
+        retry = context.client.http.post(f"/api/jobs/{source_id}/recover")
+        context.check(retry.status_code == 200 and retry.json()["job"]["id"] == recovery_id,
+                      "retry after completion created a different recovery")
+        source = context.client.get_job(source_id)
+        context.check(source.get("can_recover") is False and source.get("recovery_job_id") == recovery_id,
+                      "source recovery fields are stale")
+        notes = context.payloads("recovery_note")
+        context.check(len(notes) == 1 and notes[0].get("original_task_id") == source_id, "missing/duplicate recovery provenance")
 
     def driver_ws_disconnect(self, context: ScenarioContext) -> None:
         from tests.e2e.e2e_harness import WsCollector
@@ -406,6 +487,11 @@ class E2ERunner:
                 context.changes_files() == set(expect["files_changed"]),
                 f"changed files {sorted(context.changes_files())} != {sorted(expect['files_changed'])}",
             )
+        if "diff_files" in expect:
+            response = context.client.http.get(f"/api/projects/{context.project_id}/diff", params={"turn_id": job["turn_id"]})
+            response.raise_for_status()
+            paths = {item["path"] for item in response.json().get("files", [])}
+            context.check(paths == set(expect["diff_files"]), f"checkpoint diff files {sorted(paths)} != {expect['diff_files']}")
         for rel_path, needle in (expect.get("file_contains") or {}).items():
             content = context.workspace_file(rel_path)
             context.check(needle in content, f"{rel_path} does not contain {needle!r}: {content[:200]!r}")

@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import uuid
+from contextlib import nullcontext
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -212,12 +213,13 @@ class ConversationEventStore:
         finished_at: float | None = None,
         error_message: str | None = None,
         schema_version: int = EVENT_SCHEMA_VERSION,
+        _conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         self._validate_status(status)
         turn_id = turn_id or uuid.uuid4().hex
         trace_id = trace_id or uuid.uuid4().hex
         created_at = time.time() if created_at is None else created_at
-        with self._store._connect() as conn:
+        with nullcontext(_conn) if _conn is not None else self._store._connect() as conn:
             conversation = conn.execute(
                 """SELECT id FROM conversations
                    WHERE id=? AND user_id=? AND project_id=?""",
@@ -250,7 +252,8 @@ class ConversationEventStore:
                     schema_version,
                 ),
             )
-        turn = self.get_turn(turn_id, user_id=user_id)
+        turn = (dict(_conn.execute("SELECT * FROM conversation_turns WHERE id=?", (turn_id,)).fetchone())
+                if _conn is not None else self.get_turn(turn_id, user_id=user_id))
         if turn is None:
             raise ConversationEventError(f"created turn could not be read: {turn_id}")
         return turn
@@ -589,12 +592,14 @@ class ConversationEventStore:
                 ).fetchone()
             conn.execute(
                 """UPDATE conversation_turns
-                   SET status='running', started_at=?, provider=?, model=?
+                   SET status='running', started_at=COALESCE(started_at, ?), provider=?, model=?,
+                       finished_at=NULL, error_message=NULL
                    WHERE id=?""",
                 (started_at, provider, model, turn_id),
             )
             conn.execute(
-                """UPDATE tasks SET status='running', started_at=?
+                """UPDATE tasks SET status='running', started_at=COALESCE(started_at, ?),
+                       finished_at=NULL, error_message=NULL
                    WHERE id=?""",
                 (started_at, task_id),
             )
@@ -638,6 +643,7 @@ class ConversationEventStore:
         event_id: str | None = None,
         created_at: float | None = None,
         schema_version: int = EVENT_SCHEMA_VERSION,
+        _conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         return self._append_event(
             conversation_id,
@@ -653,6 +659,7 @@ class ConversationEventStore:
             event_id=event_id,
             created_at=created_at,
             schema_version=schema_version,
+            _conn=_conn,
             idempotent=False,
         )
 
@@ -672,6 +679,7 @@ class ConversationEventStore:
         event_id: str | None = None,
         created_at: float | None = None,
         schema_version: int = EVENT_SCHEMA_VERSION,
+        _conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         if not event_key or not event_key.strip():
             raise ConversationEventError("event_key is required for idempotent append")
@@ -689,8 +697,41 @@ class ConversationEventStore:
             event_id=event_id,
             created_at=created_at,
             schema_version=schema_version,
+            _conn=_conn,
             idempotent=True,
         )
+
+    def consume_steers(self, task_id: str, turn_id: str, user_id: str) -> list[str]:
+        """A steer enters durable user context in the same commit as its receipt."""
+        texts: list[str] = []
+        with self._store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            turn = conn.execute(
+                "SELECT conversation_id FROM conversation_turns "
+                "WHERE id=? AND task_id=? AND user_id=?", (turn_id, task_id, user_id),
+            ).fetchone()
+            if turn is None:
+                raise TurnNotFoundError("steer does not belong to this turn")
+            messages = conn.execute(
+                "SELECT * FROM task_messages WHERE task_id=? AND type='steer' "
+                "AND consumed_at IS NULL ORDER BY id", (task_id,),
+            ).fetchall()
+            for message in messages:
+                payload = json.loads(message["payload"] or "{}")
+                text = payload.get("text") or payload.get("content") or ""
+                if text:
+                    self.append_event_idempotent(
+                        turn["conversation_id"], turn_id, ConversationEventType.USER_MESSAGE,
+                        f"steer:{task_id}:{message['id']}",
+                        {"message_id": f"steer:{task_id}:{message['id']}",
+                         "content": str(text), "source": "task_message", "message_type": "steer",
+                         "task_message_id": message["id"]},
+                        task_id=task_id, role="user", context_visible=True, _conn=conn,
+                    )
+                    texts.append(str(text))
+                conn.execute("UPDATE task_messages SET consumed_at=? WHERE id=?",
+                             (time.time(), message["id"]))
+        return texts
 
     def list_events(
         self,
@@ -794,7 +835,8 @@ class ConversationEventStore:
             changed_files: list[Any] = []
             for event in turn_events:
                 if event["event_type"] == "user_message":
-                    user = self._user_message_text(event["payload"])
+                    if event["payload"].get("source") != "task_message":
+                        user = self._user_message_text(event["payload"])
                 elif event["event_type"] == "assistant_message":
                     assistant_events.append(event)
                 elif event["event_type"] == "changes":
@@ -847,6 +889,7 @@ class ConversationEventStore:
         created_at: float | None,
         schema_version: int,
         idempotent: bool,
+        _conn: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         if not event_type or not event_type.strip():
             raise ConversationEventError("event_type is required")
@@ -854,8 +897,9 @@ class ConversationEventStore:
         event_id = event_id or uuid.uuid4().hex
         created_at = time.time() if created_at is None else created_at
 
-        with self._store._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with nullcontext(_conn) if _conn is not None else self._store._connect() as conn:
+            if _conn is None:
+                conn.execute("BEGIN IMMEDIATE")
             if idempotent:
                 existing = conn.execute(
                     """SELECT * FROM conversation_events

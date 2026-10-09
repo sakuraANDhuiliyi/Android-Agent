@@ -6808,6 +6808,9 @@
           }
         ],
         "responses": {
+          "200": {
+            "description": "Existing recovery task"
+          },
           "201": {
             "content": {
               "application/json": {

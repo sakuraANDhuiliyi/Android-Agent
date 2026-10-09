@@ -759,4 +759,8 @@
     <string name="usage_duration_hms">%1$d 小时 %2$d 分 %3$d 秒</string>
     <string name="usage_duration_ms">%1$d 分 %2$d 秒</string>
     <string name="usage_duration_s">%1$d 秒</string>
+    <string name="menu_recover">恢复中断任务</string>
+    <string name="menu_recovering">正在恢复…</string>
+    <string name="menu_view_recovery">查看恢复任务</string>
+    <string name="menu_opening_recovery">正在打开恢复任务…</string>
 </resources>

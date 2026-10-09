@@ -38,7 +38,7 @@ Android 聊天页、桌面智能工作台和 AI 面板已接入 [aora-bot Emotio
 
 - SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
 - 同一项目串行执行，可请求停止，服务重启后中断任务会标记失败。
-- Agent 必须执行 `assembleDebug`，成功任务保留任务级 APK 和构建日志。
+- 执行 `assembleDebug` 后按实际结果记录构建；构建成功的任务保留任务级 APK 和构建日志。
 - 手机端支持连接/项目、多 Conversation、任务流、审批、steer/follow_up/pause/resume/cancel、Project Workspace Dashboard、Changes 分类审查、Hunk 接受/拒绝/解释/回退、Context Chips、`@` 文件/符号/目录检索、Context Inspector、Diff/Checkpoint 恢复、构建日志与 APK 下载安装分享；WebSocket 优先并在断线后游标轮询。
 
 ## 多对话（Cursor 式）
@@ -84,7 +84,11 @@ Authorization: Bearer <token>
 
 当较早历史超过 200 个新增事件或约 120,000 字符时，服务会追加结构化 `context_checkpoint`。checkpoint 按目标、约束、决策、未解决事项、文件、测试、工具事实和错误分类，每条事实保留来源 `seq` 并在启用前验证引用范围；无效 checkpoint 会追加失效事件并回退到原始历史。checkpoint 只改变模型上下文边界，不删除数据库事件；任务内 compact 仍作为单次请求超限时的最后保护。
 
-服务重启时，未完成工具会先得到 `service_interrupted` 合成失败结果，但不会自动继续模型或重新执行工具。用户可对中断任务调用 `POST /api/jobs/{job_id}/recover` 显式创建恢复 Task/Turn；若恢复模型再次请求有副作用的工具，仍必须重新审批。
+服务确认原执行已中断后，未完成工具会先得到 `service_interrupted` 合成失败结果，不会自动继续模型或重新执行工具。Android 聊天页菜单和桌面两处任务操作栏提供恢复入口，沿用原会话创建恢复任务；已有恢复任务时显示“查看恢复任务”。查看暂停的恢复任务不会自动执行，需明确选择“继续”。
+
+`POST /api/jobs/{job_id}/recover` 首次创建返回 201，重试返回 200 和相同的直接恢复子任务，均保持 `{job}` 响应结构。Job 列表和详情提供权威的 `can_recover` 与 `recovery_job_id`；旧服务缺少字段时客户端隐藏入口。恢复请求、Task、Turn 和来源记录在同一数据库事务中创建，两个客户端同时操作不会重复执行。恢复子任务再次中断后，可以恢复该子任务；重试最早的请求始终返回最早创建的子任务。
+
+普通暂停/继续仍使用同一 Task/Turn，保留原始改动基线、编辑与构建结果、Token 用量及已经采用的引导消息。暂停期间不发布最终改动检查点；完成后展示整轮变更。恢复时使用该任务自己的 APK 和日志；审查范围内的源文件在构建后变化会使旧 APK 失效，失败构建也不会因暂停而变为成功。当前构建指纹沿用改动审查的路径范围，尚未覆盖所有根目录构建配置及外部依赖，不能据此证明完整工作区均为已验证版本。若恢复模型再次请求有副作用的工具，仍必须重新审批。
 
 规范事件写入、历史读取、Job/WebSocket 输出和事件查询 API 会识别并脱敏 Bearer Token、JWT、常见 API Key 前缀、URL 用户信息以及 `api_key=...` 等自由文本形式。结构化凭证字段继续拒绝写入。自由文本检测属于防泄漏保护而非密码保险库，无法保证识别所有私有密钥格式。
 

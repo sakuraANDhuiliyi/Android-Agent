@@ -8,11 +8,18 @@
     constructor() {
       this.baseUrl = "http://127.0.0.1:8000";
       this.token = "";
+      this.sessionVersion = 0;
+      this.recoveries = new Map();
     }
 
     configure({ baseUrl, token } = {}) {
+      const previous = [this.baseUrl, this.token];
       if (baseUrl) this.baseUrl = String(baseUrl).replace(/\/+$/, "");
       if (token !== undefined) this.token = String(token || "");
+      if (previous[0] !== this.baseUrl || previous[1] !== this.token) {
+        this.sessionVersion += 1;
+        this.recoveries.clear();
+      }
     }
 
     headers(extra = {}) {
@@ -220,6 +227,18 @@
 
     pauseJob(jobId) {
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/pause`, { method: "POST" });
+    }
+
+    recoverJob(jobId) {
+      // Both desktop entry points share this client. A second click joins the
+      // same request; the server remains authoritative across other clients.
+      const key = `${this.sessionVersion}:${jobId}`;
+      if (this.recoveries.has(key)) return this.recoveries.get(key);
+      const pending = this.request(`/api/jobs/${encodeURIComponent(jobId)}/recover`, {
+        method: "POST", body: {},
+      }).finally(() => this.recoveries.delete(key));
+      this.recoveries.set(key, pending);
+      return pending;
     }
 
     resumeJob(jobId) {
@@ -435,6 +454,9 @@
      */
     watchJob(jobId, onEvent, options = {}) {
       const url = new URL(`${this.baseUrl.replace(/^http/, "ws")}/api/ws/jobs/${encodeURIComponent(jobId)}`);
+      const sessionVersion = this.sessionVersion;
+      const stale = () => closed || finished || sessionVersion !== this.sessionVersion;
+      let pollBusy = false;
       let afterEventId = options.afterEventId || 0;
       let ws = null;
       let closed = false;
@@ -450,7 +472,7 @@
       };
 
       const markDone = (payload) => {
-        if (finished) return;
+        if (stale()) return;
         finished = true;
         stopPoll();
         clearTimeout(reconnectTimer);
@@ -463,11 +485,13 @@
       };
 
       const startPoll = () => {
-        if (finished || closed || pollTimer) return;
+        if (stale() || pollTimer) return;
         pollTimer = setInterval(async () => {
-          if (closed || finished) return;
+          if (stale() || pollBusy) return;
+          pollBusy = true;
           try {
             const data = await this.job(jobId);
+            if (stale()) return;
             const job = data.job;
             // Cursor-based replay: server-side trimming of old task events
             // shifts array indexes, so an index counter would skip events.
@@ -492,16 +516,18 @@
               });
             }
           } catch (err) {
-            onEvent({ kind: "error", error: err.message });
+            if (!stale()) onEvent({ kind: "error", error: err.message });
+          } finally {
+            pollBusy = false;
           }
         }, 1500);
       };
 
       const connect = async () => {
-        if (closed || finished) return;
+        if (stale()) return;
         try {
           const auth = await this.websocketTicket("job", jobId);
-          if (closed || finished) return;
+          if (stale()) return;
           const u = new URL(url.toString());
           u.searchParams.set("ticket", auth.ticket);
           if (afterEventId) u.searchParams.set("after_event_id", String(afterEventId));
@@ -518,6 +544,7 @@
         };
 
         ws.onmessage = (ev) => {
+          if (stale()) return;
           try {
             const data = JSON.parse(ev.data);
             if (data.type === "done") {
@@ -542,7 +569,7 @@
         };
 
         ws.onclose = () => {
-          if (closed || finished) return;
+          if (stale()) return;
           startPoll();
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connect, 1500);

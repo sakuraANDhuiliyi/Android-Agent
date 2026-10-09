@@ -110,6 +110,7 @@
                 <span class="cx-task-controls" id="cxTaskControls" hidden>
                   <span id="cxTaskStatus">正在执行</span>
                   <button type="button" id="cxPauseTask">暂停</button>
+                  <button id="cxRecoverTask" type="button" hidden>恢复任务</button>
                   <button type="button" id="cxResumeTask" hidden>继续</button>
                   <button type="button" id="cxStopTask">停止</button>
                 </span>
@@ -380,6 +381,7 @@
             <span class="ai-meta-extra" id="aiMetaExtra"></span>
             <div class="ai-task-controls" id="aiTaskControls" hidden aria-label="当前任务控制">
               <button type="button" class="ai-task-control" id="btnPauseJob" hidden title="暂停当前任务">暂停</button>
+              <button class="ai-task-control" id="btnRecoverJob" type="button" hidden>恢复任务</button>
               <button type="button" class="ai-task-control" id="btnResumeJob" hidden title="继续已暂停任务">继续</button>
               <button type="button" class="ai-task-control is-danger" id="btnHeaderStop" hidden title="停止当前任务">停止</button>
             </div>
