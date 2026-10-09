@@ -140,7 +140,7 @@ object ConversationTimelineBuilder {
     // ---------- 聚合 ----------
 
     private val TERMINAL_STATUSES = setOf("succeeded", "failed", "canceled", "interrupted")
-    private val ACTIVE_STATUSES = setOf("running", "awaiting_approval", "queued", "paused", "cancel_requested")
+    private val ACTIVE_STATUSES = setOf("running", "pause_requested", "awaiting_approval", "queued", "paused", "cancel_requested")
 
     private val READ_TOOLS = setOf("read_file", "list_files", "git_status", "git_diff")
     private val SEARCH_TOOLS = setOf("search_code", "search_files", "web_search")
@@ -424,6 +424,7 @@ object ConversationTimelineBuilder {
         return when (normalized) {
             "queued" -> "排队中"
             "running" -> "运行中"
+            "pause_requested" -> "正在暂停"
             "awaiting_approval" -> "等待审批"
             "paused" -> "已暂停"
             "cancel_requested" -> "正在停止"
@@ -437,7 +438,8 @@ object ConversationTimelineBuilder {
     }
 
     fun statusLabel(context: android.content.Context, status: String): String =
-        UiFormat.jobStatusLabel(context, if (status == "canceling") "cancel_requested" else status)
+        if (status == "pause_requested") "正在暂停"
+        else UiFormat.jobStatusLabel(context, if (status == "canceling") "cancel_requested" else status)
 
     private fun workTitle(turn: TurnGroup): String {
         val duration = formatWorked(turn.durationMs)

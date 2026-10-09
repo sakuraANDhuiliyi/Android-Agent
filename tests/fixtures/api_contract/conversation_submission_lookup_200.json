@@ -31,7 +31,7 @@
     "total_tokens": null,
     "recovery_of_task_id": null,
     "recovery_attempt": 0,
-    "pause_requested": 0,
+    "pause_requested": false,
     "attempt": 0,
     "parent_task_id": null,
     "role": null,
@@ -103,6 +103,8 @@
     "apk_url": null,
     "build_log_url": null,
     "display_status": "queued",
-    "status_label": "排队中"
+    "status_label": "排队中",
+    "can_pause": true,
+    "pause_unavailable_reason": null
   }
 }

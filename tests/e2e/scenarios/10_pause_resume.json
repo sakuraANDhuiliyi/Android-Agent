@@ -23,6 +23,7 @@
     },
     {
       "type": "tool",
+      "delay_ms": 5000,
       "calls": [
         {
           "name": "run_command",

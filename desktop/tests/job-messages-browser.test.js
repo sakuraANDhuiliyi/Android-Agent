@@ -565,7 +565,7 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
       await page.locator(host).getByRole('button', { name: '核对并重试排序' }).waitFor({ state: 'detached' });
       for (const control of ['pause', 'resume', 'cancel']) {
         await page.evaluate(({ control, job }) => {
-          const current = { ...job, status: control === 'resume' ? 'paused' : 'running', cancel_requested: false };
+          const current = { ...job, can_pause: true, status: control === 'resume' ? 'paused' : 'running', cancel_requested: false };
           AiPanel.client.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: receipts, queue: queueState });
           AiPanel.adoptJob(current);
           CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project', name: 'Project' }], jobs: [current] });

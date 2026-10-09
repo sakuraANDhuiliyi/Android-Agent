@@ -1,6 +1,6 @@
 {
-  "driver": "pause_resume",
-  "auto_approve": true,
+  "driver": "pause_pending_approval",
+  "auto_approve": false,
   "assert_pause_evidence": true,
   "id": "20_pause_failed_build",
   "title": "暂停前失败构建不能在恢复后变为成功",

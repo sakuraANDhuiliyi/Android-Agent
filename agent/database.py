@@ -23,6 +23,12 @@ class TaskMessageConflict(ValueError):
     pass
 
 
+class PauseUnavailable(ValueError):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 class TaskStore:
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or DATA_DIR / "agent.db"
@@ -1367,6 +1373,7 @@ class TaskStore:
 
     def request_cancel(self, task_id: str, user_id: str) -> bool:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT status, cancel_requested FROM tasks WHERE id=? AND user_id=?",
                 (task_id, user_id),
@@ -1382,7 +1389,7 @@ class TaskStore:
                 # never be consumed and resume_task's cancel_requested=0 guard
                 # would refuse to requeue it (permanent wedge). Finalize now.
                 cursor = conn.execute(
-                    """UPDATE tasks SET status='canceled', cancel_requested=1,
+                    """UPDATE tasks SET status='canceled', cancel_requested=1, pause_requested=0,
                        claim_owner=NULL, claim_token=NULL, lease_expires_at=NULL,
                        heartbeat_at=NULL, finished_at=?, error_message='用户已请求停止任务'
                        WHERE id=? AND user_id=? AND status='paused'""",
@@ -1614,18 +1621,6 @@ class TaskStore:
         encoded = dict(redact_sensitive_value(values))
         if "changed_files" in encoded:
             encoded["changed_files"] = json.dumps(encoded["changed_files"], ensure_ascii=False)
-        if status == "paused":
-            # A cancel that raced the pause must not park the task: no worker
-            # remains attached to consume the flag. Release as canceled.
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT cancel_requested FROM tasks WHERE id=?",
-                    (task_id,),
-                ).fetchone()
-            if row and row[0]:
-                status = "canceled"
-                encoded["finished_at"] = time.time()
-                encoded.setdefault("error_message", "用户已请求停止任务")
         encoded["status"] = status
         encoded["claim_owner"] = None
         encoded["claim_token"] = None
@@ -1634,12 +1629,22 @@ class TaskStore:
         encoded["pause_requested"] = 0
         if status in {"succeeded", "failed", "canceled", "interrupted"}:
             encoded["finished_at"] = time.time()
-        columns = ", ".join(f"{key}=?" for key in encoded)
         token_clause = " AND claim_token=?" if claim_token is not None else ""
-        params = [*encoded.values(), task_id, worker_id]
-        if claim_token is not None:
-            params.append(claim_token)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if status == "paused":
+                row = conn.execute("SELECT cancel_requested FROM tasks WHERE id=? AND claim_owner=?" + token_clause,
+                                   [task_id, worker_id, *([claim_token] if claim_token is not None else [])]).fetchone()
+                if not row:
+                    return False
+                if row[0]:
+                    encoded["status"] = "canceled"
+                    encoded["finished_at"] = time.time()
+                    encoded.setdefault("error_message", "用户已请求停止任务")
+            columns = ", ".join(f"{key}=?" for key in encoded)
+            params = [*encoded.values(), task_id, worker_id]
+            if claim_token is not None:
+                params.append(claim_token)
             cursor = conn.execute(
                 f"UPDATE tasks SET {columns} WHERE id=? AND claim_owner=?{token_clause}",
                 params,
@@ -1682,7 +1687,16 @@ class TaskStore:
                 raise TaskMessageConflict("任务已结束")
             if not existing and task["cancel_requested"]:
                 raise TaskMessageConflict("任务正在停止，无法接收新消息")
-            return self._insert_task_message(conn, task_id, message_key, type, payload)
+            message, created = self._insert_task_message(conn, task_id, message_key, type, payload)
+            if type == "pause" and created:
+                status = task["status"]
+                if status not in {"queued", "running"} or task["cancel_requested"]:
+                    raise PauseUnavailable("approval_pending" if status == "awaiting_approval" else "unsupported_state")
+                if status == "queued":
+                    conn.execute("UPDATE tasks SET status='paused',pause_requested=0 WHERE id=? AND user_id=? AND status='queued' AND cancel_requested=0", (task_id,user_id))
+                else:
+                    conn.execute("UPDATE tasks SET pause_requested=1 WHERE id=? AND user_id=? AND status='running' AND cancel_requested=0", (task_id,user_id))
+            return message, created
 
     def list_task_messages(self, task_id: str, *, include_consumed: bool = False) -> list[dict[str, Any]]:
         clause = "" if include_consumed else """ AND consumed_at IS NULL
@@ -1720,6 +1734,18 @@ class TaskStore:
     def pause_task(self, task_id: str, user_id: str) -> bool:
         now = time.time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute("SELECT status,cancel_requested,pause_requested FROM tasks WHERE id=? AND user_id=?", (task_id,user_id)).fetchone()
+            if task is None:
+                return False
+            status = task["status"]
+            if status == "queued" and task["cancel_requested"]:
+                conn.execute("UPDATE tasks SET status='canceled',pause_requested=0,finished_at=?,error_message='用户已请求停止任务' WHERE id=? AND user_id=? AND status='queued' AND cancel_requested=1", (now,task_id,user_id))
+                return True
+            if status == "awaiting_approval" or status not in {"queued", "running", "paused"} or task["cancel_requested"]:
+                return False
+            if status == "paused" or (status == "running" and task["pause_requested"]):
+                return True
             # A queued task already asked to cancel must not be parked paused:
             # no worker remains to consume the flag, and the old flag-clearing
             # update silently discarded the cancel. Let the cancel win.
@@ -1741,17 +1767,10 @@ class TaskStore:
             running = conn.execute(
                 """UPDATE tasks SET pause_requested=1
                    WHERE id=? AND user_id=?
-                   AND status IN ('running', 'awaiting_approval')""",
+                   AND status='running' AND cancel_requested=0""",
                 (task_id, user_id),
             )
-            already = conn.execute(
-                """SELECT 1 FROM tasks
-                   WHERE id=? AND user_id=? AND status='paused'""",
-                (task_id, user_id),
-            ).fetchone()
             changed = queued.rowcount > 0 or running.rowcount > 0
-            if already and not changed:
-                return True
             if changed:
                 conn.execute(
                     """INSERT OR IGNORE INTO task_messages

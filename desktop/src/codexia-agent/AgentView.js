@@ -856,7 +856,7 @@
     const busy = Boolean(state.controlBusy);
     els.taskControls.hidden = !(active || recoverable);
     els.taskStatus.textContent = job?.displayStatus.replaceAll("_", " ") || "";
-    els.pauseTask.hidden = !active || !["queued", "running"].includes(job.displayStatus);
+    els.pauseTask.hidden = !active || job?.can_pause !== true || !["queued", "running"].includes(job.displayStatus);
     els.resumeTask.hidden = !active || job.displayStatus !== "paused";
     els.stopTask.hidden = !active;
     els.pauseTask.disabled = busy || Boolean(job?.pause_requested);

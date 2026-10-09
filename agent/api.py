@@ -1880,12 +1880,16 @@ def create_app(
         response: Response,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
-        from agent.database import TaskMessageConflict
+        from agent.database import PauseUnavailable, TaskMessageConflict
         from agent.task_messages import message_receipt
         try:
             admitted = effective_task_store.admit_task_message(job_id, user_id, body.message_key, body.type, body.payload)
         except TaskMessageConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PauseUnavailable as exc:
+            reason = exc.reason
+            raise HTTPException(status_code=409, detail={"code": "pause_unavailable", "reason": reason,
+                "message": "当前正在等待操作确认，暂不支持在此处暂停。你可以拒绝本次操作或停止任务。" if reason == "approval_pending" else "当前任务状态无法暂停。"}) from exc
         if admitted is None:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         msg, created = admitted
@@ -1960,11 +1964,17 @@ def create_app(
 
     @app.post("/api/jobs/{job_id}/pause", status_code=202)
     def pause_job_endpoint(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        from agent.database import PauseUnavailable
         job = get_job(job_id, user_id=user_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         if not pause_job(job_id, user_id):
-            raise HTTPException(status_code=409, detail="任务无法暂停")
+            current = get_job(job_id, user_id=user_id) or job
+            status = current.get("status")
+            reason = "approval_pending" if status == "awaiting_approval" else "stopping" if current.get("cancel_requested") else "terminal" if status in {"succeeded", "failed", "canceled", "interrupted"} else "unsupported_state"
+            detail = {"code": "pause_unavailable", "reason": reason,
+                      "message": "当前正在等待操作确认，暂不支持在此处暂停。你可以拒绝本次操作或停止任务。" if reason == "approval_pending" else "当前任务状态无法暂停。"}
+            raise HTTPException(status_code=409, detail=detail)
         return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
 
     @app.post("/api/jobs/{job_id}/resume", status_code=202)

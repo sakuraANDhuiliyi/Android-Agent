@@ -1110,6 +1110,10 @@ def _run_job(
     def check_pause() -> None:
         if lease_check is not None:
             lease_check()
+        check_cancel()
+        task = _store.get_task(task_id, user_id)
+        if task and task.get("pause_requested"):
+            raise PauseRequested("任务已暂停")
         messages = _store.get_pending_messages(task_id, types=["pause"])
         for msg in messages:
             _store.consume_message(msg["id"])

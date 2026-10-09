@@ -273,6 +273,27 @@ class AgentApiTest {
     }
 
     @Test
+    fun parsesPauseCapabilityStrictlyAndShowsAcceptedRequest() {
+        server.enqueue(MockResponse().setBody(
+            """{"job":{"id":"j1","project_id":"p1","status":"running","display_status":"running","pause_requested":true,"can_pause":false,"pause_unavailable_reason":"pause_pending","events":[],"changed_files":[]}}""",
+        ))
+        val pending = api.getJob("j1")
+        assertEquals(true, pending.pauseRequested)
+        assertEquals(false, pending.canPause)
+        assertEquals("pause_pending", pending.pauseUnavailableReason)
+        assertEquals("pause_requested", pending.resolvedStatus())
+        assertEquals("正在暂停", ConversationTimelineBuilder.statusLabel(pending.resolvedStatus()))
+
+        server.enqueue(MockResponse().setBody(
+            """{"job":{"id":"j2","project_id":"p1","status":"running","pause_requested":1,"can_pause":"true","pause_unavailable_reason":"invented","events":[],"changed_files":[]}}""",
+        ))
+        val unknown = api.getJob("j2")
+        assertEquals(null, unknown.pauseRequested)
+        assertEquals(null, unknown.canPause)
+        assertEquals(null, unknown.pauseUnavailableReason)
+    }
+
+    @Test
     fun parseErrorMessageHandlesObjectDetail() {
         val msg = AgentApi.parseErrorMessage("""{"detail":{"message":"conflict"}}""", 409)
         assertTrue(msg.contains("conflict") || msg.contains("message"))

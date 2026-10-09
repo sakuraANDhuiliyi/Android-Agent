@@ -156,6 +156,18 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 
 最终默认发布门禁 **26/26 全通过，无跳过项**，报告 `.artifacts/iteration-009/release.json`：后端 **729 项测试、292 项子测试**；完整 HTTP/WebSocket E2E **62/62**；Android **309 项 JVM 测试**、Debug 构建和 lint（0 错误、358 条警告）；桌面 20 组单元测试、AI/CX 双入口 Chromium 提交流程、真实 Electron 原 smoke 与新增失响应恢复、旧功能 Electron 回归全部通过，npm audit 为 0 漏洞。共享 API 夹具由后端真实响应及两端解析测试覆盖；提交确认、表情资源同步、敏感信息扫描与格式检查通过。最终 Android 安装包 SHA-256 与 444 个工程源码文件的冻结证据一致。25 项最终 APK 设备验收报告与首次失败证据一并保留于 `.artifacts/iteration-009/`。
 
+## 可重复暂停与真实控制状态（第十轮）
+
+日期：2026-10-10。状态：实现与完整验收完成，待同步远端后提交推送；基线 `55b846e711ab9ccbbcc98ce65e27964e0652ff30` 已推送。
+
+官方资料已复核：[Codex App Server](https://learn.chatgpt.com/docs/app-server) 区分 turn 生命周期与完成事件；[Claude Code 交互模式](https://code.claude.com/docs/en/interactive-mode) 明确中断与权限提示的行为；[Cursor Agent](https://cursor.com/help/ai-features/agent) 描述停止与检查点交互；[OpenAI Agents SDK 人工审批](https://developers.openai.com/api/docs/guides/agents/guardrails-approvals) 提供恢复审批状态的架构参考。[Cursor 社区反馈](https://forum.cursor.com/t/make-agent-chat-tab-visually-obvious-when-waiting-for-run-approval/156250) 反映等待审批状态可见性问题。公开资料没有说明这些产品如何安全实现可重复的服务端暂停、取消与 worker 最终化并发。
+
+本轮已隔离复现：同一任务第二次、第三次暂停虽设置持久标志，固定 `pause:{task_id}` 消息已消费且不能重插，worker 只检查消息，因此无法再次暂停。计划一次解决“可重复暂停与准确控制状态”：pause 资格在 writer 事务中校验；等待审批时稳定返回 409 且不改审批/暂停状态；DTO 明确 `pause_requested`、`can_pause` 及受限原因码；取消与暂停竞争由事务决定，规范 turn 终态仅写一次；兼容旧消息入口且不复活已消费消息。桌面 AI/CX/inbox 与 Android 显示请求中、已受理、待审批和真实暂停的区别，旧/矛盾能力不授予新暂停操作，Stop 可抢占。未决审批持久挂起、continuation 与敏感参数恢复延期。
+
+验收标准：同一任务至少三轮 pause/resume 且每轮仅执行一次工具；queued/running/awaiting 审批边界、先暂停后停止和先停止后 worker park、worker/API 双向迟到最终化、旧 pause 消息重放及冲突、服务重启、消息 API、审批无隐式决定；双端严格解析共享真实 HTTP 回执，覆盖 Stop 抢占、晚响应、A→B→A、列表/watcher 迟到和草稿保留；Chromium 双入口、真实 Electron、Android JVM 与冻结 APK 设备完整集及默认发布门禁全部通过后方可推送。
+
+最终默认发布门禁 **26/26 全通过，无跳过项**，报告 `.artifacts/iteration-010/release-final.json`。后端 **732 项测试、292 项子测试**；真实 HTTP/WebSocket **62/62**；Android **310 项 JVM 测试**、Debug 构建及 lint（0 错误、358 条既有警告）；桌面代码检查、单元、Chromium 双入口、截图、Electron 原 smoke、场景、恢复、交付、消息与提交场景全通过，npm audit 为 0 漏洞。Android 模拟器最终 APK 设备验收覆盖运行中暂停标志、等待审批提示、审批期间不提供新暂停入口、Stop 保留及无写请求，共 **5/5**，73 条请求均为 GET；合成账号、缓存数据库、偏好设置和 adb reverse 已清理，原模拟器用户文件清单恢复不变。关键画面保存于 `.artifacts/iteration-010/device/`。首次完整运行曾暴露样例布尔类型/能力字段、桌面测试夹具和 API 契约锁未同步问题；保留失败报告，修正所有夹具与测试后，以最终冻结源码重新运行全部门禁并通过。
+
 ## 参考依据
 
 - [Codex 平台与开放 Agent harness](https://developers.openai.com/blog/codex-as-a-platform)：宿主负责展示执行事件、审批与结果，支持将现有状态准确传达给用户。

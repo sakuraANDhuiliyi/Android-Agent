@@ -6,7 +6,7 @@ import androidx.core.content.ContextCompat
 /** 跨页面共享的状态标签 / 颜色 / 相对时间格式化。 */
 object UiFormat {
 
-    val ACTIVE_STATUSES = setOf("queued", "running", "awaiting_approval", "paused", "cancel_requested")
+    val ACTIVE_STATUSES = setOf("queued", "running", "pause_requested", "awaiting_approval", "paused", "cancel_requested")
     val TERMINAL_STATUSES = setOf("succeeded", "failed", "canceled", "interrupted")
 
     fun isActive(status: String): Boolean = status in ACTIVE_STATUSES
@@ -15,6 +15,7 @@ object UiFormat {
         val res = when (status) {
             "queued" -> R.string.status_queued
             "running" -> R.string.status_running
+            "pause_requested" -> R.string.status_pause_requested
             "awaiting_approval" -> R.string.status_awaiting
             "paused" -> R.string.status_paused
             "cancel_requested" -> R.string.status_canceling
@@ -32,7 +33,7 @@ object UiFormat {
             "running", "queued" -> R.color.status_running
             "succeeded" -> R.color.status_success
             "failed", "interrupted" -> R.color.status_failed
-            "awaiting_approval", "paused", "cancel_requested" -> R.color.status_warning
+            "awaiting_approval", "paused", "pause_requested", "cancel_requested" -> R.color.status_warning
             else -> R.color.status_idle
         }
         return ContextCompat.getColor(context, res)

@@ -330,6 +330,10 @@
     const parsed = submissionParser.normalize(fixture, { project: "submissions", conversation: "conv-submission" }, "request-submission-001", { lookup: name.includes("lookup") });
     assert.ok(parsed, name); assert.strictEqual(parsed.submission.job_id, parsed.job.id);
     assert.strictEqual(parsed.submission.turn_id, parsed.job.turn_id);
+    assert.strictEqual(typeof parsed.job.pause_requested, "boolean", `${name}: pause flag is JSON boolean`);
+    assert.strictEqual(parsed.job.can_pause, ["queued", "running"].includes(parsed.job.status), `${name}: pause capability matches status`);
+    assert.strictEqual(parsed.job.pause_unavailable_reason, parsed.job.can_pause ? null
+      : parsed.job.status === "paused" ? "already_paused" : "terminal", `${name}: bounded pause reason`);
     if (name.includes("paused")) assert.strictEqual(parsed.job.status, "paused");
   }
 

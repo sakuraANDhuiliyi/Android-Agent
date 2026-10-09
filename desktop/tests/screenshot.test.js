@@ -484,6 +484,7 @@ async function run() {
       selectedProjectId: "p-control",
       conversationId: "c-control",
       currentJobId: "j-control",
+      currentJob: { id: "j-control", can_pause: true },
       jobStatus: "running",
       running: true,
     });

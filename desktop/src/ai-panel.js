@@ -161,7 +161,7 @@
   function applyJob(job) {
     if (!job?.id) return;
     state.currentJobId = job.id;
-    state.currentJob = { ...job, can_recover: job.can_recover === true,
+    state.currentJob = { ...job, can_pause: job.can_pause === true, can_recover: job.can_recover === true,
       recovery_job_id: job.recovery_job_id || null };
     state.jobStatus = resolveJobStatus(job);
     state.pauseRequested = Boolean(job.pause_requested);
@@ -388,8 +388,8 @@
       title = "Agent 已连接，当前空闲";
       if (pending || status === "awaiting_approval") {
         name = "awaiting";
-        label = "等待审批";
-        title = "任务正在等待你的审批";
+        label = state.pauseRequested ? "暂停尚未生效 · 等待审批" : "等待审批";
+        title = state.pauseRequested ? "暂停请求尚未到达安全边界；当前仍等待操作审批" : "任务正在等待你的审批";
       } else if (state.cancelRequested) {
         name = "running";
         label = "正在停止";
@@ -430,7 +430,7 @@
     const active = state.connected && hasActiveJob();
     const status = state.jobStatus;
     const busy = Boolean(state.controlBusy);
-    const canPause = active && !state.cancelRequested && (status === "queued" || status === "running");
+    const canPause = active && state.currentJob?.can_pause === true && !state.cancelRequested && (status === "queued" || status === "running");
     const canResume = active && !state.cancelRequested && status === "paused";
     const canStop = active;
     const recoverable = state.connected && state.currentJob?.id === state.currentJobId

@@ -208,8 +208,12 @@ data class JobInfo(
     val canRecover: Boolean = false,
     val recoveryJobId: String? = null,
     val verification: DeliveryVerification = DeliveryVerification(),
+    val pauseRequested: Boolean? = null,
+    val canPause: Boolean? = null,
+    val pauseUnavailableReason: String? = null,
 ) {
     fun resolvedStatus(): String {
+        if (!cancelRequested && status == "running" && pauseRequested == true) return "pause_requested"
         if (displayStatus.isNotBlank()) return displayStatus
         return if (cancelRequested && status !in UiFormat.TERMINAL_STATUSES) {
             "cancel_requested"
@@ -1607,6 +1611,11 @@ class AgentApi(
             canRecover = json.optBoolean("can_recover", false),
             recoveryJobId = json.optString("recovery_job_id").takeIf { it.isNotBlank() && it != "null" },
             verification = DeliveryVerification.parse(json.optJSONObject("verification"), json.optString("id")),
+            pauseRequested = (json.opt("pause_requested") as? Boolean),
+            canPause = (json.opt("can_pause") as? Boolean),
+            pauseUnavailableReason = json.optString("pause_unavailable_reason").takeIf {
+                it in setOf("approval_pending", "pause_pending", "already_paused", "stopping", "terminal", "unsupported_state")
+            },
         )
     }
 

@@ -438,9 +438,13 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             val now = System.currentTimeMillis() / 1000.0
             started?.let { s -> ((it.finishedAt ?: now) - s).toInt() }
         }
-        val statusText = job?.statusLabel
-            ?: jobStatus?.let { ConversationTimelineBuilder.statusLabel(it) }
-            ?: getString(R.string.no_task_selected)
+        val statusText = when {
+            job?.pauseRequested == true && job.resolvedStatus() == "awaiting_approval" -> getString(R.string.status_pause_waiting_approval)
+            jobStatus == "pause_requested" -> getString(R.string.status_pause_requested)
+            else -> job?.statusLabel
+                ?: jobStatus?.let { ConversationTimelineBuilder.statusLabel(it) }
+                ?: getString(R.string.no_task_selected)
+        }
         binding.toolbar.subtitle = if (elapsed != null && jobStatus in ConversationViewModel.ACTIVE_STATUSES) {
             val worked = ConversationTimelineBuilder.formatWorked(elapsed * 1000L)
             if (worked.isBlank()) statusText else "$statusText · $worked"
@@ -708,7 +712,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val state = viewModel.state.value
         val busy = state.recovering || state.sending
         val active = job != null && job.resolvedStatus() in ConversationViewModel.ACTIVE_STATUSES
-        menu.findItem(R.id.action_pause)?.isVisible = job?.resolvedStatus() == "running"
+        menu.findItem(R.id.action_pause)?.isVisible = job?.canPause == true && job.resolvedStatus() in setOf("queued", "running")
         menu.findItem(R.id.action_resume)?.isVisible = job?.resolvedStatus() == "paused"
         menu.findItem(R.id.action_stop)?.isVisible = active
         menu.findItem(R.id.action_task_details)?.isVisible = job != null

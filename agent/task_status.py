@@ -87,4 +87,24 @@ def enrich_job_dict(job: dict[str, Any]) -> dict[str, Any]:
     )
     out["display_status"] = display
     out["status_label"] = status_label_zh(display)
+    status = str(out.get("status") or "")
+    cancel = out["cancel_requested"]
+    pause_requested = out.get("pause_requested") is True or out.get("pause_requested") == 1
+    out["pause_requested"] = pause_requested
+    if status in TERMINAL_STATUSES:
+        reason = "terminal"
+    elif cancel:
+        reason = "stopping"
+    elif status == "paused":
+        reason = "already_paused"
+    elif pause_requested and status == "running":
+        reason = "pause_pending"
+    elif status == "awaiting_approval":
+        reason = "approval_pending"
+    elif status in {"queued", "running"}:
+        reason = None
+    else:
+        reason = "unsupported_state"
+    out["can_pause"] = reason is None
+    out["pause_unavailable_reason"] = reason
     return out

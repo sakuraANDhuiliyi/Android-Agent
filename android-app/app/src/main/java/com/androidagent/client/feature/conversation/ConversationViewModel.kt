@@ -1569,7 +1569,7 @@ class ConversationViewModel(
     }
 
     companion object {
-        val ACTIVE_STATUSES = setOf("queued", "running", "paused", "awaiting_approval", "cancel_requested")
+        val ACTIVE_STATUSES = setOf("queued", "running", "pause_requested", "paused", "awaiting_approval", "cancel_requested")
 
         /** 这些事件高频到达（每秒数十条），进入合并窗口。 */
         private val COALESCED_EVENT_TYPES = setOf("text_delta", "text", "status")

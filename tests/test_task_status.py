@@ -116,6 +116,42 @@ class TaskCancelPauseDbTests(unittest.TestCase):
         task = self.store.get_task("task-paused", "user")
         self.assertEqual(task["status"], "paused")
 
+    def test_pause_cannot_create_new_cycle_while_approval_is_pending(self) -> None:
+        before = self.store.get_task("task-approval", "user")
+        self.assertFalse(self.store.pause_task("task-approval", "user"))
+        after = self.store.get_task("task-approval", "user")
+        self.assertEqual(after["status"], "awaiting_approval")
+        self.assertEqual(after["pause_requested"], 0)
+        self.assertEqual(self.store.get_pending_messages("task-approval", types=["pause"]), [])
+        dto = job_to_dict(after)
+        self.assertFalse(dto["can_pause"])
+        self.assertEqual(dto["pause_unavailable_reason"], "approval_pending")
+
+    def test_repeated_pause_resume_uses_persisted_request_each_cycle(self) -> None:
+        self.store.update_task("task-approval", status="running")
+        for cycle in range(3):
+            self.assertTrue(self.store.pause_task("task-approval", "user"))
+            if cycle == 0:
+                self.assertEqual(self.store.get_task("task-approval", "user")["pause_requested"], 1)
+            self.store.update_task("task-approval", status="paused", pause_requested=0)
+            self.assertTrue(self.store.resume_task("task-approval", "user"))
+            task = self.store.get_task("task-approval", "user")
+            self.assertEqual(task["status"], "queued")
+            self.assertEqual(task["id"], "task-approval")
+            self.store.update_task("task-approval", status="running")
+
+    def test_pause_message_replay_does_not_reactivate_consumed_cycle(self) -> None:
+        self.store.update_task("task-approval", status="running")
+        message, created = self.store.admit_task_message("task-approval", "user", "old-pause", "pause", {})
+        self.assertTrue(created)
+        self.assertEqual(self.store.get_task("task-approval", "user")["pause_requested"], 1)
+        self.store.update_task("task-approval", pause_requested=0)
+        self.store.consume_message(message["id"])
+        replay, created = self.store.admit_task_message("task-approval", "user", "old-pause", "pause", {})
+        self.assertFalse(created)
+        self.assertEqual(replay["id"], message["id"])
+        self.assertEqual(self.store.get_task("task-approval", "user")["pause_requested"], 0)
+
     def test_pause_is_idempotent_when_already_paused(self) -> None:
         self.assertTrue(self.store.pause_task("task-paused", "user"))
         task = self.store.get_task("task-paused", "user")

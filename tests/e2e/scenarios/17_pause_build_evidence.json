@@ -25,21 +25,6 @@
       ]
     },
     {
-      "type": "tool",
-      "calls": [
-        {
-          "name": "run_command",
-          "arguments": {
-            "argv": [
-              "python3",
-              "-c",
-              "import time; time.sleep(2); print(\"BOUNDARY\")"
-            ]
-          }
-        }
-      ]
-    },
-    {
       "type": "final",
       "text": "构建成功，APK 已生成。"
     }

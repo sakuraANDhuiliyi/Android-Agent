@@ -105,6 +105,8 @@
 
     <string name="status_queued">排队中</string>
     <string name="status_running">运行中</string>
+    <string name="status_pause_requested">正在暂停</string>
+    <string name="status_pause_waiting_approval">暂停尚未生效 · 等待审批</string>
     <string name="status_awaiting">等待审批</string>
     <string name="status_paused">已暂停</string>
     <string name="status_canceling">正在停止</string>

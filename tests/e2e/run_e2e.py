@@ -1373,13 +1373,54 @@ class E2ERunner:
         job_id = str(job["id"])
         context.client.wait_event(
             context.conversation_id,
-            lambda event: event.get("event_type") == "tool_result" and (
+            lambda event: event.get("event_type") == "tool_call" and (
                 not context.scenario.get("pause_after_tool")
                 or (event.get("payload") or {}).get("name") == context.scenario["pause_after_tool"]
             ),
             timeout=30,
         )
+        self.wait_until_pause_can_be_requested(context, job_id)
         self.pause_and_resume(context, job_id)
+
+    def driver_pause_pending_approval(self, context: ScenarioContext) -> None:
+        job = self.send_prompt(context)
+        job_id = str(job["id"])
+        approval = context.client.wait_approval(job_id)
+        before = context.client.get_job(job_id)
+        response = context.client.http.post(f"/api/jobs/{job_id}/pause")
+        context.check(response.status_code == 409, f"pause during approval returned {response.status_code}")
+        detail = response.json().get("detail") or {}
+        context.check(detail.get("code") == "pause_unavailable" and detail.get("reason") == "approval_pending",
+                      f"unstable approval pause rejection: {detail}")
+        after = context.client.get_job(job_id)
+        context.check(after.get("status") == before.get("status") == "awaiting_approval"
+                      and after.get("pause_requested") is False, "rejected pause changed approval/task state")
+        pending = context.client.pending_approvals(job_id)
+        context.check(any(item.get("id") == approval.get("id") for item in pending),
+                      "rejected pause altered the pending approval")
+        context.client.decide_approval(job_id, approval["id"], approved=True)
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            for item in context.client.pending_approvals(job_id):
+                context.client.decide_approval(job_id, item["id"], approved=True)
+            latest = context.client.get_job(job_id)
+            if latest.get("status") in TERMINAL_STATUSES:
+                context.job = latest
+                self.wait_terminal_events(context)
+                return
+            time.sleep(0.1)
+        raise ScenarioFailure("task did not finish after explicit approval")
+
+    def wait_until_pause_can_be_requested(self, context: ScenarioContext, job_id: str) -> None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            job = context.client.get_job(job_id)
+            if job.get("status") == "running":
+                return
+            if job.get("status") in TERMINAL_STATUSES:
+                raise ScenarioFailure(f"task became terminal before a running pause boundary: {job.get('status')}")
+            time.sleep(0.05)
+        raise ScenarioFailure("task never returned to running between approval and tool execution")
 
     def pause_and_resume(self, context: ScenarioContext, job_id: str) -> None:
         context.client.pause_job(job_id)
@@ -1422,6 +1463,7 @@ class E2ERunner:
         context.client.wait_event(context.conversation_id, lambda event:
                                   event.get("event_type") == "user_message"
                                   and steer in payload_strings(event.get("payload")), timeout=20)
+        self.wait_until_pause_can_be_requested(context, job_id)
         self.pause_and_resume(context, job_id)
         recorded = [event for event in context.events if event.get("event_type") == "user_message"
                     and steer in payload_strings(event.get("payload"))]

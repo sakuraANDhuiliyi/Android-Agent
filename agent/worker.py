@@ -266,15 +266,26 @@ class TaskWorker:
                     if self.store.is_cancel_requested(task["id"])
                     else "paused"
                 )
-                event_store.update_turn_status(
-                    turn_id,
-                    turn_status,
-                    user_id=task["user_id"],
-                    finished_at=time.time(),
-                    error_message=(
-                        "用户已请求停止任务" if turn_status == "canceled" else None
-                    ),
-                )
+                if turn_status == "canceled":
+                    from agent.conversation_events import ConversationEventType
+                    event_store.finalize_lifecycle(
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        task_id=task["id"],
+                        user_id=task["user_id"],
+                        event_type=ConversationEventType.TURN_CANCELED,
+                        event_key=f"turn:{turn_id}:canceled",
+                        event_payload={"error": "用户已请求停止任务"},
+                        status="canceled",
+                        finished_at=time.time(),
+                        error_message="用户已请求停止任务",
+                        task_event_type="canceled",
+                        task_event_payload={"message": "用户已请求停止任务"},
+                    )
+                else:
+                    event_store.update_turn_status(
+                        turn_id, "paused", user_id=task["user_id"], finished_at=time.time()
+                    )
             except Exception:
                 logger.exception("Failed to set turn status to paused for task %s", task["id"])
             return
