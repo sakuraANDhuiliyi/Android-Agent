@@ -89,7 +89,14 @@
   assert.strictEqual(messageList.schema_version, 1);
   assert.strictEqual(messageList.job_id, scope.job);
   const receipts = messageList.messages.map(row => messages.normalize(row, scope));
-  assert.deepStrictEqual(receipts.map(row => row.delivery_state), ["pending", "consumed", "follow_up_created", "blocked", "unapplied", "unknown"]);
+  assert.deepStrictEqual(receipts.map(row => row.delivery_state), ["pending", "consumed", "follow_up_created", "blocked", "unapplied", "unknown", "withdrawn"]);
+  assert.strictEqual(receipts[3].can_withdraw, true);
+  const withdrawn = messages.normalize(assertSuccessFixture("job_message_withdraw_200.json", ["schema_version", "job_id", "message"]).message, scope);
+  assert.strictEqual(withdrawn.delivery_state, "withdrawn");
+  assert.strictEqual(withdrawn.can_withdraw, false);
+  assert.ok(withdrawn.withdrawn_at > 0);
+  assert.strictEqual(withdrawn.consumed_at, null);
+  assert.strictEqual(withdrawn.follow_up_job_id, null);
   assert.strictEqual(receipts[2].follow_up_job_id, "job-002");
   assert.strictEqual(receipts[2].follow_up_turn_id, "turn-002");
   assert.strictEqual(receipts[2].context_message_id, null);

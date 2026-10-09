@@ -356,6 +356,8 @@ class JobMessageResponse(BaseModel):
     follow_up_job_id: str | None = None
     follow_up_turn_id: str | None = None
     reason: str | None = "legacy_missing_receipt"
+    withdrawn_at: float | None = None
+    can_withdraw: bool = False
 
 
 class CreateTerminalRequest(StrictRequest):
@@ -1804,6 +1806,18 @@ def create_app(
             "message": JobMessageResponse(**message_receipt(effective_task_store, msg, user_id)).model_dump(),
             "guest_remaining": None,
         }
+
+    @app.post("/api/jobs/{job_id}/messages/{message_id}/withdraw")
+    def withdraw_job_message(job_id: str, message_id: int, user_id: str = Depends(current_user)) -> dict[str, Any]:
+        from agent.database import TaskMessageConflict
+        from agent.task_messages import withdraw_follow_up
+        try:
+            receipt = withdraw_follow_up(effective_task_store, job_id, message_id, user_id)
+        except TaskMessageConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="任务消息不存在")
+        return {"schema_version": 1, "job_id": job_id, "message": JobMessageResponse(**receipt).model_dump()}
 
     @app.get("/api/jobs/{job_id}/messages")
     def get_job_messages(

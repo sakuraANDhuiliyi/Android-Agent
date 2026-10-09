@@ -6724,6 +6724,72 @@
         "summary": "Post Job Message"
       }
     },
+    "/api/jobs/{job_id}/messages/{message_id}/withdraw": {
+      "post": {
+        "operationId": "withdraw_job_message_api_jobs__job_id__messages__message_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Withdraw Job Message Api Jobs  Job Id  Messages  Message Id  Withdraw Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw Job Message"
+      }
+    },
     "/api/jobs/{job_id}/pause": {
       "post": {
         "operationId": "pause_job_endpoint_api_jobs__job_id__pause_post",
@@ -13172,6 +13238,7 @@
     "GET /api/jobs/{job_id}/log",
     "GET /api/jobs/{job_id}/messages",
     "POST /api/jobs/{job_id}/messages",
+    "POST /api/jobs/{job_id}/messages/{message_id}/withdraw",
     "POST /api/jobs/{job_id}/pause",
     "POST /api/jobs/{job_id}/recover",
     "POST /api/jobs/{job_id}/resume",

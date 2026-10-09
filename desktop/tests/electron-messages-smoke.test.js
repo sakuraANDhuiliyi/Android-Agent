@@ -226,9 +226,50 @@ async function main() {
     }
     await page.locator('[data-mode="agent-windows"]').click(); await page.evaluate(() => CodexiaAgentView.refresh());
     await page.locator('.cx-project-task').filter({ hasText: '只读查看清单' }).click();
-    await page.locator('#cxMessageModes [data-message-mode="follow_up"]').click();
-    await page.fill('#cxAgentPrompt', '只读总结后续任务 [[desktop_messages_child]]'); await page.click('#cxSendAgent');
-    await page.waitForFunction(() => document.querySelectorAll('#cxMessageReceipts [data-state="pending"]').length === 4);
+    for (const [index, name] of ['A', 'B', 'C'].entries()) {
+      await page.locator('#cxMessageModes [data-message-mode="follow_up"]').click();
+      await page.fill('#cxAgentPrompt', `只读总结后续任务 ${name} [[desktop_messages_child]]`); await page.click('#cxSendAgent');
+      await page.waitForFunction(count => document.querySelectorAll('#cxMessageReceipts [data-state="pending"]').length === count, 4 + index);
+    }
+    const queued = (await httpJson('GET', `/api/jobs/${source}/messages?include_consumed=true`, { token })).json.messages.filter(row => row.type === 'follow_up');
+    assert.equal(queued.length, 3);
+    const canceledFollow = queued[1];
+    let withdrawPosts = 0;
+    await page.route(`**/api/jobs/${source}/messages/${canceledFollow.id}/withdraw`, async route => {
+      withdrawPosts++;
+      assert.equal(route.request().postData(), null, 'withdrawal sends no body');
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      assert.equal((await response.json()).message.delivery_state, 'withdrawn');
+      await route.abort('failed');
+    });
+    await page.locator(`#cxMessageReceipts [data-message-key="${canceledFollow.message_key}"]`).getByRole('button', { name: '撤回追问', exact: true }).click();
+    await page.waitForFunction(() => document.getElementById('cxMessageReceipts').textContent.includes('撤回结果待确认'));
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem(JobMessages.STORAGE_KEY)).filter(row => row.kind === 'withdraw').length), 1);
+    await page.reload(); await page.waitForFunction(() => window.AiPanel?.getState().connected);
+    await page.evaluate(id => AiPanel.openJob(id), source);
+    await page.locator(`#aiMessageReceipts [data-message-key="${canceledFollow.message_key}"][data-state="withdrawn"]`).waitFor();
+    assert.equal(withdrawPosts, 1, 'reopening only reconciles GET; it never posts withdrawal');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem(JobMessages.STORAGE_KEY)).length), 0);
+    const retriedWithdraw = await httpJson('POST', `/api/jobs/${source}/messages/${canceledFollow.id}/withdraw`, { token });
+    assert.equal(retriedWithdraw.status, 200); assert.equal(retriedWithdraw.json.message.id, canceledFollow.id);
+    const originalFollowRetry = await httpJson('POST', `/api/jobs/${source}/messages`, { token,
+      body: { message_key: canceledFollow.message_key, type: 'follow_up', payload: canceledFollow.payload } });
+    assert.equal(originalFollowRetry.status, 200); assert.equal(originalFollowRetry.json.message.delivery_state, 'withdrawn');
+    console.log('ok - follow-up B withdrawal survives lost response/reload; GET only recovers and original-key retry cannot revive it');
+
+    // Hold receipt polling while the server creates the children, reproducing
+    // a real stale visible action. The withdrawal POST must lose with 409 and
+    // reconcile through GET, without controlling either child.
+    let releaseReceipts;
+    const receiptBarrier = new Promise(resolve => { releaseReceipts = resolve; });
+    let blockReceipts = true;
+    await page.route(`**/api/jobs/${source}/messages?*`, async route => {
+      if (blockReceipts) await receiptBarrier;
+      await route.continue();
+    });
+    await page.locator('[data-mode="agent-windows"]').click(); await page.evaluate(() => CodexiaAgentView.refresh());
+    await page.locator('.cx-project-task').filter({ hasText: '只读查看清单' }).click();
     await page.click('#cxResumeTask');
     const parent = await waitUntil(async () => {
       const job = (await httpJson('GET', `/api/jobs/${source}`, { token })).json.job;
@@ -238,10 +279,38 @@ async function main() {
     assert.ok(parent.final_message.includes('MESSAGE_RECEIPTS_PARENT_DONE'), parent.final_message);
     const messages = await waitUntil(async () => {
       const rows = (await httpJson('GET', `/api/jobs/${source}/messages?include_consumed=true`, { token })).json.messages.filter(row => ['steer', 'follow_up'].includes(row.type));
-      return rows.some(row => row.delivery_state === 'follow_up_created') ? rows : null;
-    }, 20000, 'authoritative follow-up child receipt');
-    assert.equal(messages.length, 4); assert.equal(new Set(messages.map(row => row.message_key)).size, 4);
+      return rows.filter(row => row.delivery_state === 'follow_up_created').length === 2 ? rows : null;
+    }, 30000, 'authoritative A and C follow-up child receipts');
+    assert.equal(messages.length, 6); assert.equal(new Set(messages.map(row => row.message_key)).size, 6);
     assert.equal(messages.filter(row => row.delivery_state === 'consumed').length, 3);
+    assert.equal(messages.find(row => row.id === canceledFollow.id).delivery_state, 'withdrawn');
+    const childReceipts = messages.filter(row => row.delivery_state === 'follow_up_created');
+    assert.deepEqual(childReceipts.map(row => row.id), [queued[0].id, queued[2].id]);
+    for (const row of childReceipts) {
+      const completed = await waitUntil(async () => {
+        const job = (await httpJson('GET', `/api/jobs/${row.follow_up_job_id}`, { token })).json.job;
+        return ['succeeded', 'failed', 'canceled'].includes(job.status) ? job : null;
+      }, 30000, 'non-withdrawn child completes');
+      assert.equal(completed.status, 'succeeded');
+      assert.ok(completed.final_message.includes('MESSAGE_RECEIPTS_CHILD_DONE'));
+    }
+    const childrenBefore = await Promise.all(childReceipts.map(async row => (await httpJson('GET', `/api/jobs/${row.follow_up_job_id}`, { token })).json.job));
+    const childControls = [];
+    page.on('request', request => { if (childReceipts.some(row => request.url().includes(`/jobs/${row.follow_up_job_id}/`)) && /\/(cancel|resume|pause)$/.test(request.url())) childControls.push(request.url()); });
+    let withdrawalConflict;
+    await page.route(`**/api/jobs/${source}/messages/${queued[0].id}/withdraw`, async route => {
+      const response = await route.fetch(); withdrawalConflict = response.status();
+      blockReceipts = false; releaseReceipts(); await route.fulfill({ response });
+    });
+    await page.locator(`#cxMessageReceipts [data-message-key="${queued[0].message_key}"]`).getByRole('button', { name: '撤回追问', exact: true }).click();
+    await page.locator(`#cxMessageReceipts [data-message-key="${queued[0].message_key}"][data-state="follow_up_created"]`).waitFor();
+    assert.equal(withdrawalConflict, 409);
+    for (const before of childrenBefore) {
+      const after = (await httpJson('GET', `/api/jobs/${before.id}`, { token })).json.job;
+      assert.equal(after.status, before.status);
+    }
+    assert.deepEqual(childControls, []);
+    console.log('ok - only A/C create and complete; stale withdrawal loses with 409, GET reconciles, children remain untouched');
     const repeated = await httpJson('POST', `/api/jobs/${source}/messages`, { token, body: originalBody });
     assert.equal(repeated.status, 200); assert.equal(repeated.json.message.id, firstReceipt.id);
     const conflict = await httpJson('POST', `/api/jobs/${source}/messages`, { token, body: { ...originalBody, payload: { text: 'different body' } } });
@@ -251,14 +320,16 @@ async function main() {
       const canonical = history.json.events.filter(event => event.payload?.task_message_id === message.id);
       assert.equal(canonical.length, 1); assert.equal(canonical[0].payload.message_id, message.context_message_id);
     }
-    const follow = messages.find(row => row.type === 'follow_up');
+    for (const row of childReceipts) assert.equal(history.json.events.filter(event => event.payload?.task_message_id === row.id).length, 1, 'one canonical child prompt per remaining follow-up');
+    assert.equal(history.json.events.filter(event => event.payload?.task_message_id === canceledFollow.id).length, 0, 'withdrawn message never enters model context');
+    const follow = childReceipts[0];
     const child = (await httpJson('GET', `/api/jobs/${follow.follow_up_job_id}`, { token })).json.job;
     assert.equal(child.conversation_id, parent.conversation_id); assert.equal(child.turn_id, follow.follow_up_turn_id);
     await page.waitForFunction(() => document.querySelector('#cxMessageReceipts [data-state="follow_up_created"]'));
-    await page.locator('#cxMessageReceipts').getByRole('button', { name: '查看后续任务' }).click();
+    await page.locator('#cxMessageReceipts').getByRole('button', { name: '查看后续任务' }).first().click();
     await page.waitForFunction(id => CodexiaAgentView._internal.getState().selectedId === id, child.id);
     await page.locator('#cxSidebarDownload').click(); await page.evaluate(id => AiPanel.openJob(id), source);
-    await page.locator('#aiMessageReceipts').getByRole('button', { name: '查看后续任务' }).click();
+    await page.locator('#aiMessageReceipts').getByRole('button', { name: '查看后续任务' }).first().click();
     await page.waitForFunction(id => AiPanel.getState().currentJobId === id, child.id);
     assert.deepEqual(errors, []);
     console.log('ok - both real desktop entries, repeated text as distinct intents, one canonical receipt per steer, terminal idempotency, and authoritative child navigation');

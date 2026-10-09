@@ -798,6 +798,18 @@ class AgentApi(
         return JobMessagePage(supported, receipts.sortedBy { it.id })
     }
 
+    fun withdrawJobMessage(jobId: String, messageId: Long, messageKey: String): JobMessageReceipt {
+        require(messageId > 0 && messageKey.isNotBlank())
+        val json = postJson("/api/jobs/$jobId/messages/$messageId/withdraw", null)
+        require(json.opt("schema_version") == 1 && json.opt("job_id") == jobId) { "撤回回执不属于当前任务" }
+        val receipt = JobMessageReceipt.parse(json.getJSONObject("message"), jobId, true)
+        require(receipt.verifiedIdentity && receipt.id == messageId && receipt.key == messageKey && receipt.type == "follow_up") {
+            "撤回回执与原消息不符"
+        }
+        require(receipt.delivery == MessageDelivery.WITHDRAWN) { "服务端尚未提供有效撤回回执，请核对后重试" }
+        return receipt
+    }
+
     fun listApprovals(jobId: String): List<ApprovalInfo> {
         val json = getJson("/api/jobs/$jobId/approvals")
         val items = json.optJSONArray("approvals") ?: JSONArray()
@@ -1592,11 +1604,11 @@ class AgentApi(
 
     private fun postJson(
         path: String,
-        body: JSONObject,
+        body: JSONObject?,
         extraHeaders: Map<String, String> = emptyMap(),
     ): JSONObject {
         val builder = buildRequest(path).newBuilder()
-            .post(body.toString().toRequestBody(jsonMediaType))
+            .post(if (body == null) "".toRequestBody(null) else body.toString().toRequestBody(jsonMediaType))
         extraHeaders.forEach { (name, value) -> builder.header(name, value) }
         val request = builder.build()
         client.newCall(request).execute().use { response ->

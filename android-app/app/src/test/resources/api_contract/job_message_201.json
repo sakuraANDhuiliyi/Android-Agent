@@ -16,7 +16,9 @@
     "context_message_id": null,
     "follow_up_job_id": null,
     "follow_up_turn_id": null,
-    "reason": "awaiting_safe_boundary"
+    "reason": "awaiting_safe_boundary",
+    "withdrawn_at": null,
+    "can_withdraw": false
   },
   "guest_remaining": null
 }

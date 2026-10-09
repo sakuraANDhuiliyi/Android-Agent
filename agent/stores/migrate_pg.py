@@ -15,6 +15,8 @@ TABLES = (
     "conversations",
     "conversation_turns",
     "conversation_events",
+    "task_message_followups",
+    "task_message_withdrawals",
     "checkpoints",
     "outbox",
 )

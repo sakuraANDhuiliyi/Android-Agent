@@ -16,7 +16,9 @@
     "context_message_id": "steer:job-001:43",
     "follow_up_job_id": null,
     "follow_up_turn_id": null,
-    "reason": null
+    "reason": null,
+    "withdrawn_at": null,
+    "can_withdraw": false
   },
   "guest_remaining": null
 }

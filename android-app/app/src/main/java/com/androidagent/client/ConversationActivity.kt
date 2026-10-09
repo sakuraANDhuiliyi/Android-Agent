@@ -235,13 +235,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending && !st.recovering && st.pendingMessage == null
+                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && st.pendingMessage == null
                 binding.btnStop.isEnabled = !st.recovering
                 binding.btnMessageReceipts.isVisible = st.jobId != null && !prefs.guestMode
                 binding.btnMessageReceipts.text = when {
+                    st.withdrawing -> "正在撤回追问…"
+                    st.pendingWithdrawal != null -> "撤回结果待确认 · 查看回执"
                     st.sending && st.pendingMessage != null -> "消息发送中…"
                     st.pendingMessage != null -> "消息结果待确认 · 查看回执"
                     st.messageNotice != null -> "消息回执需确认 · 查看详情"
+                    st.withdrawalNotice != null -> "${st.withdrawalNotice} · 查看回执"
                     st.messageReceipts.isNotEmpty() -> "${st.messageReceipts.last().label} · 查看回执 (${st.messageReceipts.size})"
                     else -> "本任务消息回执"
                 }
@@ -249,7 +252,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
-                    st.sending || st.recovering -> "sending"
+                    st.sending || st.recovering || st.withdrawing -> "sending"
                     else -> st.job?.resolvedStatus() ?: "idle"
                 })
                 if (st.job !== lastJobInstance) {
@@ -448,7 +451,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val content = receiptsDialogContent ?: return
         val state = viewModel.state.value
         // Job status/event updates must not replace the button beneath a pending touch.
-        val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering)
+        val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering,
+            state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice)
         if (key == receiptRenderKey) return
         receiptRenderKey = key
         content.removeAllViews()
@@ -470,7 +474,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         text("本任务消息回执")
         text("引导加入本轮上下文；追问在原任务成功后创建后续任务。回执不代表执行完成。")
         state.messageNotice?.let(::text)
-        val busy = state.sending || state.recovering
+        state.withdrawalNotice?.let(::text)
+        val busy = state.sending || state.recovering || state.withdrawing
+        state.pendingWithdrawal?.let {
+            text("撤回结果待确认 · 消息 #${it.messageId}")
+            action("核对并重试撤回", !busy) { viewModel.retryWithdrawal() }
+        }
         state.pendingMessage?.let { pending ->
             text("发送结果待确认\n${pending.composerText}")
             action("查询并重试原消息", !busy) { viewModel.retryPendingMessage() }
@@ -478,6 +487,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         if (state.messageReceipts.isEmpty() && state.pendingMessage == null) text("暂无消息回执")
         state.messageReceipts.forEach { receipt ->
             text("${receipt.modeLabel} · ${receipt.label}\n${receipt.text}" + receipt.reasonLabel?.let { "\n$it" }.orEmpty())
+            if (receipt.canWithdraw) {
+                action("撤回追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null) {
+                    viewModel.withdrawMessage(receipt.key)
+                }
+            }
             if (receipt.followUpJobId != null && receipt.delivery == MessageDelivery.FOLLOW_UP_CREATED) {
                 action("查看后续任务", !busy) {
                     viewModel.openFollowUpMessage(receipt.key)
@@ -501,7 +515,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         menu.findItem(R.id.action_recover)?.apply {
             isVisible = job?.let { it.recoveryJobId != null ||
                 (it.canRecover && it.status in setOf("failed", "interrupted")) } == true
-            isEnabled = !busy
+            isEnabled = !busy && !state.withdrawing
             setTitle(when {
                 state.recovering && job?.recoveryJobId != null -> R.string.menu_opening_recovery
                 state.recovering -> R.string.menu_recovering

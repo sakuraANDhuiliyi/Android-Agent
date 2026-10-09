@@ -18,19 +18,26 @@ async function fixture(page) {
     window.fixtureNumber = (window.fixtureNumber || 0) + 1;
     const api = AiPanel.client;
     api.configure({ baseUrl: location.origin, token: `fixture-${fixtureNumber}` });
-    window.requests = []; window.reads = []; window.watchers = []; window.receipts = []; window.jobReads = [];
+    window.requests = []; window.reads = []; window.watchers = []; window.receipts = []; window.jobReads = []; window.withdrawals = []; window.controlRequests = [];
     api.job = async id => { jobReads.push(id); return { job: id === 'child' ? { ...job, id, turn_id: 'child-turn', status: 'paused' } : job }; };
     api.jobs = async () => ({ jobs: [job] }); api.projects = async () => ({ projects: [{ id: 'project', name: 'Project' }] }); api.models = async () => ({ models: [] });
     api.listApprovals = async () => ({ approvals: [] }); api.conversationEvents = async () => ({ events: [], has_more: false });
     api.watchJob = (id, callback) => { watchers.push({ id, callback }); return { close() {} }; };
-    api.jobMessages = async id => { reads.push(id); return { schema_version: 1, job_id: id, messages: receipts.filter(row => row.task_id === id) }; };
+    api.jobMessages = async id => {
+      reads.push(id);
+      if (AiPanel.getState().userId !== 'alice') throw Object.assign(new Error('foreign account job'), { status: 404 });
+      return { schema_version: 1, job_id: id, messages: receipts.filter(row => row.task_id === id) };
+    };
     api.sendJobMessage = (id, type, payload, key) => new Promise((resolve, reject) => { requests.push({ id, type, payload, key, resolve, reject }); });
+    api.withdrawJobMessage = (id, messageId) => new Promise((resolve, reject) => { withdrawals.push({ id, messageId, resolve, reject }); });
+    api.cancelJob = api.resumeJob = async id => { controlRequests.push(id); throw new Error('unexpected task control'); };
     window.receiptFor = (index, state = 'pending', extra = {}) => {
       const request = requests[index];
       return { schema_version: 1, id: index + 1, task_id: request.id, message_key: request.key, type: request.type,
-        payload: request.payload, created_at: 100 + index, consumed_at: state === 'pending' ? null : 200,
+        payload: request.payload, created_at: 100 + index, consumed_at: ['pending', 'blocked', 'withdrawn'].includes(state) ? null : 200,
         delivery_state: state, context_message_id: state === 'consumed' ? `steer:${index}` : null,
-        follow_up_job_id: state === 'follow_up_created' ? 'child' : null, follow_up_turn_id: state === 'follow_up_created' ? 'child-turn' : null, reason: null, ...extra };
+        follow_up_job_id: state === 'follow_up_created' ? 'child' : null, follow_up_turn_id: state === 'follow_up_created' ? 'child-turn' : null,
+        withdrawn_at: state === 'withdrawn' ? 300 : null, can_withdraw: request.type === 'follow_up' && ['pending', 'blocked'].includes(state), reason: null, ...extra };
     };
     window.complete = (index, state = 'pending', extra = {}) => {
       const message = receiptFor(index, state, extra); receipts.push(message);
@@ -191,6 +198,82 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
       await page.locator(host).getByRole('button', { name: '查看后续任务' }).click();
       assert.match(await page.locator(host).textContent(), /归属与回执不一致/);
       assert.equal(await page.evaluate(surface => surface === 'ai' ? AiPanel.getState().currentJobId : CodexiaAgentView._internal.getState().selectedId, surface), 'job');
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+    }
+
+    // Withdraw only an authoritative queued follow-up. Both surfaces share
+    // one operation, retain drafts, and reconcile uncertain/conflicting results.
+    for (const surface of ['ai', 'cx']) {
+      const host = surface === 'ai' ? '#aiMessageReceipts' : '#cxMessageReceipts';
+      const input = surface === 'ai' ? '#promptInput' : '#cxAgentPrompt';
+      const send = surface === 'ai' ? '#btnSend' : '#cxSendAgent';
+      const setup = async () => {
+        await fixture(page);
+        if (surface === 'cx') await page.locator('[data-mode="agent-windows"]').click();
+        await page.locator(surface === 'ai' ? '#btnFollowUp' : '#cxMessageModes [data-message-mode="follow_up"]').click();
+        await page.locator(input).fill('完成后补充测试覆盖'); await page.locator(send).click();
+        await page.evaluate(() => complete(0));
+        await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).waitFor();
+      };
+      const finish = () => page.evaluate(() => {
+        receipts = [receiptFor(0, 'withdrawn')];
+        withdrawals.at(-1).resolve({ schema_version: 1, job_id: 'job', message: receipts[0] });
+      });
+      await setup();
+      await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).evaluate(button => { button.click(); button.click(); });
+      assert.equal(await page.evaluate(() => withdrawals.length), 1);
+      assert.match(await page.locator(host).textContent(), /撤回中/);
+      await page.locator(input).fill('撤回期间写下的新草稿'); await finish();
+      await page.locator(`${host} [data-state="withdrawn"]`).waitFor();
+      assert.equal(await page.locator(input).inputValue(), '撤回期间写下的新草稿');
+      assert.equal(await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).count(), 0);
+      assert.equal(await page.locator(host).getByRole('button', { name: '移除本地记录' }).count(), 0);
+      await page.evaluate(() => { receipts = [receiptFor(0)]; }); await reconcile(page);
+      assert.equal(await page.locator(`${host} [data-state="withdrawn"]`).count(), 1, 'old GET does not resurrect');
+      if (process.env.AGENT_MESSAGES_SCREENSHOT_DIR) {
+        fs.mkdirSync(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, `withdraw-${surface}.png`), fullPage: true });
+      }
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      await setup();
+      await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).click();
+      await page.evaluate(() => withdrawals[0].reject(new Error('离线')));
+      await page.locator(host).getByRole('button', { name: '核对并重试撤回' }).click();
+      await page.waitForFunction(() => withdrawals.length === 2);
+      assert.equal(await page.evaluate(() => withdrawals[0].messageId === withdrawals[1].messageId), true);
+      await finish(); await page.locator(`${host} [data-state="withdrawn"]`).waitFor();
+      assert.equal(await page.evaluate(() => requests.length), 1, 'withdraw retry never sends a new follow-up');
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      await setup();
+      await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).click();
+      await page.evaluate(() => {
+        receipts = [receiptFor(0, 'follow_up_created')];
+        withdrawals[0].reject(Object.assign(new Error('conflict'), { status: 409 }));
+      });
+      await page.locator(`${host} [data-state="follow_up_created"]`).waitFor();
+      assert.equal(await page.locator(host).getByRole('button', { name: '核对并重试撤回' }).count(), 0);
+      await page.locator(host).getByRole('button', { name: '查看后续任务' }).click();
+      await page.waitForFunction(surface => surface === 'ai' ? AiPanel.getState().currentJobId === 'child' : CodexiaAgentView._internal.getState().selectedId === 'child', surface);
+      assert.deepEqual(await page.evaluate(() => controlRequests), [], 'conflict and viewing never cancel/resume child');
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      for (const change of ['job', 'account']) {
+        await setup(); await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).click();
+        await page.evaluate(({ surface, change, job }) => {
+          if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
+          else if (surface === 'ai') AiPanel.adoptJob({ ...job, id: 'new-job' });
+          else { CodexiaAgentView._internal.getState().selectedId = 'new-job'; CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [{ ...job, id: 'new-job' }] }); }
+        }, { surface, change, job });
+        await page.locator(input).fill('保留切换后的新草稿'); await finish();
+        assert.equal(await page.locator(input).inputValue(), '保留切换后的新草稿');
+        assert.equal(await page.locator(host).isHidden(), true, `withdrawal response isolation: ${surface}/${change}`);
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      await setup();
+      await page.evaluate(() => { receipts = [receiptFor(0, 'pending', { can_withdraw: false })]; }); await reconcile(page);
+      assert.equal(await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).count(), 0, 'updated capability removes action');
       if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
     }
 

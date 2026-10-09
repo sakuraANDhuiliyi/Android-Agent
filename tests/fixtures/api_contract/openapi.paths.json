@@ -65,6 +65,7 @@
     "GET /api/jobs/{job_id}/log",
     "GET /api/jobs/{job_id}/messages",
     "POST /api/jobs/{job_id}/messages",
+    "POST /api/jobs/{job_id}/messages/{message_id}/withdraw",
     "POST /api/jobs/{job_id}/pause",
     "POST /api/jobs/{job_id}/recover",
     "POST /api/jobs/{job_id}/resume",

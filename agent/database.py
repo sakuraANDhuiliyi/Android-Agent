@@ -295,6 +295,24 @@ class TaskStore:
                     task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
                     turn_id TEXT NOT NULL UNIQUE REFERENCES conversation_turns(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS task_message_withdrawals (
+                    message_id INTEGER PRIMARY KEY REFERENCES task_messages(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS prevent_withdrawn_followup_creation
+                BEFORE INSERT ON task_message_followups
+                WHEN EXISTS (SELECT 1 FROM task_message_withdrawals WHERE message_id=NEW.message_id)
+                BEGIN SELECT RAISE(ABORT, 'follow_up_withdrawn'); END;
+                CREATE TRIGGER IF NOT EXISTS prevent_delivered_followup_withdrawal
+                BEFORE INSERT ON task_message_withdrawals
+                WHEN EXISTS (SELECT 1 FROM task_message_followups WHERE message_id=NEW.message_id)
+                  OR NOT EXISTS (SELECT 1 FROM task_messages m JOIN tasks t ON t.id=m.task_id
+                      WHERE m.id=NEW.message_id AND m.type='follow_up' AND m.consumed_at IS NULL AND t.user_id=NEW.user_id)
+                BEGIN SELECT RAISE(ABORT, 'follow_up_not_withdrawable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_task_message_withdrawal
+                BEFORE UPDATE ON task_message_withdrawals
+                BEGIN SELECT RAISE(ABORT, 'immutable_message_withdrawal'); END;
                 CREATE TABLE IF NOT EXISTS task_dependencies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1591,7 +1609,8 @@ class TaskStore:
             return self._insert_task_message(conn, task_id, message_key, type, payload)
 
     def list_task_messages(self, task_id: str, *, include_consumed: bool = False) -> list[dict[str, Any]]:
-        clause = "" if include_consumed else " AND consumed_at IS NULL"
+        clause = "" if include_consumed else """ AND consumed_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=task_messages.id)"""
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM task_messages WHERE task_id=?" + clause + " ORDER BY id", (task_id,)).fetchall()
         return [self._row_to_message(row) for row in rows]
@@ -1601,7 +1620,8 @@ class TaskStore:
         task_id: str,
         types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM task_messages WHERE task_id=? AND consumed_at IS NULL"
+        query = """SELECT * FROM task_messages WHERE task_id=? AND consumed_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=task_messages.id)"""
         params: list[Any] = [task_id]
         if types:
             query += f" AND type IN ({','.join('?' for _ in types)})"
@@ -1615,7 +1635,8 @@ class TaskStore:
         now = time.time()
         with self._connect() as conn:
             cursor = conn.execute(
-                "UPDATE task_messages SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+                """UPDATE task_messages SET consumed_at=? WHERE id=? AND consumed_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=task_messages.id)""",
                 (now, message_id),
             )
         return cursor.rowcount > 0

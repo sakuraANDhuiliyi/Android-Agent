@@ -56,6 +56,7 @@ function startServer(handler) {
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         const parsed = body ? JSON.parse(body) : {};
+        record.rawBody = body;
         record.body = parsed;
         handler(req, res, parsed);
       });
@@ -139,6 +140,11 @@ async function run() {
   assert.strictEqual(requests.at(-1).body.message_key, "stable-follow-key");
   await api.jobMessages("j/1");
   assert.strictEqual(requests.at(-1).url, "/api/jobs/j%2F1/messages?include_consumed=true");
+  await api.withdrawJobMessage("j/1", 42);
+  assert.strictEqual(requests.at(-1).url, "/api/jobs/j%2F1/messages/42/withdraw");
+  assert.strictEqual(requests.at(-1).method, "POST");
+  assert.strictEqual(requests.at(-1).rawBody, "", "withdrawal has no request body");
+  for (const id of [0, -1, "42", 1.5, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => api.withdrawJobMessage("j1", id));
 
   await api.restoreCheckpoint("p1", "cp1", "app/src/Main.kt");
   const restoreReq = requests.find((r) => r.url.includes("/checkpoints/cp1/restore"));

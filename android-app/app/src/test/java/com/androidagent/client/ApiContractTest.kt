@@ -3,6 +3,8 @@ package com.androidagent.client
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.charset.StandardCharsets
@@ -71,6 +73,34 @@ class ApiContractTest {
         assertTrue(parsed.messages.filter { it.delivery == MessageDelivery.FOLLOW_UP_CREATED }.all { !it.followUpJobId.isNullOrBlank() && !it.followUpTurnId.isNullOrBlank() })
         assertTrue(parsed.messages.filter { it.delivery != MessageDelivery.FOLLOW_UP_CREATED }.all { it.followUpJobId == null && it.followUpTurnId == null })
         assertTrue(parsed.messages.filter { it.delivery != MessageDelivery.CONSUMED }.all { it.contextMessageId == null })
+        assertTrue(parsed.messages.single { it.delivery == MessageDelivery.BLOCKED }.canWithdraw)
+        val withdrawn = parsed.messages.single { it.delivery == MessageDelivery.WITHDRAWN }
+        assertFalse(withdrawn.canWithdraw)
+        assertNotNull(withdrawn.withdrawnAt)
+        assertNull(withdrawn.consumedAt)
+        assertNull(withdrawn.contextMessageId)
+        assertNull(withdrawn.followUpJobId)
+        assertNull(withdrawn.followUpTurnId)
+    }
+
+    @Test fun withdrawalFixtureUsesRealApiParserAndAnEmptyPostBody() {
+        val fixture = loadFixture("job_message_withdraw_200.json")
+        val expected = fixture.getJSONObject("message")
+        val jobId = fixture.getString("job_id")
+        val api = AgentApi("https://contract.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("POST", chain.request().method)
+            assertEquals("/api/jobs/$jobId/messages/${expected.getLong("id")}/withdraw", chain.request().url.encodedPath)
+            assertEquals(0L, chain.request().body!!.contentLength())
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Fixture")
+                .body(fixture.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        val parsed = api.withdrawJobMessage(jobId, expected.getLong("id"), expected.getString("message_key"))
+        assertEquals(MessageDelivery.WITHDRAWN, parsed.delivery)
+        assertEquals(1006.0, parsed.withdrawnAt!!, 0.0)
+        assertFalse(parsed.canWithdraw)
+        assertNull(parsed.consumedAt)
+        assertNull(parsed.followUpJobId)
+        assertNull(parsed.contextMessageId)
     }
 
     @Test fun repeatedPostFixtureUsesAuthoritativeApiAcknowledgement() {

@@ -17,7 +17,9 @@
       "context_message_id": null,
       "follow_up_job_id": null,
       "follow_up_turn_id": null,
-      "reason": "awaiting_safe_boundary"
+      "reason": "awaiting_safe_boundary",
+      "withdrawn_at": null,
+      "can_withdraw": false
     },
     {
       "schema_version": 1,
@@ -34,7 +36,9 @@
       "context_message_id": "steer:job-001:43",
       "follow_up_job_id": null,
       "follow_up_turn_id": null,
-      "reason": null
+      "reason": null,
+      "withdrawn_at": null,
+      "can_withdraw": false
     },
     {
       "schema_version": 1,
@@ -51,7 +55,9 @@
       "context_message_id": null,
       "follow_up_job_id": "job-002",
       "follow_up_turn_id": "turn-002",
-      "reason": null
+      "reason": null,
+      "withdrawn_at": null,
+      "can_withdraw": false
     },
     {
       "schema_version": 1,
@@ -68,7 +74,9 @@
       "context_message_id": null,
       "follow_up_job_id": null,
       "follow_up_turn_id": null,
-      "reason": "parent_failed"
+      "reason": "parent_failed",
+      "withdrawn_at": null,
+      "can_withdraw": true
     },
     {
       "schema_version": 1,
@@ -85,7 +93,9 @@
       "context_message_id": null,
       "follow_up_job_id": null,
       "follow_up_turn_id": null,
-      "reason": "turn_finished_before_consumption"
+      "reason": "turn_finished_before_consumption",
+      "withdrawn_at": null,
+      "can_withdraw": false
     },
     {
       "schema_version": 1,
@@ -102,7 +112,28 @@
       "context_message_id": null,
       "follow_up_job_id": null,
       "follow_up_turn_id": null,
-      "reason": "legacy_missing_receipt"
+      "reason": "legacy_missing_receipt",
+      "withdrawn_at": null,
+      "can_withdraw": false
+    },
+    {
+      "schema_version": 1,
+      "id": 48,
+      "task_id": "job-001",
+      "message_key": "client-msg-007",
+      "type": "follow_up",
+      "payload": {
+        "text": "This queued follow-up was withdrawn"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "delivery_state": "withdrawn",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": null,
+      "withdrawn_at": 1006.0,
+      "can_withdraw": false
     }
   ]
 }

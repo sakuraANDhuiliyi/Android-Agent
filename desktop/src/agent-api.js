@@ -249,6 +249,11 @@
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages?include_consumed=${includeConsumed ? "true" : "false"}`);
     }
 
+    withdrawJobMessage(jobId, messageId) {
+      if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("消息编号无效");
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages/${messageId}/withdraw`, { method: "POST" });
+    }
+
     steerJob(jobId, text, messageKey = null) {
       return this.sendJobMessage(jobId, "steer", { text }, messageKey);
     }

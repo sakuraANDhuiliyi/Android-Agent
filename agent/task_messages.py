@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from agent.conversation_events import ConversationEventStore
+from agent.database import TaskMessageConflict
 from agent.permissions import VALID_PROFILES
 from agent.project_lifecycle import project_operation
 from agent.task_settings import inherited_execution_context, model_selection, resolve_task_settings
@@ -49,7 +50,8 @@ def _follow_up_gate(conn, message, parent) -> tuple[str, str | None]:
     # Only dispatch the first outstanding instruction queued on this source task.
     # The previous child must have succeeded, not merely have been enqueued.
     prior = conn.execute("""SELECT m.* FROM task_messages m JOIN tasks t ON t.id=m.task_id
-        WHERE m.task_id=? AND m.type='follow_up' AND m.id<? ORDER BY m.id""",
+        WHERE m.task_id=? AND m.type='follow_up' AND m.id<?
+          AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=m.id) ORDER BY m.id""",
         (parent["id"], message["id"])).fetchall()
     for previous in prior:
         previous_parent = _parent(conn, previous["task_id"], parent["user_id"])
@@ -60,7 +62,9 @@ def _follow_up_gate(conn, message, parent) -> tuple[str, str | None]:
                 return "blocked", reason
             if child["status"] != "succeeded":
                 return "pending", "awaiting_dispatch"
-        elif previous["consumed_at"] is not None:
+        elif previous["consumed_at"] is not None or conn.execute(
+            "SELECT 1 FROM task_message_followups WHERE message_id=?", (previous['id'],)
+        ).fetchone():
             return "blocked", "legacy_missing_receipt"
         else:
             return ("blocked", _blocked(previous_parent)) if _blocked(previous_parent) else ("pending", "awaiting_dispatch")
@@ -71,7 +75,8 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
     from contextlib import nullcontext
     result = {key: message.get(key) for key in ("id", "task_id", "message_key", "type", "payload", "created_at", "consumed_at")}
     result.update(schema_version=1, delivery_state="unknown", context_message_id=None,
-                  follow_up_job_id=None, follow_up_turn_id=None, reason="legacy_missing_receipt")
+                  follow_up_job_id=None, follow_up_turn_id=None, reason="legacy_missing_receipt",
+                  withdrawn_at=None, can_withdraw=False)
     with nullcontext(_conn) if _conn is not None else store._connect() as conn:
         if _conn is None:
             conn.execute("BEGIN")
@@ -83,12 +88,18 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
         if parent is None:
             return result
         if message["type"] == "follow_up":
+            raw_link = conn.execute("SELECT 1 FROM task_message_followups WHERE message_id=?", (message['id'],)).fetchone()
+            withdrawal = conn.execute("SELECT * FROM task_message_withdrawals WHERE message_id=?", (message['id'],)).fetchone()
+            if withdrawal:
+                if not raw_link and message.get("consumed_at") is None and withdrawal['user_id'] == user_id:
+                    result.update(delivery_state="withdrawn", withdrawn_at=withdrawal['created_at'], reason=None)
+                return result
             child = _link(conn, message["id"], parent)
-            if child:
+            if child and message.get("consumed_at") is not None:
                 result.update(delivery_state="follow_up_created", follow_up_job_id=child["task_id"], follow_up_turn_id=child["turn_id"], reason=None)
-            elif message.get("consumed_at") is None:
+            elif not raw_link and message.get("consumed_at") is None:
                 state, reason = _follow_up_gate(conn, message, parent)
-                result.update(delivery_state=state, reason=reason)
+                result.update(delivery_state=state, reason=reason, can_withdraw=True)
         elif message["type"] == "steer":
             event = conn.execute("""SELECT e.payload_json FROM conversation_events e JOIN conversation_turns r ON r.id=e.turn_id
                 WHERE e.event_key=? AND r.task_id=? AND r.user_id=? AND e.role='user' AND e.context_visible=1""",
@@ -103,6 +114,27 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
                 else:
                     result.update(delivery_state="pending", reason="parent_paused" if parent["status"] == "paused" else "awaiting_safe_boundary")
     return result
+
+
+def withdraw_follow_up(store, task_id: str, message_id: int, user_id: str) -> dict | None:
+    """Persist one immutable withdrawal, serialized with child creation."""
+    if message_id <= 0 or message_id > 2**63 - 1:
+        return None
+    with store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("""SELECT m.* FROM task_messages m JOIN tasks t ON t.id=m.task_id
+            WHERE m.id=? AND m.task_id=? AND t.user_id=?""", (message_id, task_id, user_id)).fetchone()
+        if row is None:
+            return None
+        # Raw identity is authoritative even if a corrupt child cannot safely
+        # be projected into this user's receipt. Never undo an existing task.
+        raw_link = conn.execute("SELECT 1 FROM task_message_followups WHERE message_id=?", (message_id,)).fetchone()
+        if row['type'] != 'follow_up' or row['consumed_at'] is not None or raw_link:
+            raise TaskMessageConflict("追问已创建后续任务或缺少可靠关联，无法撤回")
+        if not conn.execute("SELECT 1 FROM task_message_withdrawals WHERE message_id=?", (message_id,)).fetchone():
+            conn.execute("INSERT INTO task_message_withdrawals(message_id,user_id,created_at) VALUES(?,?,?)",
+                         (message_id, user_id, time.time()))
+        return message_receipt(store, store._row_to_message(row), user_id, _conn=conn)
 
 
 def enqueue_follow_up(store, message_id: int, settings) -> str | None:
@@ -124,6 +156,8 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
         row = conn.execute("SELECT m.*,t.user_id FROM task_messages m JOIN tasks t ON t.id=m.task_id WHERE m.id=? AND m.type='follow_up'", (message_id,)).fetchone()
         if not row:
             return None
+        if conn.execute("SELECT 1 FROM task_message_withdrawals WHERE message_id=?", (message_id,)).fetchone():
+            return None
         parent = _parent(conn, row["task_id"], row["user_id"])
         if not conn.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=? AND project_id=?",
                             (parent["conversation_id"], parent["user_id"], parent["project_id"])).fetchone():
@@ -131,6 +165,8 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
         child = _link(conn, message_id, parent)
         if child:
             return child["task_id"]
+        if conn.execute("SELECT 1 FROM task_message_followups WHERE message_id=?", (message_id,)).fetchone():
+            return None
         if row["consumed_at"] is not None or parent["status"] != "succeeded" or _blocked(parent):
             return None
         state, reason = _follow_up_gate(conn, row, parent)
@@ -139,7 +175,8 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
         # A preceding pending or active follow-up returns the same display
         # reason; require all preceding instructions to have succeeded here.
         prior = conn.execute("""SELECT m.id FROM task_messages m JOIN tasks t ON t.id=m.task_id
-            WHERE m.task_id=? AND m.type='follow_up' AND m.id<?""",
+            WHERE m.task_id=? AND m.type='follow_up' AND m.id<?
+              AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=m.id)""",
             (parent["id"], message_id)).fetchall()
         if any(not (link := _link(conn, previous["id"], parent)) or link["status"] != "succeeded" or _blocked(link) for previous in prior):
             return None
@@ -180,9 +217,12 @@ def dispatch_follow_ups(store, settings, *, task_id: str | None = None) -> None:
         clause = " AND m.task_id=?" if task_id else ""
         rows = conn.execute("""SELECT m.id FROM task_messages m JOIN tasks t ON t.id=m.task_id
             WHERE m.type='follow_up' AND m.consumed_at IS NULL AND t.status='succeeded' AND t.cancel_requested=0
+            AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=m.id)
+            AND NOT EXISTS (SELECT 1 FROM task_message_followups f WHERE f.message_id=m.id)
             AND NOT EXISTS (SELECT 1 FROM task_messages earlier
                 LEFT JOIN task_message_followups f ON f.message_id=earlier.id LEFT JOIN tasks child ON child.id=f.task_id
                 WHERE earlier.task_id=m.task_id AND earlier.type='follow_up' AND earlier.id<m.id
+                AND NOT EXISTS (SELECT 1 FROM task_message_withdrawals w WHERE w.message_id=earlier.id)
                 AND (f.message_id IS NULL OR child.status!='succeeded' OR child.cancel_requested=1))""" + clause + " ORDER BY m.id LIMIT 100",
             (task_id,) if task_id else ()).fetchall()
     for row in rows:

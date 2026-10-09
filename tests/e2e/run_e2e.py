@@ -385,6 +385,137 @@ class E2ERunner:
         listing.raise_for_status()
         context.check([row["id"] for row in listing.json()["jobs"]] == [job_id], "blocked follow-up was dispatched")
 
+    def withdraw_receipt(self, context: ScenarioContext, message_id: int) -> dict[str, Any]:
+        response = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{message_id}/withdraw")
+        context.check(response.status_code == 200, f"withdraw status={response.status_code}: {response.text}")
+        data = response.json()
+        context.check(data.get("schema_version") == 1 and data.get("job_id") == context.job["id"], "wrong withdrawal envelope")
+        row = data["message"]
+        context.check(row["id"] == message_id and row["delivery_state"] == "withdrawn"
+                      and row.get("can_withdraw") is False and (row.get("withdrawn_at") or 0) >= row["created_at"],
+                      "withdrawal lacks authoritative identity/time")
+        context.check(all(row.get(key) is None for key in ("consumed_at", "context_message_id", "follow_up_job_id", "follow_up_turn_id")),
+                      "withdrawn message has execution evidence")
+        return row
+
+    def driver_withdraw_queue(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        source = self.send_prompt(context)
+        source_id = source["id"]
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not context.workspace_file("app/src/test/message-order.txt"):
+            time.sleep(0.05)
+        context.check(bool(context.workspace_file("app/src/test/message-order.txt")), "source command did not start")
+        context.client.pause_job(source_id)
+        context.job = context.client.wait_job(source_id, until={"paused"})
+        bodies = [{"message_key": f"withdraw-{label}", "type": "follow_up",
+                   "payload": {"text": f"[[{context.scenario['id']}]] follow-up {label}"}} for label in ("A", "B", "C")]
+        rows = []
+        for body in bodies:
+            response = context.client.http.post(f"/api/jobs/{source_id}/messages", json=body)
+            context.check(response.status_code == 201, "could not queue instruction on paused source")
+            row = response.json()["message"]
+            context.check(row.get("can_withdraw") is True, "pending follow-up is not withdrawable")
+            rows.append(row)
+        index = context.scenario["withdraw_index"]
+        target = rows[index]
+        stranger = E2EClient(self.stack)
+        try:
+            stranger.register_account()
+            denied = stranger.http.post(f"/api/jobs/{source_id}/messages/{target['id']}/withdraw")
+            context.check(denied.status_code == 404, "cross-account withdrawal disclosed or changed message")
+        finally:
+            stranger.close()
+        wrong = context.client.http.post(f"/api/jobs/missing-source/messages/{target['id']}/withdraw")
+        context.check(wrong.status_code == 404, "withdrawal ignored source task binding")
+        # Drop the first acknowledgement at the caller, then replay concurrently.
+        first = self.withdraw_receipt(context, target["id"])
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            retries = list(pool.map(lambda _: self.withdraw_receipt(context, target["id"]), range(3)))
+        context.check(all(row["withdrawn_at"] == first["withdrawn_at"] for row in retries), "duplicate withdrawal changed its receipt")
+        self.stack.restart_idle_agent()
+        restarted = self.withdraw_receipt(context, target["id"])
+        context.check(restarted["withdrawn_at"] == first["withdrawn_at"], "restart lost withdrawal evidence")
+        pending = context.client.http.get(f"/api/jobs/{source_id}/messages")
+        pending.raise_for_status()
+        context.check(target["id"] not in {row["id"] for row in pending.json()["messages"]}, "withdrawn message remains dispatchable")
+        context.client.resume_job(source_id)
+        context.job = context.client.wait_job(source_id)
+        self.wait_terminal_events(context)
+        deadline = time.monotonic() + 45
+        latest = []
+        while time.monotonic() < deadline:
+            latest = self.message_receipts(context)
+            for row in latest:
+                if row.get("follow_up_job_id"):
+                    self.pump.watch(row["follow_up_job_id"])
+            if len(latest) == 3 and sum(row["delivery_state"] == "follow_up_created" for row in latest) == 2:
+                break
+            time.sleep(0.1)
+        context.check(len(latest) == 3 and latest[index]["delivery_state"] == "withdrawn", "withdrawal disappeared from complete history")
+        survivors = [row for row in latest if row["delivery_state"] == "follow_up_created"]
+        context.check(len(survivors) == 2, f"wrong surviving queue: {latest}")
+        children = [context.client.wait_job(row["follow_up_job_id"]) for row in survivors]
+        expected_bodies = [body for i, body in enumerate(bodies) if i != index]
+        context.check(all(child["status"] == "succeeded" and child["prompt"] == body["payload"]["text"]
+                          for child, body in zip(children, expected_bodies)), "wrong follow-up executed")
+        context.check(children[1]["created_at"] >= children[0]["finished_at"], "withdrawal broke surviving FIFO order")
+        retried = context.client.http.post(f"/api/jobs/{source_id}/messages", json=bodies[index])
+        context.check(retried.status_code == 200 and retried.json()["message"]["delivery_state"] == "withdrawn"
+                      and retried.json()["message"]["withdrawn_at"] == first["withdrawn_at"], "original send retry revived withdrawn message")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check({row["id"] for row in listing.json()["jobs"]} == {source_id, *(child["id"] for child in children)},
+                      "withdrawn queue item created an extra task")
+
+    def driver_withdraw_created(self, context: ScenarioContext) -> None:
+        source = self.send_prompt(context)
+        source_id = source["id"]
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_call")
+        body = {"message_key": "already-dispatched", "type": "follow_up",
+                "payload": {"text": f"[[{context.scenario['id']}]] child needs separate approval"}}
+        sent = context.client.http.post(f"/api/jobs/{source_id}/messages", json=body)
+        context.check(sent.status_code == 201, "could not queue child")
+        context.job = context.client.wait_job(source_id)
+        self.wait_terminal_events(context)
+        deadline = time.monotonic() + 20
+        child_id = None
+        while time.monotonic() < deadline:
+            rows = self.message_receipts(context)
+            if rows and rows[0].get("follow_up_job_id"):
+                child_id = rows[0]["follow_up_job_id"]
+                break
+            time.sleep(0.1)
+        context.check(bool(child_id), "follow-up dispatcher did not create child")
+        approval = context.client.wait_approval(child_id)
+        before = context.client.get_job(child_id)
+        message_id = sent.json()["message"]["id"]
+        refused = context.client.http.post(f"/api/jobs/{source_id}/messages/{message_id}/withdraw")
+        context.check(refused.status_code == 409, "withdrawal pretended to remove an already-created child")
+        after = context.client.get_job(child_id)
+        context.check((after["status"], after.get("cancel_requested")) == (before["status"], before.get("cancel_requested")),
+                      "withdrawal modified child execution state")
+        context.check(approval["id"] in {row["id"] for row in context.client.pending_approvals(child_id)}, "withdrawal resolved child approval")
+        row = self.message_receipts(context)[0]
+        context.check(row["delivery_state"] == "follow_up_created" and row["follow_up_job_id"] == child_id
+                      and row.get("can_withdraw") is False and row.get("withdrawn_at") is None, "created-child receipt regressed")
+        self.pump.watch(child_id)
+        child = context.client.wait_job(child_id)
+        context.check(child["status"] == "succeeded", "explicitly approved child no longer runs")
+
+    def driver_withdraw_blocked(self, context: ScenarioContext) -> None:
+        self.driver_blocked_followup(context)
+        row = self.message_receipts(context)[0]
+        context.check(row.get("can_withdraw") is True, "unexecuted blocked message cannot be withdrawn")
+        receipt = self.withdraw_receipt(context, row["id"])
+        self.stack.restart_idle_agent()
+        repeated = self.withdraw_receipt(context, row["id"])
+        context.check(repeated["withdrawn_at"] == receipt["withdrawn_at"], "blocked withdrawal was not durable")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check([job["id"] for job in listing.json()["jobs"]] == [context.job["id"]], "withdrawal executed blocked work")
+
     def driver_approval(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])

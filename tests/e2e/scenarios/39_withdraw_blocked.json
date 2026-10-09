@@ -1,0 +1,29 @@
+{
+  "id": "39_withdraw_blocked",
+  "title": "已停止父任务的未执行追问可撤回且重启不复活",
+  "driver": "withdraw_blocked",
+  "prompt": "执行任务以验证追问阻塞状态",
+  "parent_end": "cancel",
+  "blocked_reason": "parent_canceled",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import time; p=Path(\"app/src/test/followup-started.txt\"); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(\"started\"); time.sleep(6); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "步骤结束。"
+    }
+  ]
+}

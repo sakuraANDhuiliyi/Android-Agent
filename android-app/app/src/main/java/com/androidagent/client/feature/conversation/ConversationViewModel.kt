@@ -14,6 +14,7 @@ import com.androidagent.client.JobInfo
 import com.androidagent.client.JobMessageReceipt
 import com.androidagent.client.MessageDelivery
 import com.androidagent.client.PendingJobMessage
+import com.androidagent.client.PendingMessageWithdrawal
 import com.androidagent.client.SubmittedComposer
 import com.androidagent.client.R
 import com.androidagent.client.TaskRepository
@@ -58,6 +59,9 @@ data class ConversationUiState(
     val pendingMessage: PendingJobMessage? = null,
     val messageNotice: String? = null,
     val refreshingMessages: Boolean = false,
+    val pendingWithdrawal: PendingMessageWithdrawal? = null,
+    val withdrawing: Boolean = false,
+    val withdrawalNotice: String? = null,
 ) {
     enum class Source { NONE, CACHE, FRESH }
 }
@@ -79,6 +83,8 @@ class ConversationViewModel(
     private val readPendingMessage: (String) -> PendingJobMessage? = { null },
     private val writePendingMessage: (String, PendingJobMessage?) -> Unit = { _, _ -> },
     private val receiptPollIntervalMs: Long = 2500L,
+    private val readPendingWithdrawal: (String) -> PendingMessageWithdrawal? = { null },
+    private val writePendingWithdrawal: (String, PendingMessageWithdrawal?) -> Unit = { _, _ -> },
 ) : ViewModel() {
 
     var store = TimelineStore()
@@ -110,6 +116,8 @@ class ConversationViewModel(
     private var receiptRefreshJob: Job? = null
     private var receiptPollJob: Job? = null
     private var receiptPollBudget = 0
+    private var withdrawalRequest = 0L
+    private var withdrawalJob: Job? = null
     private val submittingApprovals = HashSet<String>()
     private val refreshingApprovals = HashSet<String>()
 
@@ -209,17 +217,19 @@ class ConversationViewModel(
             val preferred = _state.value.jobId ?: session.selectedJobId
             val active = jobs.firstOrNull { it.id == preferred &&
                 (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null ||
-                    _state.value.pendingMessage != null || _state.value.messageReceipts.isNotEmpty()) }
+                    _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null || _state.value.messageReceipts.isNotEmpty()) }
                 ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
                 ?: jobs.firstOrNull()
             when {
                 active == null -> {
                     ++bindingGeneration
                     ++messageRequest
+                    ++withdrawalRequest
                     stopReceiptRefresh()
                     watcher?.stop()
                     watcher = null
-                    updateState { it.copy(job = null, jobId = null, messageReceipts = emptyList(), pendingMessage = null, messageNotice = null, sending = false) }
+                    updateState { it.copy(job = null, jobId = null, messageReceipts = emptyList(), pendingMessage = null, messageNotice = null, sending = false,
+                        pendingWithdrawal = null, withdrawing = false, withdrawalNotice = null) }
                     bumpTimeline()
                 }
                 active.id == _state.value.jobId && watcher != null -> applyJob(active)
@@ -280,13 +290,18 @@ class ConversationViewModel(
         flushPendingTaskEvents()
         val generation = ++bindingGeneration
         ++messageRequest
+        ++withdrawalRequest
         stopReceiptRefresh()
         val pending = readPendingMessage(jobId)?.takeIf {
             it.jobId == jobId && it.projectId == projectId && it.conversationId == conversationId
         }
+        val withdrawal = readPendingWithdrawal(jobId)?.takeIf {
+            it.jobId == jobId && it.projectId == projectId && it.conversationId == conversationId
+        }
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
         updateState { it.copy(jobId = jobId, job = initialJob, sending = false, messageReceipts = emptyList(),
-            pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false) }
+            pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false,
+            pendingWithdrawal = withdrawal, withdrawing = false, withdrawalNotice = withdrawal?.let { "上次撤回结果待确认，请核对后重试" }) }
         rememberSelectedJob(jobId)
         watcher?.stop()
         val cursor = if (resume) session.eventCursor(jobId) else 0L
@@ -451,7 +466,7 @@ class ConversationViewModel(
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
         val original = current.job ?: return
-        if (current.recovering || current.sending || !belongsToConversation(original)) return
+        if (current.recovering || current.sending || current.withdrawing || !belongsToConversation(original)) return
         val existingId = original.recoveryJobId
         if (existingId == null && (!original.canRecover || original.status !in setOf("failed", "interrupted"))) return
         val generation = bindingGeneration
@@ -507,6 +522,7 @@ class ConversationViewModel(
         foreground = value
         if (value) {
             if (messageSubmissionJob?.isActive != true && _state.value.pendingMessage != null) updateState { it.copy(sending = false) }
+            if (withdrawalJob?.isActive != true && _state.value.pendingWithdrawal != null) updateState { it.copy(withdrawing = false) }
             refreshMessageReceipts()
         } else stopReceiptRefresh()
     }
@@ -522,7 +538,7 @@ class ConversationViewModel(
     }
 
     fun refreshMessageReceipts(restartWindow: Boolean = true) {
-        if (!foreground || !hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        if (!foreground || !hasCurrentSession() || session.guestMode || _state.value.withdrawing || !isSelectedConversation(projectId, conversationId)) return
         val jobId = _state.value.jobId ?: return
         if (restartWindow) receiptPollBudget = 24
         if (receiptRefreshJob?.isActive == true) return
@@ -535,6 +551,7 @@ class ConversationViewModel(
                 if (!foreground || request != receiptRequest || !isBoundJob(jobId, generation) ||
                     !isSelectedConversation(projectId, conversationId)) return@launch
                 updateState { it.copy(messageReceipts = page.messages, messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新") }
+                reconcileWithdrawal(page.messages)
                 val pending = _state.value.pendingMessage
                 if (pending != null && page.messages.any(pending::matches)) acknowledgeMessage(pending)
             } catch (cancelled: CancellationException) {
@@ -569,7 +586,7 @@ class ConversationViewModel(
         }
     }
 
-    private fun hasUnresolvedMessages(): Boolean = _state.value.pendingMessage != null ||
+    private fun hasUnresolvedMessages(): Boolean = _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null ||
         _state.value.messageReceipts.any { it.delivery == MessageDelivery.PENDING }
 
     private fun acknowledgeMessage(pending: PendingJobMessage) {
@@ -583,14 +600,14 @@ class ConversationViewModel(
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
         val pending = current.pendingMessage ?: return
-        if (current.sending || current.recovering || pending.jobId != current.jobId) return
+        if (current.sending || current.recovering || current.withdrawing || pending.jobId != current.jobId) return
         submitMessage(pending, reconcileFirst = true)
     }
 
     fun openFollowUpMessage(messageKey: String) {
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
-        if (current.sending || current.recovering) return
+        if (current.sending || current.recovering || current.withdrawing) return
         val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.delivery == MessageDelivery.FOLLOW_UP_CREATED } ?: return
         val childId = receipt.followUpJobId ?: return
         val generation = bindingGeneration
@@ -619,11 +636,117 @@ class ConversationViewModel(
         }
     }
 
+    fun withdrawMessage(messageKey: String) {
+        if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        if (current.withdrawing || current.sending || current.recovering || current.pendingMessage != null || current.pendingWithdrawal != null) return
+        val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.jobId == current.jobId && it.canWithdraw } ?: return
+        val pending = PendingMessageWithdrawal(projectId, conversationId, receipt.jobId, receipt.id, receipt.key)
+        try { writePendingWithdrawal(receipt.jobId, pending) } catch (e: Exception) { emitSignal(errorSignal(e)); return }
+        updateState { it.copy(pendingWithdrawal = pending) }
+        submitWithdrawal(pending, reconcileFirst = false)
+    }
+
+    fun retryWithdrawal() {
+        if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val pending = current.pendingWithdrawal ?: return
+        if (current.withdrawing || current.sending || current.recovering || pending.jobId != current.jobId) return
+        submitWithdrawal(pending, reconcileFirst = true)
+    }
+
+    private fun reconcileWithdrawal(receipts: List<JobMessageReceipt>) {
+        val pending = _state.value.pendingWithdrawal ?: return
+        val receipt = receipts.firstOrNull(pending::matches) ?: return
+        when (receipt.delivery) {
+            MessageDelivery.WITHDRAWN -> finishWithdrawal(pending, "追问已撤回")
+            MessageDelivery.FOLLOW_UP_CREATED -> finishWithdrawal(pending, "后续任务已创建，无法撤回；可查看后续任务")
+            else -> Unit
+        }
+    }
+
+    private fun finishWithdrawal(pending: PendingMessageWithdrawal, notice: String) {
+        if (_state.value.pendingWithdrawal != pending) return
+        writePendingWithdrawal(pending.jobId, null)
+        updateState { it.copy(pendingWithdrawal = null, withdrawalNotice = notice) }
+        // Withdrawal never edits the composer or emits a send acknowledgement.
+    }
+
+    private fun revokeWithdrawalCapability(pending: PendingMessageWithdrawal) {
+        updateState { state -> state.copy(messageReceipts = state.messageReceipts.map { receipt ->
+            if (pending.matches(receipt)) receipt.copy(canWithdraw = false) else receipt
+        }) }
+    }
+
+    private fun isWithdrawalRequest(pending: PendingMessageWithdrawal, generation: Long, request: Long): Boolean =
+        request == withdrawalRequest && isBoundJob(pending.jobId, generation) && isSelectedConversation(projectId, conversationId)
+
+    private fun submitWithdrawal(pending: PendingMessageWithdrawal, reconcileFirst: Boolean) {
+        val generation = bindingGeneration
+        val request = ++withdrawalRequest
+        stopReceiptRefresh() // A pre-withdrawal GET must not restore a stale actionable receipt.
+        updateState { it.copy(withdrawing = true, withdrawalNotice = if (reconcileFirst) "正在核对撤回结果…" else "正在撤回追问…") }
+        withdrawalJob = viewModelScope.launch {
+            try {
+                if (reconcileFirst) {
+                    val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(pending.jobId) }
+                    if (!isWithdrawalRequest(pending, generation, request)) return@launch
+                    check(page.supported) { "服务端缺少可靠回执，无法安全重试撤回" }
+                    check(page.messages.any(pending::matches)) { "原消息身份尚未核实，请刷新后重试" }
+                    updateState { it.copy(messageReceipts = page.messages) }
+                    reconcileWithdrawal(page.messages)
+                    if (_state.value.pendingWithdrawal == null) return@launch
+                    check(page.messages.first(pending::matches).canWithdraw) { "当前回执不允许撤回，请刷新核对" }
+                }
+                val receipt = withContext(Dispatchers.IO) {
+                    repository.requireCurrentSession()
+                    api.withdrawJobMessage(pending.jobId, pending.messageId, pending.messageKey)
+                }
+                if (!isWithdrawalRequest(pending, generation, request)) return@launch
+                updateState { it.copy(messageReceipts = (it.messageReceipts.filterNot { old -> old.key == receipt.key } + receipt).sortedBy { row -> row.id }) }
+                finishWithdrawal(pending, "追问已撤回")
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
+            } catch (e: Exception) {
+                if (isWithdrawalRequest(pending, generation, request) && _state.value.pendingWithdrawal == pending) {
+                    when {
+                        e is ApiException && e.isConflict -> {
+                            revokeWithdrawalCapability(pending)
+                            finishWithdrawal(pending, "无法撤回：追问已执行或缺少可撤回证据，正在核对最新回执")
+                            try {
+                                val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(pending.jobId) }
+                                if (!isWithdrawalRequest(pending, generation, request)) return@launch
+                                updateState { it.copy(messageReceipts = page.messages, withdrawalNotice =
+                                    if (page.messages.any { row -> pending.matches(row) && row.delivery == MessageDelivery.FOLLOW_UP_CREATED })
+                                        "后续任务已创建，无法撤回；可查看后续任务" else "无法撤回，请查看最新回执") }
+                            } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+                            } catch (_: Exception) {
+                                if (isWithdrawalRequest(pending, generation, request)) updateState { it.copy(withdrawalNotice = "服务端拒绝撤回；最新回执暂不可用，请刷新核对") }
+                            }
+                        }
+                        e is ApiException && e.code in setOf(400, 401, 403, 404, 422) -> {
+                            revokeWithdrawalCapability(pending)
+                            finishWithdrawal(pending, "撤回未被接收，请检查消息权限并刷新回执")
+                        }
+                        else -> updateState { it.copy(withdrawalNotice = "撤回结果待确认，请核对后重试；不会自动重发") }
+                    }
+                }
+            } finally {
+                if (isWithdrawalRequest(pending, generation, request)) {
+                    updateState { it.copy(withdrawing = false) }
+                    receiptPollBudget = 24
+                    startReceiptPolling()
+                }
+            }
+        }
+    }
+
     // ---------- 发送 ----------
 
     fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
-            _state.value.sending || _state.value.recovering) return
+            _state.value.sending || _state.value.recovering || _state.value.withdrawing) return
         val text = prompt.trim()
         if (text.isBlank()) return
         if (_state.value.pendingMessage != null) {
@@ -865,6 +988,7 @@ class ConversationViewModel(
         bindingGeneration++
         recoveryRequest++
         messageRequest++
+        withdrawalRequest++
         // Do not call the session-checking helper while invalidating the session itself.
         receiptRequest++
         receiptRefreshJob?.cancel()
@@ -958,6 +1082,8 @@ class ConversationViewModel(
                 },
                 readPendingMessage = { prefs.pendingJobMessage(receiptSession, it) },
                 writePendingMessage = { job, pending -> prefs.setPendingJobMessage(receiptSession, job, pending) },
+                readPendingWithdrawal = { prefs.pendingMessageWithdrawal(receiptSession, it) },
+                writePendingWithdrawal = { job, pending -> prefs.setPendingMessageWithdrawal(receiptSession, job, pending) },
             ) as T
             }
         }

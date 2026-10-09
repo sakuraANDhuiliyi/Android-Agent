@@ -3,15 +3,15 @@
 
   const STORAGE_KEY = "android-agent-message-outbox-v1";
   const TYPES = new Set(["steer", "follow_up"]);
-  const STATES = new Set(["pending", "consumed", "follow_up_created", "unapplied", "blocked", "unknown"]);
-  const LABELS = { sending: "发送中…", unconfirmed: "送达结果未确认", rejected: "发送未被接受", pending: "已接收，等待处理", consumed: "已加入本轮上下文", follow_up_created: "后续任务已创建", unapplied: "本轮结束前未加入上下文", blocked: "后续任务未创建", unknown: "回执状态未知" };
+  const STATES = new Set(["pending", "consumed", "follow_up_created", "unapplied", "blocked", "withdrawn", "unknown"]);
+  const LABELS = { sending: "发送中…", unconfirmed: "送达结果未确认", rejected: "发送未被接受", pending: "已接收，等待处理", consumed: "已加入本轮上下文", follow_up_created: "后续任务已创建", unapplied: "本轮结束前未加入上下文", blocked: "后续任务未创建", withdrawn: "追问已撤回", unknown: "回执状态未知" };
   const REASONS = { awaiting_safe_boundary: "等待下一个安全边界", awaiting_parent_completion: "等待本轮完成", awaiting_dispatch: "等待创建后续任务", parent_paused: "前序任务已暂停", parent_failed: "前序任务失败", parent_canceled: "前序任务已取消", parent_interrupted: "前序任务中断", turn_finished_before_consumption: "本轮已结束", legacy_missing_receipt: "旧记录缺少关联回执" };
   const stamp = value => typeof value === "number" && Number.isFinite(value) && value > 0;
   const nonempty = value => typeof value === "string" && Boolean(value.trim());
   const keyFor = scope => JSON.stringify([scope.server, scope.user, scope.project, scope.conversation, scope.job]);
   const bodyText = payload => typeof payload?.text === "string" ? payload.text : typeof payload?.prompt === "string" ? payload.prompt : typeof payload?.content === "string" ? payload.content : "";
   const sameBody = (a, b) => a.type === b.type && JSON.stringify(a.payload) === JSON.stringify(b.payload);
-  const settled = state => ["consumed", "follow_up_created", "unapplied", "blocked"].includes(state);
+  const settled = state => ["consumed", "follow_up_created", "unapplied", "blocked", "withdrawn"].includes(state);
 
   function normalize(raw, scope) {
     if (raw?.schema_version !== 1 || raw.task_id !== scope.job || !Number.isSafeInteger(raw.id) || raw.id <= 0
@@ -25,7 +25,11 @@
     if (state === "consumed" && (raw.type !== "steer" || !stamp(raw.consumed_at) || !nonempty(raw.context_message_id) || hasChild)) state = "unknown";
     if (state === "follow_up_created" && (raw.type !== "follow_up" || !stamp(raw.consumed_at)
         || !nonempty(raw.follow_up_job_id) || raw.follow_up_job_id === scope.job || !nonempty(raw.follow_up_turn_id) || hasContext)) state = "unknown";
+    if (state === "withdrawn" && (raw.type !== "follow_up" || raw.consumed_at != null || hasContext || hasChild
+        || !stamp(raw.withdrawn_at) || raw.can_withdraw !== false)) state = "unknown";
+    if (state !== "withdrawn" && raw.withdrawn_at != null) state = "unknown";
     return { ...raw, delivery_state: state, phase: "received", retryable: false,
+      can_withdraw: raw.can_withdraw === true && raw.type === "follow_up" && ["pending", "blocked"].includes(state),
       reason: Object.hasOwn(REASONS, raw.reason) ? raw.reason : null };
   }
 
@@ -39,10 +43,20 @@
         for (const item of Array.isArray(saved) ? saved.slice(0, 100) : []) {
           const s = item.scope;
           if (!s || ![s.server, s.user, s.project, s.conversation, s.job].every(nonempty)
-              || !nonempty(item.message_key) || !TYPES.has(item.type) || !nonempty(item.payload?.text)
-              || item.payload.text.length > 24000 || !stamp(item.created_at)) continue;
-          const record = { scope: s, message_key: item.message_key, type: item.type, payload: { text: item.payload.text },
-            created_at: item.created_at, phase: "unconfirmed", retryable: true };
+              || !nonempty(item.message_key) || !TYPES.has(item.type) || !nonempty(bodyText(item.payload))
+              || bodyText(item.payload).length > 24000 || !stamp(item.created_at)) continue;
+          let record;
+          if (item.kind === "withdraw") {
+            if (item.type !== "follow_up" || !Number.isSafeInteger(item.id) || item.id <= 0) continue;
+            // Cached intent is not proof of current withdrawal eligibility.
+            record = { scope: s, id: item.id, message_key: item.message_key, type: item.type,
+              payload: { text: bodyText(item.payload) }, created_at: item.created_at, phase: "received", retryable: false,
+              delivery_state: "unknown", can_withdraw: false, withdrawPhase: "unconfirmed" };
+          } else {
+            if (item.kind != null || !nonempty(item.payload?.text)) continue;
+            record = { scope: s, message_key: item.message_key, type: item.type, payload: { text: item.payload.text },
+              created_at: item.created_at, phase: "unconfirmed", retryable: true };
+          }
           this.bucket(s).set(record.message_key, record);
         }
       } catch (_) { /* Corrupt or disabled storage never causes a resend. */ }
@@ -68,8 +82,9 @@
     subscribe(callback) { this.listeners.add(callback); return () => this.listeners.delete(callback); }
     emit() { this.save(); for (const listener of this.listeners) listener(); }
     save() {
-      const pending = [...this.records.values()].flatMap(map => [...map.values()]).filter(row => row.phase !== "received" && row.retryable);
+      const pending = [...this.records.values()].flatMap(map => [...map.values()]).filter(row => row.phase !== "received" && row.retryable || row.withdrawPhase);
       const rows = pending.map(row => ({ scope: { server: row.scope.server, user: row.scope.user, project: row.scope.project, conversation: row.scope.conversation, job: row.scope.job },
+        ...(row.withdrawPhase ? { kind: "withdraw", id: row.id } : {}),
         message_key: row.message_key, type: row.type, payload: row.payload, created_at: row.created_at }));
       try { this.storage?.setItem(STORAGE_KEY, JSON.stringify(rows)); this.persistenceError = false; }
       catch (_) { this.persistenceError = true; }
@@ -77,12 +92,13 @@
     create(scope, type, text) {
       if (!this.current(scope) || !TYPES.has(type) || !nonempty(text)) throw new Error("请连接并选择当前任务");
       if (text.length > 24000) throw new Error("追加消息不能超过 24000 字符");
-      const pending = [...this.records.values()].reduce((n, map) => n + [...map.values()].filter(row => row.retryable).length, 0);
+      const pending = this.pendingCount();
       if (pending >= 100) throw new Error("待确认消息已达上限，请先核对或移除旧消息");
       const row = { scope: { ...scope }, message_key: this.uuid(), type, payload: { text }, created_at: Date.now() / 1000,
         phase: "unconfirmed", retryable: true };
       this.bucket(scope).set(row.message_key, row); this.emit(); return row;
     }
+    pendingCount() { return [...this.records.values()].reduce((n, map) => n + [...map.values()].filter(row => row.retryable || row.withdrawPhase).length, 0); }
     merge(scope, raw, acknowledged = false) {
       const next = normalize(raw, scope);
       if (!next) return false;
@@ -93,8 +109,15 @@
       if (prior && prior.phase !== "received" && !acknowledged && !sameBody(prior, next)) return false;
       if (prior?.phase === "received" && prior.id !== next.id) return false;
       if (prior?.phase === "received" && (settled(prior.delivery_state) && next.delivery_state !== prior.delivery_state
-          || prior.delivery_state !== "unknown" && next.delivery_state === "unknown")) return true;
-      this.bucket(scope).set(next.message_key, { ...next, scope: { ...scope } }); return true;
+          && !(prior.delivery_state === "blocked" && next.delivery_state === "withdrawn")
+          || prior.delivery_state !== "unknown" && next.delivery_state === "unknown")) {
+        // Even a degraded receipt can revoke a previously offered capability.
+        prior.can_withdraw = prior.can_withdraw && next.can_withdraw;
+        return true;
+      }
+      const withdrawal = prior?.withdrawPhase && !["withdrawn", "follow_up_created"].includes(next.delivery_state)
+        ? { withdrawPhase: prior.withdrawPhase, withdrawError: prior.withdrawError, withdrawRequestId: prior.withdrawRequestId } : {};
+      this.bucket(scope).set(next.message_key, { ...next, ...withdrawal, scope: { ...scope } }); return true;
     }
     envelope(data, scope) { return data?.schema_version === 1 && data.job_id === scope.job; }
     submit(scope, messageKey) {
@@ -129,6 +152,57 @@
       if (!this.current(scope)) return false;
       return this.submit(scope, messageKey);
     }
+    withdraw(scope, messageKey) {
+      if (!this.current(scope)) return Promise.resolve(false);
+      const row = this.bucket(scope).get(messageKey);
+      const id = `withdraw:${scope.session}:${keyFor(scope)}:${row?.id}`;
+      if (this.requests.has(id)) return this.requests.get(id);
+      if (!row || row.phase !== "received" || !row.can_withdraw || !Number.isSafeInteger(row.id) || row.id <= 0) return Promise.resolve(false);
+      if (!row.withdrawPhase && this.pendingCount() >= 100) return Promise.reject(new Error("待确认操作已达上限，请先核对旧记录"));
+      Object.assign(row, { withdrawPhase: "sending", withdrawError: null, withdrawRequestId: id }); this.emit();
+      const request = this.client.withdrawJobMessage(scope.job, row.id).then(data => {
+        if (!this.current(scope)) return false;
+        const receipt = normalize(data?.message, scope);
+        if (!this.envelope(data, scope) || receipt?.id !== row.id || receipt.message_key !== messageKey
+            || receipt.delivery_state !== "withdrawn" || !this.merge(scope, receipt, true)) {
+          throw new Error("服务器回执无法确认撤回结果");
+        }
+        return true;
+      }).catch(async error => {
+        if (!this.current(scope)) return false;
+        let current = this.bucket(scope).get(messageKey);
+        if (current?.delivery_state === "withdrawn") return true;
+        if (current?.id !== row.id || !current.withdrawPhase) return false;
+        current.withdrawPhase = "unconfirmed";
+        current.withdrawError = error.status === 409 ? "撤回未获确认，正在核对最新回执" : String(error.message || "连接中断");
+        if ([400, 403, 404, 422].includes(error.status)) {
+          delete current.withdrawPhase; current.can_withdraw = false; current.withdrawError = "撤回未被接受，请刷新任务后核对";
+        }
+        this.emit();
+        // Conflict may mean a child was created. Only GET may update the UI;
+        // never infer child identity from an error or cancel/resume that child.
+        if (error.status === 409) await this.reconcile(scope);
+        return false;
+      }).finally(() => {
+        this.requests.delete(id);
+        const current = this.bucket(scope).get(messageKey);
+        if (current?.id === row.id && current.withdrawRequestId === id) {
+          if (current.withdrawPhase === "sending") current.withdrawPhase = "unconfirmed";
+          delete current.withdrawRequestId;
+        }
+        this.emit();
+      });
+      this.requests.set(id, request); return request;
+    }
+    async retryWithdrawal(scope, messageKey) {
+      if (!await this.reconcile(scope) || !this.current(scope)) return false;
+      const row = this.bucket(scope).get(messageKey);
+      if (row?.delivery_state === "withdrawn") return true;
+      if (row?.withdrawPhase && !row.can_withdraw) {
+        row.withdrawError = "服务器当前未确认可撤回，请稍后核对"; this.emit(); return false;
+      }
+      return this.withdraw(scope, messageKey);
+    }
     remove(scope, messageKey) {
       const row = this.bucket(scope).get(messageKey);
       if (!row || row.phase === "sending" || row.phase === "received") return;
@@ -158,7 +232,7 @@
       if (!this.timer) this.timer = setInterval(() => {
         if (root.document?.visibilityState === "hidden") return;
         const scopes = new Map();
-        for (const value of this.watches.values()) if (value.active || this.list(value.scope).some(row => row.retryable || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
+        for (const value of this.watches.values()) if (value.active || this.list(value.scope).some(row => row.retryable || row.withdrawPhase || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
         for (const value of scopes.values()) this.reconcile(value);
       }, 2000);
     }
@@ -191,6 +265,8 @@
       const status = document.createElement("small"); status.textContent = LABELS[section.dataset.state] || LABELS.unknown;
       if (REASONS[row.reason]) status.textContent += ` · ${REASONS[row.reason]}`;
       if (row.error) status.textContent += ` · ${row.error}`;
+      if (row.withdrawPhase) status.textContent += row.withdrawPhase === "sending" ? " · 撤回中…" : " · 撤回结果待确认";
+      if (row.withdrawError) status.textContent += ` · ${row.withdrawError}`;
       section.append(text, status);
       const action = (label, callback) => {
         const button = document.createElement("button"); button.type = "button"; button.className = "ghost-btn sm"; button.textContent = label;
@@ -199,6 +275,8 @@
       };
       if (row.retryable && row.phase !== "sending") action("核对并重试", () => store.retry(scope, row.message_key));
       if (row.phase === "unconfirmed" || row.phase === "rejected") action("移除本地记录", () => store.remove(scope, row.message_key));
+      if (row.withdrawPhase === "unconfirmed") action("核对并重试撤回", () => store.retryWithdrawal(scope, row.message_key));
+      else if (row.phase === "received" && row.can_withdraw && !row.withdrawPhase) action("撤回追问", () => store.withdraw(scope, row.message_key));
       if (row.delivery_state === "follow_up_created" && openChild) action("查看后续任务", () => openChild(scope, row));
       body.appendChild(section);
     }

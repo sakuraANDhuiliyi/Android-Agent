@@ -71,6 +71,7 @@ class ConversationMessageReceiptTest {
 
     private inner class Harness(
         val storage: MutableMap<String, String> = ConcurrentHashMap(),
+        val withdrawalStorage: MutableMap<String, String> = ConcurrentHashMap(),
         val account: AtomicBoolean = AtomicBoolean(true),
         val selected: AtomicBoolean = AtomicBoolean(true),
         val respond: (Request) -> JSONObject? = { null },
@@ -91,6 +92,12 @@ class ConversationMessageReceiptTest {
                 "/api/jobs" -> JSONObject().put("jobs", JSONArray(jobs))
                 "/api/jobs/j", "/api/jobs/child" -> JSONObject().put("job", jobs.firstOrNull { it.getString("id") == req.url.pathSegments.last() } ?: job("child", "paused"))
                 "/api/jobs/j/approvals", "/api/jobs/child/approvals" -> JSONObject().put("approvals", JSONArray())
+                "/api/jobs/j/cancel" -> JSONObject().put("job", job(status = "canceled"))
+                "/api/jobs/j/messages/1/withdraw" -> {
+                    val row = serverMessages.first { it.getLong("id") == 1L }
+                    withdraw(row)
+                    JSONObject().put("schema_version", 1).put("job_id", "j").put("message", row)
+                }
                 "/api/jobs/j/messages", "/api/jobs/child/messages" -> if (req.method == "GET") {
                     JSONObject().put("schema_version", 1).put("job_id", req.url.pathSegments[2]).put("messages", JSONArray(serverMessages))
                 } else {
@@ -111,12 +118,157 @@ class ConversationMessageReceiptTest {
             readPendingMessage = { PendingJobMessage.parse(storage[it]) },
             writePendingMessage = { key, value -> if (value == null) storage.remove(key) else storage[key] = value.toJson().toString() },
             receiptPollIntervalMs = 20,
+            readPendingWithdrawal = { PendingMessageWithdrawal.parse(withdrawalStorage[it]) },
+            writePendingWithdrawal = { key, value -> if (value == null) withdrawalStorage.remove(key) else withdrawalStorage[key] = value.toJson().toString() },
         ).also { models += it }
         init {
             val scope = CoroutineScope(Dispatchers.Unconfined).also { scopes += it }
             scope.launch { vm.signals.collect { signals += it } }
         }
         fun start() { vm.start("p", "c"); await { vm.state.value.job?.id == "j" } }
+    }
+
+    private fun withdraw(row: JSONObject): JSONObject = row.put("delivery_state", "withdrawn")
+        .put("can_withdraw", false).put("withdrawn_at", 1700000002)
+    private fun readyFollowUp(h: Harness) {
+        h.start()
+        h.serverMessages += receipt(JSONObject().put("message_key", "follow").put("type", "follow_up").put("payload", JSONObject().put("text", "later")))
+            .put("can_withdraw", true).put("withdrawn_at", JSONObject.NULL)
+        h.vm.setForeground(true)
+        await { h.vm.state.value.messageReceipts.any { it.canWithdraw } }
+        h.vm.setForeground(false)
+    }
+
+    @Test fun `withdraw double click has one request leaves composer alone and permits stop`() {
+        val entered = gate(); val release = gate()
+        val h = Harness { req -> if (req.url.encodedPath.endsWith("/withdraw")) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }; null }
+        readyFollowUp(h); h.vm.withdrawMessage("follow")
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertTrue(h.vm.state.value.withdrawing)
+        assertNotNull(h.withdrawalStorage["j"])
+        h.vm.withdrawMessage("follow"); h.vm.retryWithdrawal()
+        h.vm.controlJob("cancel")
+        await { h.requests.any { it.endsWith("/cancel") } }
+        assertEquals(1, h.requests.count { it.endsWith("/withdraw") })
+        release.countDown()
+        await { !h.vm.state.value.withdrawing && h.vm.state.value.pendingWithdrawal == null }
+        assertEquals(MessageDelivery.WITHDRAWN, h.vm.state.value.messageReceipts.single().delivery)
+        assertTrue(h.withdrawalStorage.isEmpty())
+        assertTrue(h.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+    }
+
+    @Test fun `lost withdrawal response reopens with GET only and confirms server tombstone`() {
+        lateinit var h: Harness
+        h = Harness { req -> if (req.url.encodedPath.endsWith("/withdraw")) { withdraw(h.serverMessages.single()); throw IOException("accepted then response lost") }; null }
+        readyFollowUp(h); h.vm.withdrawMessage("follow")
+        await { !h.vm.state.value.withdrawing && h.vm.state.value.pendingWithdrawal != null }
+        val restored = Harness(withdrawalStorage = h.withdrawalStorage)
+        restored.serverMessages += h.serverMessages
+        restored.start(); restored.vm.setForeground(true)
+        await { restored.vm.state.value.pendingWithdrawal == null && restored.vm.state.value.messageReceipts.isNotEmpty() }
+        assertEquals(MessageDelivery.WITHDRAWN, restored.vm.state.value.messageReceipts.single().delivery)
+        assertFalse(restored.requests.any { it.startsWith("POST") })
+        assertTrue(restored.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+        restored.vm.setForeground(false)
+    }
+
+    @Test fun `unaccepted withdrawal survives restart until manual retry GET then exact original message ID`() {
+        val h = Harness { req -> if (req.url.encodedPath.endsWith("/withdraw")) throw IOException("offline"); null }
+        readyFollowUp(h); h.vm.withdrawMessage("follow")
+        await { !h.vm.state.value.withdrawing && h.vm.state.value.pendingWithdrawal != null }
+        val restored = Harness(withdrawalStorage = h.withdrawalStorage)
+        restored.serverMessages += h.serverMessages
+        restored.start(); restored.vm.setForeground(true)
+        await { restored.vm.state.value.messageReceipts.isNotEmpty() }
+        assertNotNull(restored.vm.state.value.pendingWithdrawal)
+        assertFalse(restored.requests.any { it.startsWith("POST") })
+        restored.vm.retryWithdrawal()
+        await { !restored.vm.state.value.withdrawing && restored.vm.state.value.pendingWithdrawal == null }
+        assertEquals(listOf("POST /api/jobs/j/messages/1/withdraw"), restored.requests.filter { it.startsWith("POST") })
+        assertTrue(restored.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+        restored.vm.setForeground(false)
+    }
+
+    @Test fun `409 after dispatcher wins reconciles child without cancel resume or draft reset`() {
+        lateinit var h: Harness
+        h = Harness { req -> if (req.url.encodedPath.endsWith("/withdraw")) {
+            h.serverMessages.single().put("delivery_state", "follow_up_created").put("can_withdraw", false)
+                .put("consumed_at", 1700000002).put("follow_up_job_id", "child").put("follow_up_turn_id", "child-turn")
+            JSONObject().put("__status", 409).put("detail", "already dispatched")
+                .put("message", withdraw(JSONObject(h.serverMessages.single().toString())))
+        } else null }
+        readyFollowUp(h); h.vm.withdrawMessage("follow")
+        await { !h.vm.state.value.withdrawing && h.vm.state.value.pendingWithdrawal == null }
+        assertEquals(MessageDelivery.FOLLOW_UP_CREATED, h.vm.state.value.messageReceipts.single().delivery)
+        assertEquals("child", h.vm.state.value.messageReceipts.single().followUpJobId)
+        assertEquals("j", h.vm.state.value.jobId)
+        assertFalse(h.requests.any { it.endsWith("/cancel") || it.endsWith("/resume") })
+        assertTrue(h.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+        val post = h.requests.indexOf("POST /api/jobs/j/messages/1/withdraw")
+        assertTrue(h.requests.drop(post + 1).contains("GET /api/jobs/j/messages"))
+    }
+
+    @Test fun `old account selected conversation and rebound job reject late withdrawal receipt`() {
+        for (change in listOf("account", "conversation", "job")) {
+            val entered = gate(); val release = gate()
+            val h = Harness { req -> if (req.url.encodedPath.endsWith("/withdraw")) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }; null }
+            readyFollowUp(h); h.vm.withdrawMessage("follow")
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            when (change) {
+                "account" -> h.account.set(false)
+                "conversation" -> h.selected.set(false)
+                else -> { h.jobs = listOf(job("child", "paused")); h.vm.refresh(); await { h.vm.state.value.jobId == "child" } }
+            }
+            release.countDown()
+            await { h.serverMessages.single().optString("delivery_state") == "withdrawn" }
+            Thread.sleep(40)
+            assertNotNull(h.withdrawalStorage["j"])
+            assertFalse(h.vm.state.value.messageReceipts.any { it.delivery == MessageDelivery.WITHDRAWN })
+            assertTrue(h.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+        }
+    }
+
+    @Test fun `manual retry requires fresh explicit capability and unknown or legacy GET cannot POST`() {
+        for (legacy in listOf(true, false)) {
+            val pending = PendingMessageWithdrawal("p", "c", "j", 1, "follow")
+            val h = Harness(withdrawalStorage = ConcurrentHashMap<String, String>().apply { put("j", pending.toJson().toString()) })
+            h.serverMessages += receipt(JSONObject().put("message_key", "follow").put("type", "follow_up").put("payload", JSONObject().put("text", "later")))
+                .apply { if (!legacy) put("delivery_state", "unknown").put("can_withdraw", true) }
+            h.start(); h.vm.retryWithdrawal()
+            await { h.requests.contains("GET /api/jobs/j/messages") && !h.vm.state.value.withdrawing }
+            assertNotNull(h.vm.state.value.pendingWithdrawal)
+            assertFalse(h.vm.state.value.messageReceipts.single().canWithdraw)
+            assertFalse(h.requests.any { it.startsWith("POST") })
+        }
+    }
+
+    @Test fun `definitive rejection revokes stale capability even when subsequent reconciliation fails`() {
+        for (status in listOf(409, 403, 404)) {
+            val rejected = AtomicBoolean(false)
+            val h = Harness { req -> when {
+                req.url.encodedPath.endsWith("/withdraw") -> { rejected.set(true); JSONObject().put("__status", status).put("detail", "Rejected") }
+                rejected.get() && req.url.encodedPath.endsWith("/messages") -> throw IOException("refresh offline")
+                else -> null
+            } }
+            readyFollowUp(h); h.vm.withdrawMessage("follow")
+            await { rejected.get() && !h.vm.state.value.withdrawing }
+            assertNull(h.vm.state.value.pendingWithdrawal)
+            assertEquals(MessageDelivery.PENDING, h.vm.state.value.messageReceipts.single().delivery)
+            assertFalse(h.vm.state.value.messageReceipts.single().canWithdraw)
+            h.vm.withdrawMessage("follow")
+            assertEquals(1, h.requests.count { it.endsWith("/withdraw") })
+            assertTrue(h.withdrawalStorage.isEmpty())
+        }
+    }
+
+    @Test fun `legacy or untrusted withdrawal capability cannot trigger a mutation`() {
+        val h = Harness(); readyFollowUp(h)
+        h.serverMessages.single().put("can_withdraw", "true")
+        h.vm.setForeground(true)
+        await { h.vm.state.value.messageReceipts.none { it.canWithdraw } }
+        h.vm.withdrawMessage("follow")
+        assertFalse(h.requests.any { it.startsWith("POST") })
+        h.vm.setForeground(false)
     }
 
     @Test fun `double tap only submits once and canonical acknowledgement carries original draft`() {

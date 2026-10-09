@@ -2,7 +2,7 @@ package com.androidagent.client
 
 import org.json.JSONObject
 
-enum class MessageDelivery { PENDING, CONSUMED, FOLLOW_UP_CREATED, UNAPPLIED, BLOCKED, UNKNOWN }
+enum class MessageDelivery { PENDING, CONSUMED, FOLLOW_UP_CREATED, UNAPPLIED, BLOCKED, WITHDRAWN, UNKNOWN }
 
 /** A server receipt proves delivery to context or child creation, never model compliance. */
 data class JobMessageReceipt(
@@ -19,6 +19,8 @@ data class JobMessageReceipt(
     val followUpTurnId: String? = null,
     val reason: String? = null,
     val verifiedIdentity: Boolean = false,
+    val withdrawnAt: Double? = null,
+    val canWithdraw: Boolean = false,
 ) {
     val label: String get() = when (delivery) {
         MessageDelivery.PENDING -> if (type == "steer") "待加入本轮上下文" else "等待创建后续任务"
@@ -26,6 +28,7 @@ data class JobMessageReceipt(
         MessageDelivery.FOLLOW_UP_CREATED -> "已创建后续任务"
         MessageDelivery.UNAPPLIED -> "本轮结束前未加入上下文"
         MessageDelivery.BLOCKED -> "后续任务未创建"
+        MessageDelivery.WITHDRAWN -> "追问已撤回"
         MessageDelivery.UNKNOWN -> "回执状态未知"
     }
     val modeLabel: String get() = if (type == "steer") "引导" else if (type == "follow_up") "追问" else "消息"
@@ -52,21 +55,29 @@ data class JobMessageReceipt(
             val contextId = json.string("context_message_id")
             val child = json.string("follow_up_job_id")
             val turn = json.string("follow_up_turn_id")
+            val withdrawnAt = json.time("withdrawn_at")
+            val noLinks = json.isNull("context_message_id") && json.isNull("follow_up_job_id") && json.isNull("follow_up_turn_id")
+            val untouched = json.isNull("consumed_at") && noLinks
             val verified = envelopeSupported && json.opt("schema_version") == 1 && id > 0 &&
                 key.isNotBlank() && type in setOf("steer", "follow_up") && text.isNotBlank() && created != null
-            val state = if (!verified) MessageDelivery.UNKNOWN else when (json.opt("delivery_state")) {
-                "pending" -> if (consumed == null && contextId == null && child == null && turn == null) MessageDelivery.PENDING else MessageDelivery.UNKNOWN
+            val state = if (!verified || (!json.isNull("withdrawn_at") && json.opt("delivery_state") != "withdrawn")) MessageDelivery.UNKNOWN else when (json.opt("delivery_state")) {
+                "pending" -> if (untouched) MessageDelivery.PENDING else MessageDelivery.UNKNOWN
                 "consumed" -> if (type == "steer" && consumed != null && contextId != null && child == null && turn == null) MessageDelivery.CONSUMED else MessageDelivery.UNKNOWN
                 "follow_up_created" -> if (type == "follow_up" && consumed != null && child != null && child != expectedJob && turn != null && contextId == null) MessageDelivery.FOLLOW_UP_CREATED else MessageDelivery.UNKNOWN
-                "unapplied" -> if (type == "steer" && contextId == null && child == null) MessageDelivery.UNAPPLIED else MessageDelivery.UNKNOWN
-                "blocked" -> if (type == "follow_up" && contextId == null && child == null) MessageDelivery.BLOCKED else MessageDelivery.UNKNOWN
+                "unapplied" -> if (type == "steer" && untouched) MessageDelivery.UNAPPLIED else MessageDelivery.UNKNOWN
+                "blocked" -> if (type == "follow_up" && untouched) MessageDelivery.BLOCKED else MessageDelivery.UNKNOWN
+                "withdrawn" -> if (type == "follow_up" && untouched && withdrawnAt != null && json.opt("can_withdraw") == false)
+                    MessageDelivery.WITHDRAWN else MessageDelivery.UNKNOWN
                 else -> MessageDelivery.UNKNOWN
             }
             return JobMessageReceipt(id, expectedJob, key, type, text, created, consumed, state,
                 contextId.takeIf { state == MessageDelivery.CONSUMED },
                 child.takeIf { state == MessageDelivery.FOLLOW_UP_CREATED },
                 turn.takeIf { state == MessageDelivery.FOLLOW_UP_CREATED },
-                json.string("reason")?.takeIf { it in REASONS }, verified)
+                json.string("reason")?.takeIf { it in REASONS && state != MessageDelivery.WITHDRAWN }, verified,
+                withdrawnAt.takeIf { state == MessageDelivery.WITHDRAWN },
+                verified && json.opt("can_withdraw") == true && type == "follow_up" && untouched &&
+                    json.isNull("withdrawn_at") && state in setOf(MessageDelivery.PENDING, MessageDelivery.BLOCKED))
         }
         private val REASONS = setOf("awaiting_safe_boundary", "awaiting_parent_completion", "awaiting_dispatch",
             "parent_paused", "parent_failed", "parent_canceled", "parent_interrupted", "turn_finished_before_consumption", "legacy_missing_receipt")
@@ -76,6 +87,31 @@ data class JobMessageReceipt(
 }
 
 data class JobMessagePage(val supported: Boolean, val messages: List<JobMessageReceipt>)
+
+/** Only immutable server identity is needed to reconcile or retry a withdrawal. */
+data class PendingMessageWithdrawal(
+    val projectId: String,
+    val conversationId: String,
+    val jobId: String,
+    val messageId: Long,
+    val messageKey: String,
+) {
+    fun matches(receipt: JobMessageReceipt): Boolean = receipt.verifiedIdentity && receipt.jobId == jobId &&
+        receipt.id == messageId && receipt.key == messageKey && receipt.type == "follow_up"
+    fun toJson(): JSONObject = JSONObject().put("version", 1).put("project", projectId).put("conversation", conversationId)
+        .put("job", jobId).put("message_id", messageId).put("message_key", messageKey)
+    companion object {
+        fun parse(raw: String?): PendingMessageWithdrawal? = try {
+            val json = JSONObject(raw.orEmpty())
+            require(json.opt("version") == 1)
+            val fields = listOf("project", "conversation", "job", "message_key").map { json.opt(it) as? String ?: error("Missing identity") }
+            require(fields.all(String::isNotBlank))
+            val id = json.opt("message_id") as? Number ?: error("Invalid message ID")
+            require(id.toDouble().isFinite() && id.toDouble() > 0 && id.toDouble() % 1.0 == 0.0 && id.toDouble() <= Long.MAX_VALUE)
+            PendingMessageWithdrawal(fields[0], fields[1], fields[2], id.toLong(), fields[3])
+        } catch (_: Exception) { null }
+    }
+}
 
 /** Immutable original request. Reconciliation and manual retries reuse this exact body and key. */
 data class PendingJobMessage(

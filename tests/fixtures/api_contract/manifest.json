@@ -201,6 +201,13 @@
       "path": "/api/ws/terminals/{terminal_id}",
       "fixture": "ws/terminal_done.json",
       "status": 101
+    },
+    {
+      "id": "job_message_withdrawn",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/{message_id}/withdraw",
+      "fixture": "job_message_withdraw_200.json",
+      "status": 200
     }
   ],
   "client_tests": [
