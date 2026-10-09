@@ -300,6 +300,15 @@
                     tools:ignore="SpeakableTextPresentCheck" />
             </com.androidagent.client.ContextChipScrollView>
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnMessageReceipts"
+                style="@style/Widget.AndroidAgent.Button.Text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/task_message_receipts"
+                android:visibility="gone" />
+
             <HorizontalScrollView
                 android:id="@+id/scrollMode"
                 android:layout_width="match_parent"
@@ -383,9 +392,10 @@
 
                 <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
 
-                <FrameLayout
+                <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="@dimen/touch_target"
+                    android:orientation="horizontal"
                     android:layout_marginStart="@dimen/space_small">
 
                     <com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -400,6 +410,7 @@
 
                     <com.google.android.material.floatingactionbutton.FloatingActionButton
                         android:id="@+id/btnStop"
+                        android:layout_marginStart="8dp"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_gravity="center"
@@ -411,7 +422,7 @@
                         app:maxImageSize="20dp"
                         app:tint="?attr/colorError"
                         tools:visibility="gone" />
-                </FrameLayout>
+                </LinearLayout>
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

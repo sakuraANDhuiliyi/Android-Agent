@@ -143,6 +143,13 @@ class E2EStack:
             assert changed == 1, "crash test did not stop an in-flight task"
         self._start_agent()
 
+    def restart_idle_agent(self) -> None:
+        """Restart only this stack's test service; do not alter task state."""
+        assert self.agent_process is not None
+        self.agent_process.kill()
+        self.agent_process.wait(timeout=10)
+        self._start_agent()
+
     def _start_agent(self) -> None:
         self.agent_process = subprocess.Popen(
             [

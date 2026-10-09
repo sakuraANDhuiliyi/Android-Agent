@@ -1,0 +1,37 @@
+{
+  "id": "31_followup_receipts",
+  "title": "追问永久关联、顺序执行及实际副作用去重",
+  "driver": "followup_receipts",
+  "prompt": "执行一次受控命令再处理追问",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import time; p=Path(\"app/src/test/message-order.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(\"executed\\n\"); time.sleep(2); print(\"RECORDED\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本次命令已完成。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "file_lines": {
+      "app/src/test/message-order.txt": [
+        "executed",
+        "executed",
+        "executed"
+      ]
+    }
+  }
+}

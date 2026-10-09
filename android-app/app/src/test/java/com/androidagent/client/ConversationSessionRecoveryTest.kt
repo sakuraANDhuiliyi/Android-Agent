@@ -146,6 +146,8 @@ class ConversationSessionRecoveryTest {
         }
     }
 
+    private fun <T> onMain(action: () -> T): T = runBlocking { withContext(Dispatchers.Main) { action() } }
+
     private fun event(seq: Int, text: String = "message-$seq"): JSONObject = JSONObject()
         .put("id", "event-$seq")
         .put("conversation_id", "conv-1")
@@ -249,17 +251,17 @@ class ConversationSessionRecoveryTest {
                 else -> throw AssertionError("Unexpected request: ${request.url}")
             }
         }
-        harness.vm.start("p-1", "conv-1")
+        onMain { harness.vm.start("p-1", "conv-1") }
         awaitTrue("initial history did not load") { harness.vm.state.value.historyHasMore }
-        harness.vm.loadEarlier()
+        onMain { harness.vm.loadEarlier() }
         assertTrue(firstPageEntered.await(5, TimeUnit.SECONDS))
         assertTrue(harness.vm.state.value.loadingEarlier)
 
-        harness.vm.refresh()
+        onMain { harness.vm.refresh() }
         awaitTrue("refresh did not replace the history cursor") {
             harness.vm.store.conversationSeqMax == 300L && !harness.vm.state.value.loadingEarlier
         }
-        harness.vm.loadEarlier()
+        onMain { harness.vm.loadEarlier() }
         assertTrue("pagination remained permanently blocked after refresh", secondPageEntered.await(5, TimeUnit.SECONDS))
         assertTrue(harness.vm.state.value.loadingEarlier)
         releaseFirstPage.countDown()
@@ -268,7 +270,7 @@ class ConversationSessionRecoveryTest {
         awaitTrue("replacement page did not complete") {
             !harness.vm.state.value.loadingEarlier && !harness.vm.state.value.historyHasMore
         }
-        val text = harness.vm.store.sortedItems().map { it.content.optString("text") }
+        val text = onMain { harness.vm.store.sortedItems().map { it.content.optString("text") } }
         assertTrue(text.contains("replacement-page"))
         assertFalse(text.contains("stale-page"))
         assertEquals(2, historyRequests.get())

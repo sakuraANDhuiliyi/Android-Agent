@@ -11,6 +11,10 @@ import com.androidagent.client.ApprovalAllowlist
 import com.androidagent.client.ApprovalCardBinder
 import com.androidagent.client.ContextAttachment
 import com.androidagent.client.JobInfo
+import com.androidagent.client.JobMessageReceipt
+import com.androidagent.client.MessageDelivery
+import com.androidagent.client.PendingJobMessage
+import com.androidagent.client.SubmittedComposer
 import com.androidagent.client.R
 import com.androidagent.client.TaskRepository
 import com.androidagent.client.TaskSync
@@ -31,12 +35,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.UUID
 
 sealed interface ConversationSignal {
     data class ToastText(val message: String) : ConversationSignal
     data class ToastRes(val resId: Int) : ConversationSignal
     data object GuestQuotaExhausted : ConversationSignal
-    data object ComposerReset : ConversationSignal
+    data class ComposerAcknowledged(val submitted: SubmittedComposer) : ConversationSignal
 }
 
 data class ConversationUiState(
@@ -49,6 +54,10 @@ data class ConversationUiState(
     val offline: Boolean = false,
     val sending: Boolean = false,
     val recovering: Boolean = false,
+    val messageReceipts: List<JobMessageReceipt> = emptyList(),
+    val pendingMessage: PendingJobMessage? = null,
+    val messageNotice: String? = null,
+    val refreshingMessages: Boolean = false,
 ) {
     enum class Source { NONE, CACHE, FRESH }
 }
@@ -67,6 +76,9 @@ class ConversationViewModel(
     private val scheduleTaskSync: () -> Unit,
     private val watcherFactory: JobWatcherFactory,
     private val isSelectedConversation: (String, String) -> Boolean = { _, _ -> true },
+    private val readPendingMessage: (String) -> PendingJobMessage? = { null },
+    private val writePendingMessage: (String, PendingJobMessage?) -> Unit = { _, _ -> },
+    private val receiptPollIntervalMs: Long = 2500L,
 ) : ViewModel() {
 
     var store = TimelineStore()
@@ -91,6 +103,13 @@ class ConversationViewModel(
     private var watcher: JobEventWatcher? = null
     private var bindingGeneration = 0L
     private var recoveryRequest = 0L
+    private var foreground = false
+    private var messageRequest = 0L
+    private var messageSubmissionJob: Job? = null
+    private var receiptRequest = 0L
+    private var receiptRefreshJob: Job? = null
+    private var receiptPollJob: Job? = null
+    private var receiptPollBudget = 0
     private val submittingApprovals = HashSet<String>()
     private val refreshingApprovals = HashSet<String>()
 
@@ -189,14 +208,18 @@ class ConversationViewModel(
             if (token != loadToken) return
             val preferred = _state.value.jobId ?: session.selectedJobId
             val active = jobs.firstOrNull { it.id == preferred &&
-                (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null) }
+                (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null ||
+                    _state.value.pendingMessage != null || _state.value.messageReceipts.isNotEmpty()) }
                 ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
                 ?: jobs.firstOrNull()
             when {
                 active == null -> {
+                    ++bindingGeneration
+                    ++messageRequest
+                    stopReceiptRefresh()
                     watcher?.stop()
                     watcher = null
-                    updateState { it.copy(job = null, jobId = null) }
+                    updateState { it.copy(job = null, jobId = null, messageReceipts = emptyList(), pendingMessage = null, messageNotice = null, sending = false) }
                     bumpTimeline()
                 }
                 active.id == _state.value.jobId && watcher != null -> applyJob(active)
@@ -256,8 +279,14 @@ class ConversationViewModel(
         if (!hasCurrentSession()) return
         flushPendingTaskEvents()
         val generation = ++bindingGeneration
+        ++messageRequest
+        stopReceiptRefresh()
+        val pending = readPendingMessage(jobId)?.takeIf {
+            it.jobId == jobId && it.projectId == projectId && it.conversationId == conversationId
+        }
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
-        updateState { it.copy(jobId = jobId, job = initialJob) }
+        updateState { it.copy(jobId = jobId, job = initialJob, sending = false, messageReceipts = emptyList(),
+            pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false) }
         rememberSelectedJob(jobId)
         watcher?.stop()
         val cursor = if (resume) session.eventCursor(jobId) else 0L
@@ -273,12 +302,14 @@ class ConversationViewModel(
                     scheduleTaskSync()
                     session.setEventCursor(job.id, watcher?.currentCursor() ?: session.eventCursor(job.id))
                     syncFinalConversationEvents(job.id)
+                    refreshMessageReceipts()
                 }
             },
             onError = { err -> onMain {
                 if (isBoundJob(jobId, generation)) emitSignal(ConversationSignal.ToastText("同步中断: ${err.message}"))
             } },
         ).also { it.start(jobId, cursor) }
+        refreshMessageReceipts()
 
         viewModelScope.launch {
             try {
@@ -313,6 +344,7 @@ class ConversationViewModel(
     private fun handleTaskEvent(jobId: String, event: JSONObject) {
         if (!hasCurrentSession()) return
         val type = event.optString("type")
+        if (type == "user_message") refreshMessageReceipts(restartWindow = false)
         if (type in COALESCED_EVENT_TYPES) {
             // 高频 delta 类事件：缓冲 24ms 合并成一次 ingest + 一次渲染
             pendingTaskEvents.add(jobId to event)
@@ -470,6 +502,123 @@ class ConversationViewModel(
         session.setEventCursor(jobId, watcher?.currentCursor() ?: session.eventCursor(jobId))
     }
 
+    /** Receipt polling belongs to the visible page, unlike the existing completion watcher. */
+    fun setForeground(value: Boolean) {
+        foreground = value
+        if (value) {
+            if (messageSubmissionJob?.isActive != true && _state.value.pendingMessage != null) updateState { it.copy(sending = false) }
+            refreshMessageReceipts()
+        } else stopReceiptRefresh()
+    }
+
+    private fun stopReceiptRefresh() {
+        ++receiptRequest
+        receiptRefreshJob?.cancel()
+        receiptRefreshJob = null
+        receiptPollJob?.cancel()
+        receiptPollJob = null
+        receiptPollBudget = 0
+        if (started) updateState { it.copy(refreshingMessages = false) }
+    }
+
+    fun refreshMessageReceipts(restartWindow: Boolean = true) {
+        if (!foreground || !hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val jobId = _state.value.jobId ?: return
+        if (restartWindow) receiptPollBudget = 24
+        if (receiptRefreshJob?.isActive == true) return
+        val generation = bindingGeneration
+        val request = ++receiptRequest
+        updateState { it.copy(refreshingMessages = true) }
+        receiptRefreshJob = viewModelScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(jobId) }
+                if (!foreground || request != receiptRequest || !isBoundJob(jobId, generation) ||
+                    !isSelectedConversation(projectId, conversationId)) return@launch
+                updateState { it.copy(messageReceipts = page.messages, messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新") }
+                val pending = _state.value.pendingMessage
+                if (pending != null && page.messages.any(pending::matches)) acknowledgeMessage(pending)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
+            } catch (_: Exception) {
+                if (request == receiptRequest && isBoundJob(jobId, generation)) {
+                    updateState { it.copy(messageNotice = "回执暂不可用，发送结果尚未确认") }
+                }
+            } finally {
+                if (request == receiptRequest && isBoundJob(jobId, generation)) {
+                    receiptRefreshJob = null
+                    updateState { it.copy(refreshingMessages = false) }
+                    startReceiptPolling()
+                }
+            }
+        }
+    }
+
+    private fun startReceiptPolling() {
+        if (!foreground || receiptPollBudget <= 0 || receiptPollJob?.isActive == true || !hasUnresolvedMessages()) return
+        val jobId = _state.value.jobId ?: return
+        val generation = bindingGeneration
+        receiptPollJob = viewModelScope.launch {
+            while (foreground && receiptPollBudget > 0 && isBoundJob(jobId, generation) && hasUnresolvedMessages()) {
+                kotlinx.coroutines.delay(receiptPollIntervalMs)
+                if (!foreground || !isSelectedConversation(projectId, conversationId)) break
+                --receiptPollBudget
+                refreshMessageReceipts(restartWindow = false)
+            }
+            receiptPollJob = null
+        }
+    }
+
+    private fun hasUnresolvedMessages(): Boolean = _state.value.pendingMessage != null ||
+        _state.value.messageReceipts.any { it.delivery == MessageDelivery.PENDING }
+
+    private fun acknowledgeMessage(pending: PendingJobMessage) {
+        if (_state.value.pendingMessage?.key != pending.key) return
+        writePendingMessage(pending.jobId, null)
+        updateState { it.copy(pendingMessage = null, messageNotice = null) }
+        emitSignal(ConversationSignal.ComposerAcknowledged(SubmittedComposer(pending.composerText, pending.contextSignature)))
+    }
+
+    fun retryPendingMessage() {
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val pending = current.pendingMessage ?: return
+        if (current.sending || current.recovering || pending.jobId != current.jobId) return
+        submitMessage(pending, reconcileFirst = true)
+    }
+
+    fun openFollowUpMessage(messageKey: String) {
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        if (current.sending || current.recovering) return
+        val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.delivery == MessageDelivery.FOLLOW_UP_CREATED } ?: return
+        val childId = receipt.followUpJobId ?: return
+        val generation = bindingGeneration
+        val request = ++recoveryRequest
+        updateState { it.copy(recovering = true) }
+        ++loadToken
+        viewModelScope.launch {
+            try {
+                val child = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.getJob(childId) }
+                if (!isBoundJob(receipt.jobId, generation) || !isSelectedConversation(projectId, conversationId)) return@launch
+                check(child.id == childId && belongsToConversation(child) && child.turnId == receipt.followUpTurnId) {
+                    "后续任务与当前会话回执不符"
+                }
+                repository.saveJob(child)
+                if (!isBoundJob(receipt.jobId, generation) || !isSelectedConversation(projectId, conversationId)) return@launch
+                attachJob(child.id, resume = true, initialJob = child)
+                syncFinalConversationEvents(child.id)
+            } catch (cancelled: CancellationException) {
+                hasCurrentSession()
+                throw cancelled
+            } catch (e: Exception) {
+                if (isBoundJob(receipt.jobId, generation)) emitSignal(errorSignal(e))
+            } finally {
+                if (request == recoveryRequest) updateState { it.copy(recovering = false) }
+            }
+        }
+    }
+
     // ---------- 发送 ----------
 
     fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
@@ -477,6 +626,10 @@ class ConversationViewModel(
             _state.value.sending || _state.value.recovering) return
         val text = prompt.trim()
         if (text.isBlank()) return
+        if (_state.value.pendingMessage != null) {
+            emitSignal(ConversationSignal.ToastText("请先确认或重试上一条消息"))
+            return
+        }
         if (session.guestMode && session.guestRemaining <= 0) {
             emitSignal(ConversationSignal.GuestQuotaExhausted)
             return
@@ -510,7 +663,7 @@ class ConversationViewModel(
                 if (session.guestMode) session.guestRemaining = session.guestRemaining - 1
                 repository.saveJob(job)
                 if (generation != bindingGeneration || !isSelectedConversation(projectId, conversationId)) return@launch
-                emitSignal(ConversationSignal.ComposerReset)
+                emitSignal(ConversationSignal.ComposerAcknowledged(SubmittedComposer(prompt, SubmittedComposer.signature(contexts))))
                 ++loadToken
                 attachJob(job.id, resume = false, initialJob = job)
             } catch (cancelled: CancellationException) {
@@ -533,29 +686,79 @@ class ConversationViewModel(
 
     private fun sendMidTask(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
         val jobId = _state.value.jobId ?: return
-        viewModelScope.launch {
+        if (session.guestMode) {
+            emitSignal(ConversationSignal.ToastText("登录后可向运行中的任务发送引导或追问"))
+            return
+        }
+        val pending = PendingJobMessage(projectId, conversationId, jobId, UUID.randomUUID().toString(),
+            if (steer) "steer" else "follow_up", prompt + contexts.joinToString("") { it.inlineReference() },
+            prompt, SubmittedComposer.signature(contexts))
+        try {
+            writePendingMessage(jobId, pending)
+        } catch (e: Exception) {
+            emitSignal(errorSignal(e))
+            return
+        }
+        updateState { it.copy(pendingMessage = pending) }
+        submitMessage(pending, reconcileFirst = false)
+    }
+
+    private fun submitMessage(pending: PendingJobMessage, reconcileFirst: Boolean) {
+        val generation = bindingGeneration
+        val request = ++messageRequest
+        val jobId = pending.jobId
+        updateState { it.copy(sending = true, messageNotice = if (reconcileFirst) "正在查询原消息回执…" else "正在发送…") }
+        messageSubmissionJob = viewModelScope.launch {
             try {
-                val enriched = prompt + contexts.joinToString("") { it.inlineReference() }
-                withContext(Dispatchers.IO) {
-                    if (steer) api.steerJob(jobId, enriched) else api.followUpJob(jobId, enriched)
+                if (reconcileFirst) {
+                    val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(jobId) }
+                    if (!isMessageRequest(jobId, generation, request)) return@launch
+                    check(page.supported) { "服务端缺少可靠回执，无法安全重试" }
+                    updateState { it.copy(messageReceipts = page.messages) }
+                    val existing = page.messages.firstOrNull { it.key == pending.key }
+                    if (existing != null && pending.matches(existing)) {
+                        acknowledgeMessage(pending)
+                        return@launch
+                    }
+                    // Redacted GET text cannot validate the original body. Only a manual, same-key
+                    // POST can let the server compare its original hash; a true mismatch returns 409.
                 }
-                repository.requireCurrentSession()
-                if (session.guestMode) session.guestRemaining = session.guestRemaining - 1
-                emitSignal(ConversationSignal.ComposerReset)
-                emitSignal(ConversationSignal.ToastText("已发送"))
+                val receipt = withContext(Dispatchers.IO) {
+                    repository.requireCurrentSession()
+                    api.sendJobMessage(jobId, pending.type, pending.text, pending.key)
+                }
+                if (!isMessageRequest(jobId, generation, request)) return@launch
+                check(pending.sameIdentity(receipt)) { "服务端缺少可靠回执，请刷新确认" }
+                ++receiptRequest
+                receiptRefreshJob?.cancel()
+                receiptRefreshJob = null
+                updateState { it.copy(messageReceipts = (it.messageReceipts.filterNot { old -> old.key == receipt.key } + receipt).sortedBy { r -> r.id }, refreshingMessages = false) }
+                acknowledgeMessage(pending)
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
                 throw cancelled
             } catch (e: Exception) {
-                if (isGuestQuota(e)) {
-                    session.guestRemaining = 0
-                    emitSignal(ConversationSignal.GuestQuotaExhausted)
-                } else {
-                    emitSignal(errorSignal(e))
+                if (isMessageRequest(jobId, generation, request) && _state.value.pendingMessage?.key == pending.key) {
+                    if (e is ApiException && e.code in setOf(400, 401, 403, 404, 409, 422)) {
+                        writePendingMessage(jobId, null)
+                        updateState { it.copy(pendingMessage = null, messageNotice = if (e.code == 409)
+                            "消息冲突，原消息未被接收；草稿已保留，请检查后重新发送" else "消息未被接收：${e.message}") }
+                    } else {
+                        updateState { it.copy(messageNotice = "发送结果待确认：${e.message ?: "连接中断"}。请刷新或重试原消息") }
+                    }
+                }
+            } finally {
+                if (isMessageRequest(jobId, generation, request)) {
+                    updateState { it.copy(sending = false) }
+                    receiptPollBudget = 24
+                    startReceiptPolling()
                 }
             }
         }
     }
+
+    private fun isMessageRequest(jobId: String, generation: Long, request: Long): Boolean =
+        request == messageRequest && isBoundJob(jobId, generation) && isSelectedConversation(projectId, conversationId)
 
     private fun isGuestQuota(e: Exception): Boolean =
         e is ApiException && e.errorCode == "guest_quota_exhausted"
@@ -661,6 +864,13 @@ class ConversationViewModel(
         loadToken++
         bindingGeneration++
         recoveryRequest++
+        messageRequest++
+        // Do not call the session-checking helper while invalidating the session itself.
+        receiptRequest++
+        receiptRefreshJob?.cancel()
+        receiptRefreshJob = null
+        receiptPollJob?.cancel()
+        receiptPollJob = null
         earlierRequests.invalidate()
         earlierJob?.cancel()
         earlierJob = null
@@ -711,6 +921,8 @@ class ConversationViewModel(
         coalesceJob?.cancel()
         earlierJob?.cancel()
         flushPendingTaskEvents()
+        receiptRefreshJob?.cancel()
+        receiptPollJob?.cancel()
         watcher?.stop()
         watcher = null
         super.onCleared()
@@ -730,7 +942,9 @@ class ConversationViewModel(
             appContext: Context,
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = ConversationViewModel(
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                val receiptSession = com.androidagent.client.core.database.CacheSession.capture(prefs)
+                return ConversationViewModel(
                 api = api,
                 repository = repository,
                 session = prefs,
@@ -742,7 +956,10 @@ class ConversationViewModel(
                 isSelectedConversation = { project, conversation ->
                     prefs.selectedProjectId == project && prefs.selectedConversationId == conversation
                 },
+                readPendingMessage = { prefs.pendingJobMessage(receiptSession, it) },
+                writePendingMessage = { job, pending -> prefs.setPendingJobMessage(receiptSession, job, pending) },
             ) as T
+            }
         }
     }
 }

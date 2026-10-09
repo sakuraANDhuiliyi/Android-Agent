@@ -718,7 +718,7 @@ class ConversationEventStore:
             ).fetchall()
             for message in messages:
                 payload = json.loads(message["payload"] or "{}")
-                text = payload.get("text") or payload.get("content") or ""
+                text = payload.get("text") or payload.get("prompt") or payload.get("content") or ""
                 if text:
                     self.append_event_idempotent(
                         turn["conversation_id"], turn_id, ConversationEventType.USER_MESSAGE,

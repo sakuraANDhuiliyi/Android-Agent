@@ -77,9 +77,14 @@ def run_agent(
     extra_system_prompt: str | None = None,
     run_mode: str = "workspace",
     permission_profile: str | None = None,
+    get_conversation_events: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> str:
     provider_chain = [settings, *settings.provider_fallbacks]
     errors: list[str] = []
+    context_turn_ids = (
+        {event.get("turn_id") for event in conversation_events} | {turn_id}
+        if conversation_events is not None else None
+    )
 
     for index, current_settings in enumerate(provider_chain):
         if cancel_check:
@@ -103,6 +108,15 @@ def run_agent(
             )
 
         try:
+            if index > 0 and get_conversation_events is not None:
+                # The failed provider may already have consumed steering or
+                # completed tools. Rebuild both its context and turn counters
+                # from the same committed history before switching providers.
+                refreshed = get_conversation_events()
+                # A newly queued turn is a separate user instruction, not a
+                # steer for this task. Preserve the original history boundary.
+                conversation_events = [event for event in refreshed
+                    if context_turn_ids is None or event.get("turn_id") in context_turn_ids]
             if conversation_events is not None:
                 prior_messages = build_provider_messages(
                     conversation_events,
@@ -717,7 +731,7 @@ def _run_openai_compatible(
             cancel_check()
         if check_pause:
             check_pause()
-        if turn > 1 and get_steers:
+        if get_steers:
             for steer in get_steers():
                 messages.append({"role": "user", "content": steer})
                 _emit(on_event, "steer", steer, source="task_message")
@@ -1276,7 +1290,7 @@ def _run_anthropic(
             cancel_check()
         if check_pause:
             check_pause()
-        if turn > 1 and get_steers:
+        if get_steers:
             for steer in get_steers():
                 messages.append({"role": "user", "content": steer})
                 _emit(on_event, "steer", steer, source="task_message")

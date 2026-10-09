@@ -771,20 +771,31 @@ class AgentApi(
         return parseJob(json.getJSONObject("job"))
     }
 
-    fun sendJobMessage(jobId: String, type: String, payload: JSONObject = JSONObject()): JSONObject {
+    fun sendJobMessage(jobId: String, type: String, text: String, messageKey: String): JobMessageReceipt {
+        require(messageKey.isNotBlank() && type in setOf("steer", "follow_up") && text.isNotBlank())
         val body = JSONObject()
             .put("type", type)
-            .put("payload", payload)
-            .put("message_key", "${type}-${System.currentTimeMillis()}")
-        return postJson("/api/jobs/$jobId/messages", body)
+            .put("payload", JSONObject().put("text", text))
+            .put("message_key", messageKey)
+        val json = postJson("/api/jobs/$jobId/messages", body)
+        val supported = json.opt("schema_version") == 1
+        require(!supported || json.opt("job_id") == jobId) { "消息回执不属于当前任务" }
+        val receipt = JobMessageReceipt.parse(json.getJSONObject("message"), jobId, supported)
+        // The server may redact payload text; its 200/201 acknowledgement validates the original body hash.
+        require(receipt.key == messageKey && receipt.type == type) { "消息回执与原请求不符" }
+        return receipt
     }
 
-    fun steerJob(jobId: String, text: String): JSONObject {
-        return sendJobMessage(jobId, "steer", JSONObject().put("text", text))
-    }
-
-    fun followUpJob(jobId: String, text: String): JSONObject {
-        return sendJobMessage(jobId, "follow_up", JSONObject().put("text", text))
+    fun listJobMessages(jobId: String): JobMessagePage {
+        val json = getJson("/api/jobs/$jobId/messages?include_consumed=true")
+        require(json.opt("job_id") == jobId) { "消息列表不属于当前任务" }
+        val supported = json.opt("schema_version") == 1
+        val messages = json.getJSONArray("messages")
+        val receipts = (0 until messages.length()).map { messages.getJSONObject(it) }
+            .filter { it.opt("type") in setOf("steer", "follow_up") }
+            .map { JobMessageReceipt.parse(it, jobId, supported) }
+        require(receipts.map { it.key }.distinct().size == receipts.size) { "消息列表包含重复身份" }
+        return JobMessagePage(supported, receipts.sortedBy { it.id })
     }
 
     fun listApprovals(jobId: String): List<ApprovalInfo> {

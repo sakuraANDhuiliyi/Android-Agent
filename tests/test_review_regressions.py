@@ -112,6 +112,8 @@ def test_follow_up_and_recovery_inherit_execution_choices(tmp_path, profile, mod
            "model_selection": model_selection(settings())}
     original, turn = create_task(store, context=ctx)
     store.add_task_message(original["id"], message_key="follow", type="follow_up", payload={"prompt": "continue"})
+    store.update_task(original["id"], status="succeeded")
+    ConversationEventStore(store).update_turn_status(turn["id"], "succeeded", user_id="alice")
     with patch.object(jobs, "_store", store), patch.object(jobs, "load_project_meta", return_value={}), \
          patch.object(jobs, "start_worker"):
         TaskWorker(store, Mock(), settings())._create_follow_ups(original)
@@ -133,7 +135,8 @@ def test_failed_follow_up_creation_keeps_message_pending(tmp_path):
     store = TaskStore(tmp_path / "tasks.db")
     task, _ = create_task(store)
     store.add_task_message(task["id"], message_key="follow", type="follow_up", payload={"prompt": "continue"})
-    with patch.object(jobs, "start_ask_job", side_effect=RuntimeError("unavailable")):
+    store.update_task(task["id"], status="succeeded")
+    with patch.object(jobs, "load_project_meta", side_effect=RuntimeError("unavailable")):
         TaskWorker(store, Mock(), settings())._create_follow_ups(task)
     assert len(store.get_pending_messages(task["id"], types=["follow_up"])) == 1
 

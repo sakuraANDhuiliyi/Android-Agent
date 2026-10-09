@@ -6,6 +6,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.charset.StandardCharsets
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class ApiContractTest {
 
@@ -42,9 +47,43 @@ class ApiContractTest {
 
     @Test
     fun jobMessageFixturePreservesMessageKey() {
-        val message = loadFixture("job_message_201.json").getJSONObject("message")
+        val payload = loadFixture("job_message_201.json")
+        val message = payload.getJSONObject("message")
         assertEquals("client-msg-001", message.getString("message_key"))
         assertEquals("steer", message.getString("type"))
+        val parsed = JobMessageReceipt.parse(message, payload.getString("job_id"), payload.opt("schema_version") == 1)
+        assertEquals(MessageDelivery.PENDING, parsed.delivery)
+        assertTrue(parsed.verifiedIdentity)
+    }
+
+    @Test fun jobMessageListFixtureUsesRealApiParserForEveryDeliveryState() {
+        val fixture = loadFixture("job_messages_200.json")
+        val jobId = fixture.getString("job_id")
+        val api = AgentApi("https://contract.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("/api/jobs/$jobId/messages?include_consumed=true", chain.request().url.encodedPath + "?" + chain.request().url.encodedQuery)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Fixture")
+                .body(fixture.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        val parsed = api.listJobMessages(jobId)
+        assertTrue(parsed.supported)
+        assertEquals(MessageDelivery.entries.toSet(), parsed.messages.map { it.delivery }.toSet())
+        assertTrue(parsed.messages.filter { it.delivery == MessageDelivery.CONSUMED }.all { !it.contextMessageId.isNullOrBlank() })
+        assertTrue(parsed.messages.filter { it.delivery == MessageDelivery.FOLLOW_UP_CREATED }.all { !it.followUpJobId.isNullOrBlank() && !it.followUpTurnId.isNullOrBlank() })
+        assertTrue(parsed.messages.filter { it.delivery != MessageDelivery.FOLLOW_UP_CREATED }.all { it.followUpJobId == null && it.followUpTurnId == null })
+        assertTrue(parsed.messages.filter { it.delivery != MessageDelivery.CONSUMED }.all { it.contextMessageId == null })
+    }
+
+    @Test fun repeatedPostFixtureUsesAuthoritativeApiAcknowledgement() {
+        val fixture = loadFixture("job_message_200.json")
+        val expected = fixture.getJSONObject("message")
+        val api = AgentApi("https://contract.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Fixture")
+                .body(fixture.toString().toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        val parsed = api.sendJobMessage(fixture.getString("job_id"), expected.getString("type"),
+            expected.getJSONObject("payload").getString("text"), expected.getString("message_key"))
+        assertEquals(MessageDelivery.CONSUMED, parsed.delivery)
+        assertEquals(expected.getString("context_message_id"), parsed.contextMessageId)
     }
 
     @Test

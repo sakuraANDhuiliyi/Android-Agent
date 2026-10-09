@@ -376,7 +376,9 @@
 
     function handleUserMessage(p, ctx) {
       const text = textOfUserMessage(p);
-      const key = `user:${ctx.turnId || ctx.jobId || "?"}:${(text || "").length}:${(text || "").slice(0, 32)}`;
+      const key = p.message_id
+        ? `user:${ctx.turnId || ctx.jobId || "?"}:message:${p.message_id}`
+        : `user:${ctx.turnId || ctx.jobId || "?"}:${(text || "").length}:${(text || "").slice(0, 32)}`;
       let item = byKey.get(key);
       if (!item && text) {
         // Adopt a local optimistic echo (same text, not yet anchored).
@@ -384,7 +386,7 @@
           (i) =>
             i.type === "user_message" &&
             !i.messageId &&
-            i.turnId == null &&
+            (i.turnId == null || i.turnId === ctx.turnId) &&
             i.content.text === text,
         );
         if (echo) {
@@ -414,8 +416,8 @@
       }
       if (ctx.authoritative) {
         item.content.text = text;
-        if (p.message_id) item.messageId = p.message_id;
       }
+      if (p.message_id) item.messageId = p.message_id;
       item.metadata.version = (item.metadata.version || 0) + 1;
       return item;
     }

@@ -65,6 +65,23 @@ test("duplicate seq/id dedupe", () => {
 });
 
 // 3. tool_call + tool_result pair into one lifecycle item
+test("distinct user message IDs preserve repeated steers in the same turn", () => {
+  const s = Timeline.createStore();
+  const text = "请保留注释";
+  s.addLocalUserMessage(text);
+  s.ingestTaskEvents([
+    { id: 101, type: "user_message", message_id: "steer:1", content: text, turn_id: "t1" },
+    { id: 102, type: "user_message", message_id: "steer:2", content: text, turn_id: "t1" },
+  ], { jobId: "j1" });
+  s.ingestConversationEvents([
+    convEvent(201, "user_message", { message_id: "steer:1", content: text }),
+    convEvent(202, "user_message", { message_id: "steer:2", content: text }),
+    convEvent(203, "user_message", { message_id: "prompt:t2", content: text }, "t2", "j2"),
+  ]);
+  assert.strictEqual(s.items().filter(i => i.type === "user_message").length, 3);
+  assert.deepStrictEqual(Array.from(s.items().filter(i => i.type === "user_message"), i => i.messageId), ["steer:1", "steer:2", "prompt:t2"]);
+});
+
 test("tool call/result pairing", () => {
   const s = Timeline.createStore();
   s.ingestTaskEvents([

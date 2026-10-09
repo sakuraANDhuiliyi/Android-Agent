@@ -83,6 +83,8 @@ class TaskWorker:
 
     def run_once(self) -> dict[str, Any] | None:
         """Claim and execute a single task, then return. For tests."""
+        from agent.task_messages import dispatch_follow_ups
+        dispatch_follow_ups(self.store, self.settings)
         task = self.store.claim_next_task(self.worker_id, self.lease_seconds)
         if task is None:
             return None
@@ -104,6 +106,8 @@ class TaskWorker:
                 if time.monotonic() - last_recovery >= HEARTBEAT_INTERVAL:
                     self.store.recover_interrupted()
                     last_recovery = time.monotonic()
+                from agent.task_messages import dispatch_follow_ups
+                dispatch_follow_ups(self.store, self.settings)
                 task = self.store.claim_next_task(self.worker_id, self.lease_seconds)
                 if task is None:
                     time.sleep(self.poll_interval)
@@ -313,34 +317,8 @@ class TaskWorker:
                 self._create_follow_ups(task)
 
     def _create_follow_ups(self, task: dict[str, Any]) -> None:
-        messages = self.store.get_pending_messages(task["id"], types=["follow_up"])
-        for msg in messages:
-            payload = msg.get("payload") or {}
-            prompt = (
-                payload.get("prompt")
-                or payload.get("text")
-                or payload.get("content")
-                or ""
-            )
-            if not prompt:
-                self.store.consume_message(msg["id"])
-                continue
-            try:
-                from agent.jobs import start_ask_job
-
-                start_ask_job(
-                    task["user_id"],
-                    task["project_id"],
-                    str(prompt),
-                    self._task_settings(task),
-                    conversation_id=task["conversation_id"],
-                    continue_session=True,
-                    reset_session=False,
-                    execution_context=task.get("context") or {"run_mode": "workspace"},
-                )
-                self.store.consume_message(msg["id"])
-            except Exception:
-                logger.exception("Failed to create follow-up for task %s", task["id"])
+        from agent.task_messages import dispatch_follow_ups
+        dispatch_follow_ups(self.store, self.settings, task_id=task["id"])
 
     def _task_settings(self, task: dict[str, Any]) -> Settings:
         return resolve_task_settings(self.settings, task)

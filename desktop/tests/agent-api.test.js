@@ -133,6 +133,12 @@ async function run() {
   assert.strictEqual(steerReq.body.type, "steer");
   assert.strictEqual(steerReq.body.payload.text, "focus");
   assert.ok(steerReq.body.message_key);
+  await api.steerJob("j1", "focus again", "stable-steer-key");
+  await api.followUpJob("j1", "next", "stable-follow-key");
+  assert.strictEqual(requests.at(-2).body.message_key, "stable-steer-key");
+  assert.strictEqual(requests.at(-1).body.message_key, "stable-follow-key");
+  await api.jobMessages("j/1");
+  assert.strictEqual(requests.at(-1).url, "/api/jobs/j%2F1/messages?include_consumed=true");
 
   await api.restoreCheckpoint("p1", "cp1", "app/src/Main.kt");
   const restoreReq = requests.find((r) => r.url.includes("/checkpoints/cp1/restore"));

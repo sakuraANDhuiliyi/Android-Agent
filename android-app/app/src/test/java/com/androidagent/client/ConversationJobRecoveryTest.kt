@@ -154,7 +154,7 @@ class ConversationJobRecoveryTest {
         assertEquals(0L, h.watchers.last().initialCursor)
         assertEquals("c", h.vm.state.value.job!!.conversationId)
         assertTrue(h.vm.store.sortedItems().any { it.content.optString("text") == "saved history" })
-        assertFalse(h.signals.any { it == ConversationSignal.ComposerReset })
+        assertFalse(h.signals.any { it is ConversationSignal.ComposerAcknowledged })
     }
 
     @Test fun `old subscription callbacks cannot overwrite recovered job or inject stale events`() {

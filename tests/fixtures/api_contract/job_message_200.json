@@ -3,20 +3,20 @@
   "job_id": "job-001",
   "message": {
     "schema_version": 1,
-    "id": 42,
+    "id": 43,
     "task_id": "job-001",
-    "message_key": "client-msg-001",
+    "message_key": "client-msg-002",
     "type": "steer",
     "payload": {
       "text": "Focus on settings screen only"
     },
     "created_at": 1002.0,
-    "consumed_at": null,
-    "delivery_state": "pending",
-    "context_message_id": null,
+    "consumed_at": 1003.0,
+    "delivery_state": "consumed",
+    "context_message_id": "steer:job-001:43",
     "follow_up_job_id": null,
     "follow_up_turn_id": null,
-    "reason": "awaiting_safe_boundary"
+    "reason": null
   },
   "guest_remaining": null
 }

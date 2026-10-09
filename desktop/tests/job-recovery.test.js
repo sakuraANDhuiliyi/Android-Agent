@@ -26,6 +26,7 @@ async function fixture(page, job = original) {
     api.projects = async () => ({ projects: [{ id: 'project', name: 'Project' }] });
     api.models = async () => ({ models: [] });
     api.listApprovals = async () => ({ approvals: [] });
+    api.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: [] });
     api.conversationEvents = async () => ({ events: [], has_more: false });
     api.watchJob = (id, callback) => {
       const watcher = { id, callback, closed: false }; watchers.push(watcher);

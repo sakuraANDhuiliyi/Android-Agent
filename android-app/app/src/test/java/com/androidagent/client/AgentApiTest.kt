@@ -251,8 +251,8 @@ class AgentApiTest {
         assertEquals("running", api.resumeJob("j1").status)
         assertTrue(server.takeRequest().path!!.endsWith("/resume"))
 
-        server.enqueue(MockResponse().setBody("""{"job_id":"j1","message":{"id":1,"type":"steer"}}"""))
-        api.steerJob("j1", "focus on login")
+        server.enqueue(MockResponse().setBody("""{"job_id":"j1","message":{"id":1,"task_id":"j1","message_key":"stable-key","type":"steer","payload":{"text":"focus on login"}}}"""))
+        api.sendJobMessage("j1", "steer", "focus on login", "stable-key")
         val steerReq = server.takeRequest()
         assertTrue(steerReq.path!!.contains("/messages"))
     }

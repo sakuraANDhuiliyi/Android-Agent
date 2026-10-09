@@ -11,6 +11,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import java.util.UUID
+import com.androidagent.client.core.database.CacheSession
 
 class AgentPrefs(context: Context) : ConversationSessionPrefs {
 
@@ -68,6 +69,9 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
 
     fun clearAuth() {
         ApkCache.clearAccount(cacheRoot, serverUrl, userId)
+        prefs.edit().also { edit ->
+            prefs.all.keys.filter { it.startsWith("pending_job_message:") }.forEach(edit::remove)
+        }.apply()
         apiToken = ""
         guestMode = true
         userId = ""
@@ -137,6 +141,20 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
         val key = "$KEY_DRAFT:$conversationId"
         if (text.isBlank()) prefs.edit().remove(key).apply()
         else prefs.edit().putString(key, text.take(8000)).apply()
+    }
+
+    fun pendingJobMessage(session: CacheSession, jobId: String): PendingJobMessage? {
+        if (!session.isCurrent(this)) return null
+        return PendingJobMessage.parse(prefs.getString("pending_job_message:${session.sessionKey}:$jobId", null))
+    }
+
+    fun setPendingJobMessage(session: CacheSession, jobId: String, value: PendingJobMessage?) {
+        if (!session.isCurrent(this)) return
+        val key = "pending_job_message:${session.sessionKey}:$jobId"
+        // Commit before the POST: process death must retain the original idempotency key.
+        val edit = prefs.edit()
+        if (value == null) edit.remove(key) else edit.putString(key, value.toJson().toString())
+        check(edit.commit()) { "无法保存待确认消息，请重试" }
     }
 
     fun approvalAllowlist(): MutableSet<String> =

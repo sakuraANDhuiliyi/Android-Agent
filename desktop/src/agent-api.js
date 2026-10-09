@@ -245,12 +245,16 @@
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
     }
 
-    steerJob(jobId, text) {
-      return this.sendJobMessage(jobId, "steer", { text });
+    jobMessages(jobId, { includeConsumed = true } = {}) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages?include_consumed=${includeConsumed ? "true" : "false"}`);
     }
 
-    followUpJob(jobId, text) {
-      return this.sendJobMessage(jobId, "follow_up", { text });
+    steerJob(jobId, text, messageKey = null) {
+      return this.sendJobMessage(jobId, "steer", { text }, messageKey);
+    }
+
+    followUpJob(jobId, text, messageKey = null) {
+      return this.sendJobMessage(jobId, "follow_up", { text }, messageKey);
     }
 
     search(projectId, query) {

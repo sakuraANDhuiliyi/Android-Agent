@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -16,6 +17,10 @@ from agent.stores.outbox import ensure_outbox_schema
 
 
 logger = logging.getLogger(__name__)
+
+
+class TaskMessageConflict(ValueError):
+    pass
 
 
 class TaskStore:
@@ -285,6 +290,11 @@ class TaskStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_messages_task
                     ON task_messages(task_id, consumed_at, created_at);
+                CREATE TABLE IF NOT EXISTS task_message_followups (
+                    message_id INTEGER PRIMARY KEY REFERENCES task_messages(id) ON DELETE CASCADE,
+                    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+                    turn_id TEXT NOT NULL UNIQUE REFERENCES conversation_turns(id) ON DELETE CASCADE
+                );
                 CREATE TABLE IF NOT EXISTS task_dependencies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -342,6 +352,9 @@ class TaskStore:
                     "PRAGMA table_info(conversation_turns)"
                 ).fetchall()
             }
+            message_cols = {row[1] for row in conn.execute("PRAGMA table_info(task_messages)")}
+            if "request_hash" not in message_cols:
+                conn.execute("ALTER TABLE task_messages ADD COLUMN request_hash TEXT")
             if turn_cols and "trace_id" not in turn_cols:
                 conn.execute(
                     "ALTER TABLE conversation_turns ADD COLUMN trace_id TEXT"
@@ -1539,37 +1552,49 @@ class TaskStore:
             )
         return cursor.rowcount > 0
 
-    def add_task_message(
-        self,
-        task_id: str,
-        message_key: str,
-        type: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        now = time.time()
+    @staticmethod
+    def _message_hash(type: str, payload: dict[str, Any]) -> str:
+        body = json.dumps([type, payload], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(body.encode()).hexdigest()
+
+    def _insert_task_message(self, conn, task_id: str, message_key: str, type: str, payload: dict) -> tuple[dict, bool]:
+        fingerprint = self._message_hash(type, payload)
+        existing = conn.execute("SELECT * FROM task_messages WHERE task_id=? AND message_key=?", (task_id, message_key)).fetchone()
+        if existing:
+            original_hash = existing["request_hash"] or self._message_hash(existing["type"], json.loads(existing["payload"]))
+            if original_hash != fingerprint:
+                raise TaskMessageConflict("同一 message_key 已用于不同消息")
+            return self._row_to_message(existing), False
+        cursor = conn.execute("INSERT INTO task_messages(task_id,message_key,type,payload,created_at,request_hash) VALUES(?,?,?,?,?,?)",
+            (task_id, message_key, type, json.dumps(redact_sensitive_value(payload), ensure_ascii=False), time.time(), fingerprint))
+        row = conn.execute("SELECT * FROM task_messages WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return self._row_to_message(row), True
+
+    def add_task_message(self, task_id: str, message_key: str, type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._connect() as conn:
-            cursor = conn.execute(
-                """INSERT OR IGNORE INTO task_messages
-                   (task_id, message_key, type, payload, created_at)
-                   VALUES (?,?,?,?,?)""",
-                (
-                    task_id,
-                    message_key,
-                    type,
-                    json.dumps(payload or {}, ensure_ascii=False, default=str),
-                    now,
-                ),
-            )
-            if cursor.rowcount == 0:
-                existing = conn.execute(
-                    "SELECT * FROM task_messages WHERE task_id=? AND message_key=?",
-                    (task_id, message_key),
-                ).fetchone()
-                return self._row_to_message(existing) if existing else {}
-            row = conn.execute(
-                "SELECT * FROM task_messages WHERE id=?", (cursor.lastrowid,)
-            ).fetchone()
-        return self._row_to_message(row)
+            conn.execute("BEGIN IMMEDIATE")
+            message, _ = self._insert_task_message(conn, task_id, message_key, type, payload or {})
+            return message
+
+    def admit_task_message(self, task_id: str, user_id: str, message_key: str, type: str, payload: dict) -> tuple[dict, bool] | None:
+        """Identity, retry recognition and terminal admission share one lock."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute("SELECT status,cancel_requested FROM tasks WHERE id=? AND user_id=?", (task_id, user_id)).fetchone()
+            if task is None:
+                return None
+            existing = conn.execute("SELECT 1 FROM task_messages WHERE task_id=? AND message_key=?", (task_id, message_key)).fetchone()
+            if not existing and task["status"] in {"succeeded", "failed", "canceled", "interrupted"}:
+                raise TaskMessageConflict("任务已结束")
+            if not existing and task["cancel_requested"]:
+                raise TaskMessageConflict("任务正在停止，无法接收新消息")
+            return self._insert_task_message(conn, task_id, message_key, type, payload)
+
+    def list_task_messages(self, task_id: str, *, include_consumed: bool = False) -> list[dict[str, Any]]:
+        clause = "" if include_consumed else " AND consumed_at IS NULL"
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM task_messages WHERE task_id=?" + clause + " ORDER BY id", (task_id,)).fetchall()
+        return [self._row_to_message(row) for row in rows]
 
     def get_pending_messages(
         self,
@@ -1581,7 +1606,7 @@ class TaskStore:
         if types:
             query += f" AND type IN ({','.join('?' for _ in types)})"
             params.extend(types)
-        query += " ORDER BY created_at ASC"
+        query += " ORDER BY id ASC"
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_message(row) for row in rows]

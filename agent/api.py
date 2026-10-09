@@ -20,7 +20,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.api_contract import (
     public_job_ws_done,
@@ -329,18 +329,33 @@ class RevertHunkRequest(StrictRequest):
 
 
 class JobMessageRequest(StrictRequest):
-    message_key: str = Field(..., min_length=1)
+    message_key: str = Field(..., min_length=1, max_length=200)
     type: str = Field(..., pattern="^(steer|follow_up|cancel|pause|resume)$")
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_text(self):
+        if self.type in {"steer", "follow_up"}:
+            text = self.payload.get("text") or self.payload.get("prompt") or self.payload.get("content")
+            if not isinstance(text, str) or not text.strip() or len(text) > 100_000:
+                raise ValueError("引导和追问必须包含非空文本，且不超过100000字符")
+        return self
+
 
 class JobMessageResponse(BaseModel):
+    schema_version: int = 1
     id: int
     task_id: str
     message_key: str
     type: str
     payload: dict[str, Any]
     created_at: float
+    consumed_at: float | None = None
+    delivery_state: str = "unknown"
+    context_message_id: str | None = None
+    follow_up_job_id: str | None = None
+    follow_up_turn_id: str | None = None
+    reason: str | None = "legacy_missing_receipt"
 
 
 class CreateTerminalRequest(StrictRequest):
@@ -1766,37 +1781,28 @@ def create_app(
         request_cancel(job_id, user_id)
         return {"job": job_to_dict(get_job(job_id, user_id=user_id) or job)}
 
-    @app.post("/api/jobs/{job_id}/messages", status_code=201)
+    @app.post("/api/jobs/{job_id}/messages", status_code=201, responses={200: {"description": "Existing message receipt"}})
     def post_job_message(
         job_id: str,
         body: JobMessageRequest,
+        response: Response,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
-        job = get_job(job_id, user_id=user_id)
-        if not job:
+        from agent.database import TaskMessageConflict
+        from agent.task_messages import message_receipt
+        try:
+            admitted = effective_task_store.admit_task_message(job_id, user_id, body.message_key, body.type, body.payload)
+        except TaskMessageConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if admitted is None:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
-        if job["status"] in {"succeeded", "failed", "canceled"}:
-            raise HTTPException(status_code=409, detail="任务已结束")
-        guest_remaining = (
-            reserve_guest_turn(user_id)
-            if body.type in {"steer", "follow_up"}
-            else None
-        )
-        msg = add_job_message(
-            job_id,
-            user_id,
-            message_key=body.message_key,
-            type=body.type,
-            payload=body.payload,
-        )
-        if not msg:
-            if guest_remaining is not None:
-                app.state.user_store.refund_guest_message(user_id)
-            raise HTTPException(status_code=409, detail="无法添加消息")
+        msg, created = admitted
+        response.status_code = 201 if created else 200
         return {
+            "schema_version": 1,
             "job_id": job_id,
-            "message": JobMessageResponse(**msg).model_dump(),
-            "guest_remaining": guest_remaining,
+            "message": JobMessageResponse(**message_receipt(effective_task_store, msg, user_id)).model_dump(),
+            "guest_remaining": None,
         }
 
     @app.get("/api/jobs/{job_id}/messages")
@@ -1809,6 +1815,7 @@ def create_app(
         if messages is None:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
         return {
+            "schema_version": 1,
             "job_id": job_id,
             "messages": [
                 JobMessageResponse(**msg).model_dump() for msg in messages

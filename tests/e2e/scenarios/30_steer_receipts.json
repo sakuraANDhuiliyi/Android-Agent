@@ -1,0 +1,35 @@
+{
+  "id": "30_steer_receipts",
+  "title": "引导回执、丢失响应重试与同文独立消息",
+  "driver": "steer_receipts",
+  "prompt": "等待并验证后续引导",
+  "steer": "STEER_RECEIPT_ALPHA",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "import time; time.sleep(3); print(\"SAFE BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "requires_user_occurrences": {
+        "STEER_RECEIPT_ALPHA": 2
+      },
+      "text": "两条独立引导均已加入本轮上下文。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded",
+    "final_text_contains": "两条独立引导均已加入本轮上下文"
+  }
+}

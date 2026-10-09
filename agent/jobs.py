@@ -291,12 +291,8 @@ def add_job_message(
     type: str,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    job = get_job(job_id, user_id=user_id)
-    if not job:
-        return None
-    if job["status"] in {"succeeded", "failed", "canceled"}:
-        return None
-    return _store.add_task_message(job_id, message_key, type, payload)
+    result = _store.admit_task_message(job_id, user_id, message_key, type, payload or {})
+    return result[0] if result else None
 
 
 def list_job_messages(
@@ -307,10 +303,9 @@ def list_job_messages(
     job = get_job(job_id, user_id=user_id)
     if not job:
         return None
-    messages = _store.get_pending_messages(job_id)
-    if include_consumed:
-        return messages
-    return [msg for msg in messages if msg.get("consumed_at") is None]
+    from agent.task_messages import message_receipt
+    messages = _store.list_task_messages(job_id, include_consumed=include_consumed)
+    return [message_receipt(_store, msg, user_id) for msg in messages]
 
 
 def pause_job(job_id: str, user_id: str) -> bool:
@@ -1575,6 +1570,7 @@ def _run_job(
             task_id=task_id,
             set_status=set_status,
             conversation_events=history_events,
+            get_conversation_events=lambda: event_store.list_events(conversation_id, user_id=user_id),
             turn_id=turn_id,
             recovery_replays=recovery_replays,
             recovery_mode=recovery_mode,
@@ -1720,6 +1716,7 @@ def _run_job(
                 on_event=on_event, cancel_check=check_cancel, check_pause=check_pause,
                 get_steers=get_steers, task_id=task_id, set_status=set_status,
                 conversation_events=event_store.list_events(conversation_id, user_id=user_id),
+                get_conversation_events=lambda: event_store.list_events(conversation_id, user_id=user_id),
                 # run_agent uses this value to namespace deterministic message IDs;
                 # on_event still persists every event under the original turn.
                 turn_id=f"{turn_id}:feedback:{attempt}", recovery_replays=recovery_replays,

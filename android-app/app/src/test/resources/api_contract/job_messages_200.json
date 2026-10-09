@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "job_id": "job-001",
+  "messages": [
+    {
+      "schema_version": 1,
+      "id": 42,
+      "task_id": "job-001",
+      "message_key": "client-msg-001",
+      "type": "steer",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "delivery_state": "pending",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "awaiting_safe_boundary"
+    },
+    {
+      "schema_version": 1,
+      "id": 43,
+      "task_id": "job-001",
+      "message_key": "client-msg-002",
+      "type": "steer",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": 1003.0,
+      "delivery_state": "consumed",
+      "context_message_id": "steer:job-001:43",
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": null
+    },
+    {
+      "schema_version": 1,
+      "id": 44,
+      "task_id": "job-001",
+      "message_key": "client-msg-003",
+      "type": "follow_up",
+      "payload": {
+        "text": "Then explain the settings changes"
+      },
+      "created_at": 1002.0,
+      "consumed_at": 1004.0,
+      "delivery_state": "follow_up_created",
+      "context_message_id": null,
+      "follow_up_job_id": "job-002",
+      "follow_up_turn_id": "turn-002",
+      "reason": null
+    },
+    {
+      "schema_version": 1,
+      "id": 45,
+      "task_id": "job-001",
+      "message_key": "client-msg-004",
+      "type": "follow_up",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "delivery_state": "blocked",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_failed"
+    },
+    {
+      "schema_version": 1,
+      "id": 46,
+      "task_id": "job-001",
+      "message_key": "client-msg-005",
+      "type": "steer",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "delivery_state": "unapplied",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "turn_finished_before_consumption"
+    },
+    {
+      "schema_version": 1,
+      "id": 47,
+      "task_id": "job-001",
+      "message_key": "client-msg-006",
+      "type": "steer",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": 1005.0,
+      "delivery_state": "unknown",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "legacy_missing_receipt"
+    }
+  ]
+}

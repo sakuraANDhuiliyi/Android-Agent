@@ -1,6 +1,8 @@
 {
+  "schema_version": 1,
   "job_id": "job-001",
   "message": {
+    "schema_version": 1,
     "id": 42,
     "task_id": "job-001",
     "message_key": "client-msg-001",
@@ -8,6 +10,13 @@
     "payload": {
       "text": "Focus on settings screen only"
     },
-    "created_at": 1002.0
-  }
+    "created_at": 1002.0,
+    "consumed_at": null,
+    "delivery_state": "pending",
+    "context_message_id": null,
+    "follow_up_job_id": null,
+    "follow_up_turn_id": null,
+    "reason": "awaiting_safe_boundary"
+  },
+  "guest_remaining": null
 }

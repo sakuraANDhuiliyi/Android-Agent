@@ -103,6 +103,13 @@
               <button type="button" data-panel="files"><span>▱</span><strong>项目文件</strong><small>浏览和预览工作区文件</small></button>
             </div>
             <div class="cx-composer-shell">
+              <details class="message-receipts" id="cxMessageReceipts" hidden open>
+                <summary>追加消息回执</summary><div class="message-receipts-body"></div>
+              </details>
+              <div class="message-modes" id="cxMessageModes" hidden role="group" aria-label="运行中输入模式">
+                <button type="button" class="ghost-btn sm" data-message-mode="steer" aria-pressed="true">引导当前任务</button>
+                <button type="button" class="ghost-btn sm" data-message-mode="follow_up" aria-pressed="false">本轮结束后追问</button>
+              </div>
               <textarea id="cxAgentPrompt" rows="2" placeholder="描述你的想法，或输入 / 使用快捷指令…" aria-label="Agent prompt"></textarea>
               <div class="cx-composer-bar">
                 <button type="button" class="cx-composer-plus" id="cxAttach" title="Attach a file">＋</button>
@@ -442,6 +449,10 @@
 
         <div class="approval-dock" id="approvalDock" hidden></div>
 
+        <details class="message-receipts" id="aiMessageReceipts" hidden open>
+          <summary>追加消息回执</summary>
+          <div class="message-receipts-body"></div>
+        </details>
         <div class="ai-composer">
           <div class="composer-chips" id="aiContext" hidden></div>
           <textarea
@@ -622,6 +633,7 @@
   <script src="../node_modules/xterm-addon-web-links/lib/xterm-addon-web-links.js"></script>
   <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
   <script src="agent-api.js"></script>
+  <script src="job-messages.js"></script>
   <script src="workspace-files.js"></script>
   <script src="state.js"></script>
   <script src="perf.js"></script>

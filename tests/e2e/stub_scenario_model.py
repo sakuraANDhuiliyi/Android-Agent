@@ -263,6 +263,10 @@ class Handler(BaseHTTPRequestHandler):
             user_contents = [message.get("content") for message in messages if message.get("role") == "user"]
             if str(required) not in json.dumps(user_contents, ensure_ascii=False):
                 step = {"type": "final", "text": "E2E: required user instruction was lost on resume."}
+        for required, count in (step.get("requires_user_occurrences") or {}).items():
+            user_contents = [message.get("content") for message in messages if message.get("role") == "user"]
+            if json.dumps(user_contents, ensure_ascii=False).count(required) != count:
+                step = {"type": "final", "text": "E2E: distinct user instructions were lost or duplicated."}
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

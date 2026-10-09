@@ -248,7 +248,7 @@ class ConversationViewModelTest {
 
         vm.send("构建一下", steer = false, contexts = emptyList())
 
-        awaitTrue { signals.contains(ConversationSignal.ComposerReset) }
+        awaitTrue { signals.any { it is ConversationSignal.ComposerAcknowledged } }
         awaitTrue { vm.state.value.jobId == "job-9" }
         // 请求顺序：events, jobs, ask, job 详情（running 任务无需拉审批列表）
         awaitTrue { server.requestCount >= 4 }

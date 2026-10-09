@@ -79,6 +79,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private var lastMentionTrigger = ""
     private var lastContextStatusJobId: String? = null
     private var lastJobInstance: JobInfo? = null
+    private var receiptsDialog: BottomSheetDialog? = null
+    private var receiptsDialogContent: LinearLayout? = null
+    private var receiptRenderKey: List<Any?>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -175,6 +178,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
         binding.textDeliveryStatus.isFocusable = true
         binding.btnStop.setOnClickListener { viewModel.controlJob("cancel") }
+        binding.btnMessageReceipts.setOnClickListener { showMessageReceipts() }
         binding.btnDisconnectDetails.setOnClickListener { ConnectionSettingsActivity.start(this) }
         binding.btnClearDraft.setOnClickListener {
             binding.editPrompt.setText("")
@@ -231,8 +235,17 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending && !st.recovering
+                binding.btnSend.isEnabled = !st.sending && !st.recovering && st.pendingMessage == null
                 binding.btnStop.isEnabled = !st.recovering
+                binding.btnMessageReceipts.isVisible = st.jobId != null && !prefs.guestMode
+                binding.btnMessageReceipts.text = when {
+                    st.sending && st.pendingMessage != null -> "消息发送中…"
+                    st.pendingMessage != null -> "消息结果待确认 · 查看回执"
+                    st.messageNotice != null -> "消息回执需确认 · 查看详情"
+                    st.messageReceipts.isNotEmpty() -> "${st.messageReceipts.last().label} · 查看回执 (${st.messageReceipts.size})"
+                    else -> "本任务消息回执"
+                }
+                renderMessageReceipts()
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
@@ -257,10 +270,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             is ConversationSignal.ToastText -> toast(signal.message)
             is ConversationSignal.ToastRes -> toast(getString(signal.resId))
             ConversationSignal.GuestQuotaExhausted -> showGuestQuotaDialog()
-            ConversationSignal.ComposerReset -> {
-                binding.editPrompt.setText("")
-                contextAttachments.clear()
-                renderContextChips()
+            is ConversationSignal.ComposerAcknowledged -> {
+                if (signal.submitted.matches(binding.editPrompt.text?.toString().orEmpty(), contextAttachments)) {
+                    binding.editPrompt.setText("")
+                    contextAttachments.clear()
+                    renderContextChips()
+                }
             }
         }
     }
@@ -312,6 +327,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         // Returning from another conversation makes this page the active selection again.
         prefs.selectedProjectId = projectId
         prefs.selectedConversationId = conversationId
+        viewModel.setForeground(true)
         if (resumedOnce) viewModel.refresh() else resumedOnce = true
     }
 
@@ -320,6 +336,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         // 只落盘游标，不停止 watcher：任务在后台完成时要能触发本地通知
         // （MVP §21）。回到前台时 refresh 会重新接管并复用游标去重。
         if (::viewModel.isInitialized && cacheSession.isCurrent(prefs)) viewModel.persistJobCursor()
+        if (::viewModel.isInitialized) viewModel.setForeground(false)
         super.onStop()
     }
 
@@ -334,6 +351,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     override fun onDestroy() {
+        receiptsDialog?.dismiss()
         binding.agentEmotion.release()
         super.onDestroy()
     }
@@ -396,7 +414,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     private fun updateComposer(job: JobInfo?) {
         val running = job != null && job.resolvedStatus() in ConversationViewModel.ACTIVE_STATUSES
-        binding.btnSend.visibility = if (running) View.GONE else View.VISIBLE
+        binding.btnSend.visibility = View.VISIBLE
         binding.btnStop.visibility = if (running) View.VISIBLE else View.GONE
         binding.scrollMode.visibility = if (running) View.VISIBLE else View.GONE
         binding.inputPrompt.hint = getString(
@@ -405,6 +423,69 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         if (running && !binding.chipModeSteer.isChecked && !binding.chipModeFollowUp.isChecked) {
             binding.chipModeSteer.isChecked = true
         }
+    }
+
+    private fun showMessageReceipts() {
+        if (!cacheSession.isCurrent(prefs)) return
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(content) }
+        receiptsDialog = BottomSheetDialog(this).also { dialog ->
+            receiptsDialogContent = content
+            receiptRenderKey = null
+            dialog.setContentView(scroll)
+            dialog.setOnDismissListener { receiptsDialogContent = null; receiptsDialog = null; receiptRenderKey = null }
+            renderMessageReceipts()
+            dialog.show()
+        }
+        viewModel.refreshMessageReceipts()
+    }
+
+    private fun renderMessageReceipts() {
+        val content = receiptsDialogContent ?: return
+        val state = viewModel.state.value
+        // Job status/event updates must not replace the button beneath a pending touch.
+        val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering)
+        if (key == receiptRenderKey) return
+        receiptRenderKey = key
+        content.removeAllViews()
+        fun text(value: String) {
+            content.addView(TextView(this).apply {
+                this.text = value
+                textSize = 15f
+                val pad = (8 * resources.displayMetrics.density).toInt()
+                setPadding(0, pad, 0, pad)
+            })
+        }
+        fun action(label: String, enabled: Boolean = true, block: () -> Unit) {
+            content.addView(com.google.android.material.button.MaterialButton(this).apply {
+                this.text = label
+                isEnabled = enabled
+                setOnClickListener { if (cacheSession.isCurrent(prefs)) block() }
+            })
+        }
+        text("本任务消息回执")
+        text("引导加入本轮上下文；追问在原任务成功后创建后续任务。回执不代表执行完成。")
+        state.messageNotice?.let(::text)
+        val busy = state.sending || state.recovering
+        state.pendingMessage?.let { pending ->
+            text("发送结果待确认\n${pending.composerText}")
+            action("查询并重试原消息", !busy) { viewModel.retryPendingMessage() }
+        }
+        if (state.messageReceipts.isEmpty() && state.pendingMessage == null) text("暂无消息回执")
+        state.messageReceipts.forEach { receipt ->
+            text("${receipt.modeLabel} · ${receipt.label}\n${receipt.text}" + receipt.reasonLabel?.let { "\n$it" }.orEmpty())
+            if (receipt.followUpJobId != null && receipt.delivery == MessageDelivery.FOLLOW_UP_CREATED) {
+                action("查看后续任务", !busy) {
+                    viewModel.openFollowUpMessage(receipt.key)
+                    receiptsDialog?.dismiss()
+                }
+            }
+        }
+        action("刷新回执") { viewModel.refreshMessageReceipts() }
     }
 
     private fun updateMenuVisibility(job: JobInfo?) {

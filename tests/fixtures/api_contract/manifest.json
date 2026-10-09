@@ -1,7 +1,15 @@
 {
   "schema_version": 1,
   "description": "Shared cross-client API contract fixtures. Update client contract tests when this manifest changes.",
-  "error_statuses": [401, 404, 409, 413, 422, 429, 500],
+  "error_statuses": [
+    401,
+    404,
+    409,
+    413,
+    422,
+    429,
+    500
+  ],
   "endpoints": [
     {
       "id": "creative_author_ok",
@@ -53,6 +61,20 @@
       "path": "/api/jobs/{job_id}/messages",
       "fixture": "job_message_201.json",
       "status": 201
+    },
+    {
+      "id": "job_message_retried",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages",
+      "fixture": "job_message_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_messages_all",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}/messages?include_consumed=true",
+      "fixture": "job_messages_200.json",
+      "status": 200
     },
     {
       "id": "job_message_conflict",

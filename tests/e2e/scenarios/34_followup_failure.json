@@ -1,0 +1,31 @@
+{
+  "id": "34_followup_failure",
+  "title": "父任务构建失败后追问保持阻塞",
+  "driver": "blocked_followup",
+  "prompt": "执行任务以验证追问阻塞状态",
+  "parent_end": "failure",
+  "blocked_reason": "parent_failed",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_gradle",
+          "arguments": {
+            "task": "assembleDebug"
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "步骤结束。"
+    }
+  ],
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\nsleep 3\necho BUILD FAILED\nexit 1\n"
+    }
+  }
+}

@@ -37,6 +37,7 @@
     btnSteer: document.getElementById("btnSteer"),
     btnFollowUp: document.getElementById("btnFollowUp"),
     composerModes: document.getElementById("composerModes"),
+    messageReceipts: document.getElementById("aiMessageReceipts"),
     btnNewChat: document.getElementById("btnNewChat"),
     btnAiMore: document.getElementById("btnAiMore"),
     aiMoreMenu: document.getElementById("aiMoreMenu"),
@@ -111,6 +112,7 @@
     // Backward pagination cursor for the current conversation history.
     historyCursor: null, // { minSeq, hasMore }
   };
+  const messages = new window.JobMessages.Store(client, () => state, { storage: window.localStorage });
 
   // Last selection persisted before shutdown; applied once on the first
   // successful connect after launch so a restart restores the conversation.
@@ -873,6 +875,8 @@
     const token = els.apiToken.value.trim();
     els.serverUrl.value = baseUrl;
     if (client.baseUrl !== baseUrl || client.token !== token) {
+      state.connected = false;
+      state.userId = "";
       window.EditorApp?.clearRemoteWorkspace?.();
       projectLoadToken += 1;
       state.loadToken += 1;
@@ -1618,7 +1622,8 @@
     els.btnSend.hidden = false;
     els.btnStop.hidden = !controllable;
     if (els.composerModes) els.composerModes.hidden = !running;
-    els.btnSend.disabled = !ready || state.controlBusy === "recover";
+    const messageScope = messages.scope(state.currentJob);
+    els.btnSend.disabled = !ready || state.controlBusy === "recover" || messages.sending(messageScope);
     els.btnStop.disabled = !controllable || Boolean(state.controlBusy) || state.cancelRequested;
     els.btnStop.textContent = state.cancelRequested ? "停止中…" : "停止";
     els.btnAddContext.disabled = !state.selectedProjectId;
@@ -1639,7 +1644,27 @@
             : "描述要完成的任务";
     setRunInputMode(state.runInputMode);
     updateJobControls();
+    renderMessageReceipts();
   }
+
+  function renderMessageReceipts() {
+    const scope = state.currentJob?.id === state.currentJobId && state.currentJob?.project_id === state.selectedProjectId
+      && state.currentJob?.conversation_id === state.conversationId ? messages.scope(state.currentJob) : null;
+    messages.watch("ai-panel", scope, hasActiveJob());
+    window.JobMessages.render(els.messageReceipts, messages, scope, { openChild: async (binding, row) => {
+      const current = selectionGuard();
+      const jobId = state.currentJobId;
+      const bindingEpoch = watcherEpoch;
+      const child = await messages.child(binding, row);
+      if (child && current() && bindingEpoch === watcherEpoch && state.currentJobId === jobId) await loadHistoricalJob(child.id);
+    } });
+  }
+
+  messages.subscribe(() => {
+    renderMessageReceipts();
+    if (els.btnSend) els.btnSend.disabled = !state.connected || !state.selectedProjectId || !state.conversationId
+      || state.controlBusy === "recover" || messages.sending(messages.scope(state.currentJob));
+  });
 
   function autosizePrompt() {
     const el = els.promptInput;
@@ -1900,23 +1925,26 @@
   }
 
   async function sendJobMessage(kind) {
-    const text = els.promptInput.value.trim();
+    const text = buildPrompt();
     if (!text || !state.currentJobId) return;
     if (!state.connected) {
       persistDraft();
       toast("当前离线，草稿已保留");
       return;
     }
+    const scope = messages.scope(state.currentJob);
+    if (!scope || messages.sending(scope)) return;
     try {
-      if (kind === "steer") await client.steerJob(state.currentJobId, text);
-      else await client.followUpJob(state.currentJobId, text);
+      const row = messages.create(scope, kind, text);
+      const sent = messages.submit(scope, row.message_key);
+      // Clear only the draft captured by this synchronous click. Responses
+      // update scoped receipts, never a newer draft or a different selection.
       els.promptInput.value = "";
       persistDraft();
       autosizePrompt();
-      toast(kind === "steer" ? "已发送引导" : "已加入追问，本轮结束后继续");
+      await sent;
     } catch (err) {
-      persistDraft();
-      toast(`${kind === "steer" ? "引导" : "追问"}失败: ${err.message}`);
+      toast(err.message);
     }
   }
 
@@ -2324,6 +2352,7 @@
     openReview: openTurnDiffReview,
     refreshProjects,
     client,
+    messages,
     getState: () => state,
     dispatch: (action) => {
       if (typeof action === "object" && action) {

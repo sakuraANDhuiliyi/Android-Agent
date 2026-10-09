@@ -25,6 +25,7 @@ async function fixture(page, value = job) {
     api.job = async () => ({ job: value }); api.jobs = async () => ({ jobs: [value] });
     api.projects = async () => ({ projects: [{ id: 'project', name: 'Project' }] }); api.models = async () => ({ models: [] });
     api.listApprovals = async () => ({ approvals: [] }); api.conversationEvents = async () => ({ events: [], has_more: false });
+    api.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: [] });
     api.watchJob = (id, callback) => { watchers.push({ id, callback }); return { close() {} }; };
     AiPanel.debug.setState({ connected: true, selectedProjectId: 'project', conversationId: 'conversation', currentJobId: null, currentJob: null, running: false, jobStatus: null });
     AiPanel.adoptJob(value);

@@ -70,6 +70,26 @@ class TimelineNormalizationTest {
     private fun toolItems(store: TimelineStore) = store.sortedItems().filter { it.type == TimelineStore.ItemType.TOOL }
     private fun assistantItems(store: TimelineStore) = store.sortedItems().filter { it.type == TimelineStore.ItemType.ASSISTANT }
     private fun userItems(store: TimelineStore) = store.sortedItems().filter { it.type == TimelineStore.ItemType.USER }
+
+    @Test fun `identical steer messages keep distinct canonical IDs and replay once`() {
+        val store = TimelineStore()
+        val first = convEvent("event-1", "user_message", seq = 1, taskId = "j1",
+            payload = JSONObject().put("message_id", "steer:j1:1").put("content", "继续检查"))
+        val second = convEvent("event-2", "user_message", seq = 2, taskId = "j1",
+            payload = JSONObject().put("message_id", "steer:j1:2").put("content", "继续检查"))
+        ingestOne(store, first); ingestOne(store, second)
+        ingestOne(store, jobEvent(77, "user_message", "turn_id" to "t1", "message_id" to "steer:j1:1", "content" to "继续检查"))
+        assertEquals(2, userItems(store).size)
+        assertEquals(setOf("steer:j1:1", "steer:j1:2"), userItems(store).map { it.messageId }.toSet())
+    }
+
+    @Test fun `a different job cannot adopt an optimistic user echo with the same text`() {
+        val store = TimelineStore()
+        store.addLocalUserMessage("相同文本", "other-job")
+        ingestOne(store, convEvent("event", "user_message", seq = 1, taskId = "j1",
+            payload = JSONObject().put("message_id", "steer:j1:1").put("content", "相同文本")))
+        assertEquals(2, userItems(store).size)
+    }
     private fun approvalItems(store: TimelineStore) = store.sortedItems().filter { it.type == TimelineStore.ItemType.APPROVAL }
 
     // ---------- 场景 1：Conversation event_type + payload ----------

@@ -1,0 +1,29 @@
+{
+  "id": "33_followup_crash",
+  "title": "服务中断后追问保持阻塞",
+  "driver": "blocked_followup",
+  "prompt": "执行任务以验证追问阻塞状态",
+  "parent_end": "crash",
+  "blocked_reason": "parent_interrupted",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import time; p=Path(\"app/src/test/followup-started.txt\"); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(\"started\"); time.sleep(6); print(\"BOUNDARY\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "步骤结束。"
+    }
+  ]
+}

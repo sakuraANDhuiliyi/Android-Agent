@@ -45,6 +45,7 @@
     selectedProjectId: null,
     selectedConversationId: null,
     runMode: "workspace",
+    messageMode: "steer",
     models: [],
     jobs: [],
     jobDetails: new Map(),
@@ -85,6 +86,7 @@
   let watcherEpoch = 0;
   let dataEpoch = 0;
   let accountVersion = null;
+  let messageSubscription = null;
   // Every selection change invalidates responses, including A → B → A.
   for (const key of ["selectedId", "selectedProjectId", "selectedConversationId"]) {
     let value = state[key];
@@ -750,6 +752,7 @@
     }
     updateTaskControls();
     syncJobWatcher();
+    renderMessageReceipts();
   }
 
   function closeJobWatcher() {
@@ -1376,7 +1379,31 @@
 
   function updateSendButton() {
     if (!els.send) return;
-    els.send.disabled = !els.prompt.value.trim() || !state.selectedProjectId || state.busy || state.controlBusy === "recover";
+    const job = selectedJob();
+    const messages = window.AiPanel?.messages;
+    els.send.disabled = !els.prompt.value.trim() || !state.selectedProjectId || state.busy || state.controlBusy === "recover"
+      || Boolean(messages?.sending(messages.scope(job)));
+  }
+
+  function renderMessageReceipts() {
+    const messages = window.AiPanel?.messages;
+    if (!messages) return;
+    if (!messageSubscription) messageSubscription = messages.subscribe(() => { renderMessageReceipts(); updateSendButton(); });
+    const job = selectedJob();
+    const scope = messages.scope(job);
+    const active = Boolean(job && ACTIVE_STATUSES.has(job.displayStatus));
+    messages.watch("agent-view", state.visible ? scope : null, active);
+    if (els.messageModes) {
+      els.messageModes.hidden = !active;
+      for (const mode of els.messageModes.querySelectorAll("[data-message-mode]")) mode.setAttribute("aria-pressed", String(mode.dataset.messageMode === state.messageMode));
+    }
+    window.JobMessages.render(els.messageReceipts, messages, scope, { openChild: async (binding, row) => {
+      const current = selectionGuard();
+      const child = await messages.child(binding, row);
+      if (!child || !current()) return;
+      mergeJob(child);
+      selectJobFromSidebar(child);
+    } });
   }
 
   async function startAgent() {
@@ -1387,20 +1414,23 @@
     if (state.contextFiles.length) context.push(state.contextFiles.map((path) => `Relevant file: ${path}`).join("\n"));
     const prompt = context.length ? `${context.join("\n")}\n\n${rawPrompt}` : rawPrompt;
     if (!prompt || !state.selectedProjectId || state.busy || state.controlBusy === "recover") return;
+    const activeJob = selectedJob();
+    if (activeJob && ACTIVE_STATUSES.has(activeJob.displayStatus)) {
+      const messages = window.AiPanel?.messages;
+      const scope = messages?.scope(activeJob);
+      if (!scope || messages.sending(scope)) return;
+      try {
+        const row = messages.create(scope, state.messageMode, prompt);
+        const pending = messages.submit(scope, row.message_key);
+        els.prompt.value = "";
+        updateSendButton();
+        await pending;
+      } catch (error) { toast(error.message); }
+      return;
+    }
     state.busy = true;
     updateSendButton();
     try {
-      const activeJob = selectedJob();
-      if (activeJob && ACTIVE_STATUSES.has(activeJob.displayStatus)) {
-        await window.AiPanel?.client?.steerJob(activeJob.id, prompt);
-        const events = Array.isArray(activeJob.events) ? activeJob.events.slice() : [];
-        events.push({ id: `local-steer-${Date.now()}`, type: "user_message", content: [{ type: "text", text: prompt }] });
-        mergeJob({ ...activeJob, events });
-        els.prompt.value = "";
-        renderAgents();
-        toast("Guidance sent to the running Agent");
-        return;
-      }
       const job = await window.AiPanel?.startAgent?.(prompt, state.selectedProjectId, {
         conversationId: state.selectedConversationId,
         newConversation: !state.selectedConversationId,
@@ -1602,6 +1632,10 @@
     els.recoverTask.addEventListener("click", () => controlSelectedJob("recover"));
     els.stopTask.addEventListener("click", () => controlSelectedJob("cancel"));
     els.send.addEventListener("click", startAgent);
+    els.messageModes?.addEventListener("click", event => {
+      const mode = event.target.closest("[data-message-mode]")?.dataset.messageMode;
+      if (mode) { state.messageMode = mode === "follow_up" ? mode : "steer"; renderMessageReceipts(); }
+    });
     els.prompt.addEventListener("input", updateSendButton);
     els.prompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); startAgent(); }
@@ -1657,6 +1691,8 @@
     els.scene = document.getElementById("cxAgentCards");
     els.prompt = document.getElementById("cxAgentPrompt");
     els.send = document.getElementById("cxSendAgent");
+    els.messageReceipts = document.getElementById("cxMessageReceipts");
+    els.messageModes = document.getElementById("cxMessageModes");
     els.attach = document.getElementById("cxAttach");
     els.addMenu = document.getElementById("cxAddMenu");
     els.mic = document.getElementById("cxMic");
@@ -1740,6 +1776,7 @@
       setPanel(state.activePanel || "launcher");
       state.timer = setInterval(() => refresh({ quiet: true }), 4000);
     } else closeJobWatcher();
+    renderMessageReceipts();
   }
 
   window.CodexiaAgentView = {

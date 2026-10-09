@@ -242,7 +242,8 @@ class TimelineStore {
         val messageId = ev.payload.optString("message_id").takeIf { it.isNotBlank() }
         // 收养本地乐观 echo（同文本、无 turn 归属）
         val echo = items.values.firstOrNull {
-            it.type == ItemType.USER && it.turnId == null && it.content.optString("text") == text
+            it.key.startsWith("local:") && it.type == ItemType.USER && it.turnId == null &&
+                (it.jobId == null || it.jobId == ev.jobId) && it.content.optString("text") == text
         }
         if (echo != null) {
             items.remove(echo.key)
@@ -268,6 +269,9 @@ class TimelineStore {
 
     private fun keyOfUser(ev: NormalizedEvent, text: String): String {
         val owner = ev.turnId ?: ev.jobId ?: "?"
+        (ev.payload.opt("message_id") as? String)?.takeIf { it.isNotBlank() }?.let {
+            return "user:$owner:message:$it"
+        }
         return "user:$owner:${text.length}:${text.take(32)}"
     }
 

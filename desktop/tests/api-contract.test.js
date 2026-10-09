@@ -76,6 +76,25 @@
   const message = assertSuccessFixture("job_message_201.json", ["job_id", "message"]).message;
   assert.strictEqual(message.message_key, "client-msg-001");
   assert.strictEqual(message.type, "steer");
+  const messages = require("../src/job-messages");
+  const scope = { job: "job-001" };
+  assert.strictEqual(messages.normalize(message, scope).delivery_state, "pending");
+  assert.strictEqual(message.consumed_at, null);
+  const retried = assertSuccessFixture("job_message_200.json", ["schema_version", "job_id", "message"]);
+  const consumed = messages.normalize(retried.message, scope);
+  assert.strictEqual(consumed.delivery_state, "consumed");
+  assert.ok(consumed.context_message_id);
+  assert.strictEqual(consumed.follow_up_job_id, null);
+  const messageList = assertSuccessFixture("job_messages_200.json", ["schema_version", "job_id", "messages"]);
+  assert.strictEqual(messageList.schema_version, 1);
+  assert.strictEqual(messageList.job_id, scope.job);
+  const receipts = messageList.messages.map(row => messages.normalize(row, scope));
+  assert.deepStrictEqual(receipts.map(row => row.delivery_state), ["pending", "consumed", "follow_up_created", "blocked", "unapplied", "unknown"]);
+  assert.strictEqual(receipts[2].follow_up_job_id, "job-002");
+  assert.strictEqual(receipts[2].follow_up_turn_id, "turn-002");
+  assert.strictEqual(receipts[2].context_message_id, null);
+  assert.strictEqual(receipts[3].reason, "parent_failed");
+  assert.strictEqual(receipts[5].reason, "legacy_missing_receipt");
 
   const eventsPage = assertSuccessFixture("conversation_events_200.json", [
     "conversation_id",

@@ -261,6 +261,130 @@ class E2ERunner:
         context.job = context.client.wait_job(str(job["id"]))
         self.wait_terminal_events(context)
 
+    def message_receipts(self, context: ScenarioContext) -> list[dict[str, Any]]:
+        response = context.client.http.get(f"/api/jobs/{context.job['id']}/messages", params={"include_consumed": "true"})
+        response.raise_for_status()
+        context.check(response.json().get("job_id") == context.job["id"], "message list belongs to another job")
+        # Cancel/pause/resume control messages share this API but are not user
+        # steer/follow-up delivery receipts.
+        return [row for row in response.json()["messages"] if row.get("type") in {"steer", "follow_up"}]
+
+    def wait_receipts(self, context: ScenarioContext, expected_count: int, state: str, timeout: float = 30) -> list[dict[str, Any]]:
+        deadline = time.monotonic() + timeout
+        latest = []
+        while time.monotonic() < deadline:
+            latest = self.message_receipts(context)
+            for item in latest:
+                if item.get("follow_up_job_id"):
+                    self.pump.watch(item["follow_up_job_id"])
+            if len(latest) == expected_count and all(item.get("delivery_state") == state for item in latest):
+                return latest
+            time.sleep(0.15)
+        raise ScenarioFailure(f"expected {expected_count} {state} receipts; got {latest}")
+
+    def driver_steer_receipts(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        job = self.send_prompt(context)
+        job_id = str(job["id"])
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_call")
+        body = {"message_key": "same-intent", "type": "steer", "payload": {"text": context.scenario["steer"]}}
+        # A successful server write whose first response the app does not use.
+        first = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        context.check(first.status_code == 201, f"first send status={first.status_code}")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            retries = [pool.submit(context.client.http.post, f"/api/jobs/{job_id}/messages", json=body) for _ in range(2)]
+            replies = [future.result() for future in retries]
+        context.check(all(r.status_code == 200 and r.json()["message"]["id"] == first.json()["message"]["id"] for r in replies),
+                      "concurrent original-key retries created messages or rejected accepted delivery")
+        second = context.client.http.post(f"/api/jobs/{job_id}/messages", json={**body, "message_key": "second-intent"})
+        context.check(second.status_code == 201 and second.json()["message"]["id"] != first.json()["message"]["id"],
+                      "intentional same-text message was deduplicated")
+        conflict = context.client.http.post(f"/api/jobs/{job_id}/messages", json={**body, "payload": {"text": "DIFFERENT INTENT"}})
+        context.check(conflict.status_code == 409, "same-key different-body message was accepted")
+        context.job = context.client.wait_job(job_id)
+        self.wait_terminal_events(context)
+        receipts = self.wait_receipts(context, 2, "consumed")
+        event_ids = [p.get("message_id") for p in context.payloads("user_message") if p.get("source") == "task_message"]
+        context.check(len(event_ids) == 2 and set(event_ids) == {r["context_message_id"] for r in receipts},
+                      "canonical context does not contain exactly the two receipt identities")
+        context.check(all(r.get("schema_version") == 1 and r.get("consumed_at") for r in receipts), "missing consumption evidence")
+        retry = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        context.check(retry.status_code == 200 and retry.json()["message"]["id"] == first.json()["message"]["id"],
+                      "terminal task rejected an already accepted retry")
+        rejected = context.client.http.post(f"/api/jobs/{job_id}/messages", json={**body, "message_key": "new-after-terminal"})
+        context.check(rejected.status_code == 409, "terminal task accepted a new steer")
+        pending = context.client.http.get(f"/api/jobs/{job_id}/messages")
+        pending.raise_for_status()
+        context.check(pending.json()["messages"] == [], "consumed messages remain in pending-only list")
+        stranger = E2EClient(self.stack)
+        try:
+            stranger.register_account()
+            context.check(stranger.http.get(f"/api/jobs/{job_id}/messages").status_code == 404, "cross-account receipts leaked")
+            context.check(stranger.http.post(f"/api/jobs/{job_id}/messages", json=body).status_code == 404, "cross-account retry leaked")
+        finally:
+            stranger.close()
+
+    def driver_followup_receipts(self, context: ScenarioContext) -> None:
+        job = self.send_prompt(context)
+        job_id = str(job["id"])
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_call")
+        bodies = [{"message_key": f"follow-{index}", "type": "follow_up", "payload": {
+            "text": f"[[{context.scenario['id']}]] 执行后续任务 {index}"}} for index in range(2)]
+        for body in bodies:
+            response = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+            context.check(response.status_code == 201, f"follow-up send status={response.status_code}")
+        context.job = context.client.wait_job(job_id)
+        self.wait_terminal_events(context)
+        receipts = self.wait_receipts(context, 2, "follow_up_created", timeout=45)
+        children = [context.client.wait_job(row["follow_up_job_id"]) for row in receipts]
+        context.check(len({child["id"] for child in children}) == 2, "follow-ups share a child task")
+        context.check(all(child["status"] == "succeeded" and child["conversation_id"] == context.conversation_id
+                          and child["project_id"] == context.project_id for child in children), "child failed or changed scope")
+        context.check(all(child["turn_id"] == row["follow_up_turn_id"] for child, row in zip(children, receipts)), "receipt child turn mismatch")
+        # Claim timestamps have second precision. Creation is precise and must
+        # itself wait for the preceding child to succeed, before any execution.
+        context.check(children[1]["created_at"] >= children[0]["finished_at"], "queued follow-up was created before its predecessor finished")
+        for row, body in zip(receipts, bodies):
+            retry = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+            context.check(retry.status_code == 200 and retry.json()["message"]["follow_up_job_id"] == row["follow_up_job_id"],
+                          "retry changed the follow-up task mapping")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check({row["id"] for row in listing.json()["jobs"]} == {job_id, *(child["id"] for child in children)},
+                      "follow-up dispatch created extra tasks")
+
+    def driver_blocked_followup(self, context: ScenarioContext) -> None:
+        job = self.send_prompt(context)
+        job_id = str(job["id"])
+        context.client.wait_event(context.conversation_id, lambda event: event.get("event_type") == "tool_call")
+        body = {"message_key": "pending-follow", "type": "follow_up", "payload": {"text": "[[01_simple_answer]] queued child"}}
+        response = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        context.check(response.status_code == 201, "could not queue follow-up before interruption")
+        mode = context.scenario["parent_end"]
+        if mode in {"crash", "cancel"}:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and context.workspace_file("app/src/test/followup-started.txt") != "started":
+                time.sleep(0.05)
+            context.check(context.workspace_file("app/src/test/followup-started.txt") == "started", "parent tool never started")
+        if mode == "crash":
+            self.stack.restart_agent_after_crash(job_id)
+        elif mode == "cancel":
+            context.client.cancel_job(job_id)
+        context.job = context.client.wait_job(job_id)
+        self.wait_terminal_events(context)
+        rows = self.wait_receipts(context, 1, "blocked")
+        context.check(rows[0].get("reason") == context.scenario["blocked_reason"], f"wrong blocking reason: {rows[0]}")
+        context.check(rows[0].get("follow_up_job_id") is None, "blocked message created a child")
+        if mode == "cancel":
+            self.stack.restart_idle_agent()
+            context.check(self.wait_receipts(context, 1, "blocked")[0]["id"] == rows[0]["id"], "restart changed blocked receipt")
+        retry = context.client.http.post(f"/api/jobs/{job_id}/messages", json=body)
+        context.check(retry.status_code == 200 and retry.json()["message"]["id"] == rows[0]["id"], "blocked retry lost receipt")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check([row["id"] for row in listing.json()["jobs"]] == [job_id], "blocked follow-up was dispatched")
+
     def driver_approval(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])

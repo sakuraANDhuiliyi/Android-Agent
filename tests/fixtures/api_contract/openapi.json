@@ -1775,6 +1775,7 @@
         "additionalProperties": false,
         "properties": {
           "message_key": {
+            "maxLength": 200,
             "minLength": 1,
             "title": "Message Key",
             "type": "string"
@@ -6694,6 +6695,9 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "Existing message receipt"
+          },
           "201": {
             "content": {
               "application/json": {
