@@ -55,7 +55,7 @@ async function fixture(page) {
         expected_revision: request.body.expected_revision, revision: request.body.expected_revision + 1,
         created_at: 400, payload: request.body.payload, ...saved } });
     };
-    AiPanel.messages.records.clear(); AiPanel.messages.save();
+    AiPanel.messages.records.clear(); AiPanel.messages.queues.clear(); AiPanel.messages.save(); AiPanel.messages.saveQueueIntents();
     AiPanel.debug.setState({ connected: true, userId: 'alice', selectedProjectId: 'project', conversationId: 'conversation', currentJobId: null, currentJob: null, running: false, jobStatus: null });
     AiPanel.adoptJob(job);
     const state = CodexiaAgentView._internal.getState();
@@ -113,7 +113,6 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
     await fixture(page);
     await page.locator('#btnSteer').click(); await page.locator('#promptInput').fill('lost response'); await page.locator('#btnSend').click();
     await page.evaluate(() => { receipts.push(receiptFor(0, 'consumed')); requests[0].reject(new Error('lost response')); });
-    await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试' }).click();
     await page.waitForFunction(() => document.querySelector('#aiMessageReceipts [data-state="consumed"]'));
     assert.equal(await page.evaluate(() => requests.length), 1, 'lost successful response only reconciles via GET');
 
@@ -496,6 +495,123 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
       if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
     }
     assert.equal(await page.evaluate(() => window.blockerXss), undefined);
+
+    // Authoritative queue controls are shared by both real composers. Local
+    // receipt chronology does not determine position; historical ACKs never sort.
+    for (const surface of ['ai', 'cx']) {
+      await fixture(page);
+      if (surface === 'cx') await page.locator('[data-mode="agent-windows"]').click();
+      const host = surface === 'ai' ? '#aiMessageReceipts' : '#cxMessageReceipts';
+      const input = surface === 'ai' ? '#promptInput' : '#cxAgentPrompt';
+      await page.evaluate(() => {
+        window.reorders = [];
+        window.queueState = { schema_version: 1, task_id: 'job', version: 'q1:' + 'a'.repeat(64) + '', order_revision: 0,
+          message_ids: [3, 1, 2], pending_message_ids: [3, 1, 2], can_reorder: true, reason: null };
+        receipts = [1, 2, 3].map(id => ({ schema_version: 1, id, task_id: 'job', message_key: `queue-${id}`, type: 'follow_up',
+          payload: { text: `追问 ${id} <script>not executed</script>` }, created_at: id, consumed_at: null,
+          delivery_state: 'pending', context_message_id: null, follow_up_job_id: null, follow_up_turn_id: null,
+          revision: 0, edited_at: null, withdrawn_at: null, can_withdraw: true, can_edit: true, reason: 'parent_paused' }));
+        receipts.push({ ...receipts[0], id: 4, message_key: 'steer-history', type: 'steer', payload: { text: '历史引导' }, can_edit: false, can_withdraw: false });
+        AiPanel.client.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: receipts, queue: queueState });
+        AiPanel.client.reorderJobMessages = (id, body) => new Promise((resolve, reject) => reorders.push({ id, body, resolve, reject }));
+        window.queueAck = index => ({ schema_version: 1, job_id: 'job', messages: [], queue: { ...queueState, message_ids: [1, 2, 3] },
+          reorder: { schema_version: 1, task_id: 'job', ...reorders[index].body, order_revision: 1, created_at: 500 } });
+      });
+      await reconcile(page);
+      const ids = () => page.locator(`${host} [data-queue-position]`).evaluateAll(nodes => nodes.map(node => Number(node.dataset.messageId)));
+      assert.deepEqual(await ids(), [3, 1, 2]);
+      const row = id => page.locator(`${host} [data-message-id="${id}"]`);
+      assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isDisabled(), true);
+      assert.equal(await row(2).getByRole('button', { name: '下移追问' }).isDisabled(), true);
+      await row(1).getByRole('button', { name: '编辑追问' }).click();
+      await row(1).getByRole('textbox').fill('独立编辑草稿');
+      await page.locator(input).fill('主输入草稿不受排序影响');
+      await row(1).getByRole('button', { name: '下移追问' }).click();
+      assert.deepEqual(await page.evaluate(() => reorders[0].body.message_ids), [3, 2, 1]);
+      assert.deepEqual(await ids(), [3, 1, 2], 'no optimistic ordering');
+      assert.equal(await page.locator(surface === 'ai' ? '#btnStop' : '#cxStopTask').isEnabled(), true, 'sorting never disables Stop');
+      assert.equal(await row(3).getByRole('button', { name: '下移追问' }).isDisabled(), true);
+      await page.evaluate(() => { queueState = { ...queueState, version: 'q1:' + 'b'.repeat(64) + '', order_revision: 1,
+        message_ids: [3, 2, 1], pending_message_ids: [3, 2, 1] }; reorders[0].reject(new Error('accepted response lost')); });
+      await page.locator(host).getByRole('button', { name: '核对并重试排序' }).waitFor();
+      await reconcile(page); assert.deepEqual(await ids(), [3, 2, 1]);
+      assert.equal(await row(1).getByRole('textbox').inputValue(), '独立编辑草稿');
+      assert.equal(await page.locator(input).inputValue(), '主输入草稿不受排序影响');
+      assert.equal(await page.locator(host).getByRole('button', { name: '核对并重试排序' }).count(), 1, 'GET order match is not own ACK');
+      await page.locator(host).getByRole('button', { name: '核对并重试排序' }).click();
+      assert.deepEqual(await page.evaluate(() => reorders[1].body), await page.evaluate(() => reorders[0].body));
+      await page.evaluate(() => { queueState = { ...queueState, version: 'q1:' + 'c'.repeat(64) + '', order_revision: 2,
+        message_ids: [2, 3, 1], pending_message_ids: [2, 3, 1] }; reorders[1].resolve(queueAck(1)); });
+      await page.waitForFunction(host => document.querySelector(`${host} [data-queue-position="1"]`)?.dataset.messageId === '2', host);
+      assert.deepEqual(await ids(), [2, 3, 1], 'old ACK cannot replace current GET order');
+      await row(3).getByRole('button', { name: '上移追问' }).click();
+      await page.evaluate(() => reorders[2].reject(Object.assign(new Error('conflict'), { status: 409 })));
+      await page.waitForFunction(host => document.querySelector(`${host} .message-queue-status`)?.textContent.includes('队列已变化'), host);
+      assert.equal(await page.evaluate(() => reorders.length), 3, 'conflict does not auto-rebase');
+      assert.equal(await row(1).getByRole('textbox').inputValue(), '独立编辑草稿');
+      const workingOutput = path.join(root, '..', '.artifacts', 'iteration-008'); fs.mkdirSync(workingOutput, { recursive: true });
+      await page.locator(`${host} .message-queue-status`).scrollIntoViewIfNeeded();
+      assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isEnabled(), true);
+      await page.screenshot({ path: path.join(workingOutput, `queue-${surface}-working.png`) });
+      // Background-return invalidates late ACKs, even if the actual server
+      // accepted the move. The original request remains explicitly retryable.
+      await row(3).getByRole('button', { name: '上移追问' }).click();
+      await page.evaluate(() => { window.dispatchEvent(new Event('blur')); reorders[3].resolve(queueAck(3)); });
+      await page.locator(host).getByRole('button', { name: '核对并重试排序' }).waitFor();
+      assert.equal(await page.locator(input).inputValue(), '主输入草稿不受排序影响');
+      await page.locator(host).getByRole('button', { name: '核对并重试排序' }).click();
+      assert.deepEqual(await page.evaluate(() => reorders[4].body), await page.evaluate(() => reorders[3].body));
+      await page.evaluate(() => reorders[4].resolve(queueAck(4)));
+      await page.locator(host).getByRole('button', { name: '核对并重试排序' }).waitFor({ state: 'detached' });
+      for (const control of ['pause', 'resume', 'cancel']) {
+        await page.evaluate(({ control, job }) => {
+          const current = { ...job, status: control === 'resume' ? 'paused' : 'running', cancel_requested: false };
+          AiPanel.client.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: receipts, queue: queueState });
+          AiPanel.adoptJob(current);
+          CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project', name: 'Project' }], jobs: [current] });
+        }, { control, job });
+        await reconcile(page);
+        await page.evaluate(() => {
+          window.controlReads = []; window.sourceControls = [];
+          AiPanel.client.jobMessages = id => new Promise(resolve => controlReads.push({ id, resolve }));
+          const control = id => new Promise(resolve => sourceControls.push({ id, resolve }));
+          AiPanel.client.pauseJob = AiPanel.client.resumeJob = AiPanel.client.cancel = control;
+          void AiPanel.messages.reconcile(AiPanel.messages.scope(AiPanel.getState().currentJob));
+        });
+        const controlId = surface === 'ai' ? { pause: '#btnPauseJob', resume: '#btnResumeJob', cancel: '#btnStop' }[control]
+          : { pause: '#cxPauseTask', resume: '#cxResumeTask', cancel: '#cxStopTask' }[control];
+        await page.locator(controlId).click();
+        assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isDisabled(), true);
+        await page.evaluate(() => {
+          controlReads[0].resolve({ schema_version: 1, job_id: 'job', messages: receipts, queue: queueState });
+          void AiPanel.messages.reconcile(AiPanel.messages.scope(AiPanel.getState().currentJob));
+        });
+        assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isDisabled(), true, `${surface}/${control} old GET cannot enable while control pending`);
+        await page.evaluate(({ control, job }) => sourceControls[0].resolve({ job: { ...job,
+          status: control === 'pause' ? 'paused' : 'running', cancel_requested: control === 'cancel' } }), { control, job });
+        await page.waitForFunction(() => controlReads.length >= 3 && AiPanel.messages.queue(AiPanel.messages.scope(AiPanel.getState().currentJob)).active.size === 0);
+        await page.evaluate(() => { for (const read of controlReads.slice(0, -1)) read.resolve({ schema_version: 1, job_id: 'job', messages: receipts, queue: queueState }); });
+        assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isDisabled(), true, `${surface}/${control} completion fences GET started during control`);
+        await page.evaluate(control => {
+          if (control === 'cancel') queueState = { ...queueState, can_reorder: false, reason: 'parent_canceled' };
+          const data = { schema_version: 1, job_id: 'job', messages: receipts, queue: queueState };
+          controlReads.at(-1).resolve(data); AiPanel.client.jobMessages = async () => data;
+        }, control);
+        await reconcile(page);
+        assert.equal(await row(3).getByRole('button', { name: '上移追问' }).isEnabled(), control !== 'cancel');
+      }
+      await page.evaluate(() => { AiPanel.messages.create(AiPanel.messages.scope(AiPanel.getState().currentJob), 'follow_up', '未确认本地追问'); });
+      const local = page.locator(`${host} .message-receipt`).filter({ hasText: '未确认本地追问' });
+      assert.equal(await local.getAttribute('data-queue-position'), null);
+      assert.equal(await local.getByRole('button', { name: '上移追问' }).count(), 0);
+      assert.equal(await page.locator(`${host} script`).count(), 0);
+      const output = path.join(root, '..', '.artifacts', 'iteration-008'); fs.mkdirSync(output, { recursive: true });
+      await page.screenshot({ path: path.join(output, `queue-${surface}.png`) });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await page.locator(host).evaluate(node => node.scrollWidth > node.clientWidth + 1), false);
+      await page.setViewportSize({ width: 1300, height: 1000 });
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+    }
 
     // Untrusted body text is escaped; narrow layouts and keyboard disclosure
     // work on both actual entry points.

@@ -242,10 +242,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && !st.editingMessage && st.pendingMessage == null
+                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && !st.editingMessage && !st.reordering && st.pendingReorder == null && st.pendingMessage == null
                 binding.btnStop.isEnabled = !st.recovering
                 binding.btnMessageReceipts.isVisible = st.jobId != null && !prefs.guestMode
                 binding.btnMessageReceipts.text = when {
+                    st.reordering -> "正在保存追问排序…"
+                    st.pendingReorder != null -> "排序结果待确认 · 查看回执"
                     st.editingMessage -> "正在保存追问编辑…"
                     st.messageEdit?.pending != null -> "编辑结果待确认 · 查看回执"
                     st.withdrawing -> "正在撤回追问…"
@@ -263,7 +265,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
-                    st.sending || st.recovering || st.withdrawing || st.editingMessage -> "sending"
+                    st.sending || st.recovering || st.withdrawing || st.editingMessage || st.reordering -> "sending"
                     else -> st.job?.resolvedStatus() ?: "idle"
                 })
                 if (st.job !== lastJobInstance) {
@@ -466,7 +468,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         // Job status/event updates must not replace the button beneath a pending touch.
         val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering,
             state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice, state.messageEdit, state.editingMessage, state.editNotice,
-            state.loadingBlockingTask)
+            state.loadingBlockingTask, state.messageQueue, state.queueFresh, state.pendingReorder, state.reordering, state.reorderNotice)
         if (key == receiptRenderKey) return
         receiptRenderKey = key
         content.removeAllViews()
@@ -478,9 +480,10 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 setPadding(0, pad, 0, pad)
             })
         }
-        fun action(label: String, enabled: Boolean = true, block: () -> Unit) {
+        fun action(label: String, enabled: Boolean = true, description: String? = null, block: () -> Unit) {
             content.addView(com.google.android.material.button.MaterialButton(this).apply {
                 this.text = label
+                if (description != null) contentDescription = description
                 isEnabled = enabled
                 setOnClickListener { if (cacheSession.isCurrent(prefs)) block() }
             })
@@ -490,7 +493,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         state.messageNotice?.let(::text)
         state.withdrawalNotice?.let(::text)
         state.editNotice?.let(::text)
-        val busy = state.sending || state.recovering || state.withdrawing || state.editingMessage
+        state.reorderNotice?.let(::text)
+        val busy = state.sending || state.recovering || state.withdrawing || state.editingMessage || state.reordering
+        state.pendingReorder?.let {
+            text("排序结果待确认；刷新只核对当前队列，不会自动重发原排序。")
+            action("核对并重试原排序", !busy) { viewModel.retryMessageReorder() }
+        }
+        if (state.messageQueue != null && !state.queueFresh) text("队序待核对；已保留上次顺序，请刷新后调整。")
+        val pendingIds = state.messageQueue?.pendingMessageIds.orEmpty()
+        val canMove = state.queueFresh && state.messageQueue?.canReorder == true && !busy && state.pendingReorder == null &&
+            state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null
         state.messageEdit?.let {
             action(if (it.pending != null) "查看待确认编辑" else "继续编辑草稿") { showMessageEditor() }
             if (it.pending == null) action("放弃编辑草稿", !busy) { viewModel.discardMessageEdit() }
@@ -504,17 +516,24 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             action("查询并重试原消息", !busy) { viewModel.retryPendingMessage() }
         }
         if (state.messageReceipts.isEmpty() && state.pendingMessage == null) text("暂无消息回执")
-        state.messageReceipts.forEach { receipt ->
+        (state.messageQueue?.ordered(state.messageReceipts) ?: state.messageReceipts).forEach { receipt ->
             text("${receipt.modeLabel} · ${receipt.label}" + receipt.revision?.takeIf { it > 0 }?.let { " · 已编辑 v$it" }.orEmpty() +
                 "\n${receipt.text}" + receipt.reasonLabel?.let { "\n$it" }.orEmpty())
+            val pendingIndex = pendingIds.indexOf(receipt.id)
+            if (state.queueFresh && receipt.type == "follow_up" && pendingIndex >= 0) text("待执行队位 ${pendingIndex + 1} / ${pendingIds.size}")
+            if (state.messageQueue?.canReorder == true && receipt.type == "follow_up" && pendingIndex >= 0) {
+                val messageId = receipt.id
+                action("上移", canMove && pendingIndex > 0, "上移追问：${receipt.text.take(40)}") { viewModel.moveFollowUp(messageId, -1) }
+                action("下移", canMove && pendingIndex < pendingIds.lastIndex, "下移追问：${receipt.text.take(40)}") { viewModel.moveFollowUp(messageId, 1) }
+            }
             if (receipt.canEdit) {
-                action("编辑追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
+                action("编辑追问", !busy && state.pendingReorder == null && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
                     viewModel.beginMessageEdit(receipt.key)
                     showMessageEditor()
                 }
             }
             if (receipt.canWithdraw) {
-                action("撤回追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
+                action("撤回追问", !busy && state.pendingReorder == null && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
                     viewModel.withdrawMessage(receipt.key)
                 }
             }
@@ -589,7 +608,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             input.setText(saved.draft.text); input.setSelection(input.text.length)
             renderingMessageEdit = false
         }
-        val busy = state.editingMessage || state.sending || state.recovering || state.withdrawing
+        val busy = state.editingMessage || state.sending || state.recovering || state.withdrawing || state.reordering || state.pendingReorder != null
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).apply {
             text = if (saved.pending != null) "核对并重试原编辑" else "保存编辑"
             isEnabled = !busy && (saved.pending != null || (current?.canEdit == true && current.revision == saved.draft.revision && saved.draft.text.isNotBlank()))
@@ -610,7 +629,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         menu.findItem(R.id.action_recover)?.apply {
             isVisible = job?.let { it.recoveryJobId != null ||
                 (it.canRecover && it.status in setOf("failed", "interrupted")) } == true
-            isEnabled = !busy && !state.withdrawing && !state.editingMessage
+            isEnabled = !busy && !state.withdrawing && !state.editingMessage && !state.reordering && state.pendingReorder == null
             setTitle(when {
                 state.recovering && job?.recoveryJobId != null -> R.string.menu_opening_recovery
                 state.recovering -> R.string.menu_recovering

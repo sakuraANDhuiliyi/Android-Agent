@@ -1,0 +1,31 @@
+{
+  "id": "52_reorder_created_prefix",
+  "title": "已创建任务保持原审批并只调整未执行尾队列",
+  "driver": "reorder_created",
+  "prompt": "执行当前指令并记录实际模型输入",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import sys,time; p=Path(\"app/src/test/edited-prompts.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(sys.argv[1]+\"\\n\"); time.sleep(2); print(\"PROMPT_RECORDED\")"
+            ]
+          },
+          "append_user_prompt_arg": true
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本轮实际指令已执行并记录。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded"
+  }
+}

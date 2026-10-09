@@ -172,6 +172,11 @@ async function run() {
   const inputReq = requests.find((r) => r.url === "/api/terminals/t1/input" && r.method === "POST");
   assert.ok(inputReq);
 
+  const reorderBody = { reorder_key: "stable-key", expected_version: "q1:opaque", message_ids: [3, 1, 2] };
+  await api.reorderJobMessages("job/encoded", reorderBody);
+  const reorderReq = requests.find(r => r.url === "/api/jobs/job%2Fencoded/messages/reorders");
+  assert.equal(reorderReq.method, "POST"); assert.deepStrictEqual(reorderReq.body, reorderBody);
+
   // Authorization header
   const authed = requests.find((r) => r.headers.authorization === "Bearer secret");
   assert.ok(authed);

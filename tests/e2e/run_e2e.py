@@ -114,21 +114,50 @@ class E2ERunner:
         self.conversations: dict[str, str] = {}
         self.results: list[dict[str, Any]] = []
         self.foreign_identity: tuple[str, str] | None = None
+        # Keep the production 50-project/account limit intact as the suite grows.
+        self.projects_per_account = 40
+        self.accounts: dict[str, tuple[E2EClient, ApprovalPump]] = {}
+        self.account_project_counts: dict[str, int] = {}
+        self.project_owners: dict[str, str] = {}
 
     # —— lifecycle ——
 
     def setup(self) -> None:
         self.stack.start()
-        self.client = E2EClient(self.stack)
-        self.client.register_account()
-        self.pump = ApprovalPump(self.client)
-        self.pump.start()
+        self.new_scenario_account()
+
+    def new_scenario_account(self) -> None:
+        client = E2EClient(self.stack)
+        try:
+            client.register_account()
+            pump = ApprovalPump(client)
+            pump.start()
+        except Exception:
+            client.close()
+            raise
+        self.accounts[client.user_id] = (client, pump)
+        self.account_project_counts[client.user_id] = 0
+        self.client, self.pump = client, pump
+
+    def select_scenario_account(self, scenario: dict[str, Any]) -> None:
+        reuse = scenario.get("reuse_project")
+        if reuse:
+            # Dependent scenarios retain their original project owner, including
+            # when an unrelated scenario used another account in between.
+            owner = self.project_owners.get(reuse)
+            if owner:
+                self.client, self.pump = self.accounts[owner]
+            return
+        for owner in reversed(self.accounts):
+            if self.account_project_counts[owner] < self.projects_per_account:
+                self.client, self.pump = self.accounts[owner]
+                return
+        self.new_scenario_account()
 
     def teardown(self) -> None:
-        if self.pump:
-            self.pump.stop()
-        if self.client:
-            self.client.close()
+        for client, pump in self.accounts.values():
+            pump.stop()
+            client.close()
         self.stack.stop()
 
     def foreign_client(self) -> E2EClient:
@@ -181,6 +210,7 @@ class E2ERunner:
         record = {"id": scenario_id, "ok": False, "duration_ms": 0, "error": ""}
         print(f"—— {scenario_id}: {scenario.get('title', '')}", flush=True)
         try:
+            self.select_scenario_account(scenario)
             context = ScenarioContext(self, scenario)
             self.prepare(context)
             driver_name = str(scenario.get("driver") or "default")
@@ -209,9 +239,11 @@ class E2ERunner:
             context.conversation_id = self.conversations.get(reuse, "")
         else:
             project = context.client.create_project(f"e2e-{scenario['id']}")
+            self.account_project_counts[context.client.user_id] += 1
             context.project_id = str(project["id"])
             context.conversation_id = ""
         self.projects[scenario["id"]] = context.project_id
+        self.project_owners[scenario["id"]] = context.client.user_id
         context.client.install_setup_files(context.project_id, scenario.get("setup_files"))
 
     def send_prompt(self, context: ScenarioContext) -> dict[str, Any]:
@@ -815,6 +847,253 @@ class E2ERunner:
             self.wait_terminal_events(context)
         self.assert_edit_children(context, [], [], [])
 
+    def queue_page(self, context: ScenarioContext) -> dict:
+        response = context.client.http.get(f"/api/jobs/{context.job['id']}/messages", params={"include_consumed": "true"})
+        response.raise_for_status()
+        page = response.json()
+        queue = page.get("queue") or {}
+        context.check(page.get("schema_version") == 1 and page.get("job_id") == context.job["id"]
+                      and queue.get("schema_version") == 1 and queue.get("task_id") == context.job["id"], "queue snapshot has wrong scope")
+        ids = queue.get("message_ids", [])
+        pending = queue.get("pending_message_ids", [])
+        followups = [row for row in page["messages"] if row["type"] == "follow_up"]
+        context.check(len(ids) == len(set(ids)) and set(ids) == {row["id"] for row in followups}
+                      and len(pending) == len(set(pending)) and pending == [value for value in ids if value in pending],
+                      "queue snapshot is incomplete, duplicated or unordered")
+        context.check(type(queue.get("can_reorder")) is bool and type(queue.get("order_revision")) is int
+                      and queue["order_revision"] >= 0 and isinstance(queue.get("version"), str), "queue lacks trustworthy version or capability")
+        return page
+
+    def reorder_receipt(self, context: ScenarioContext, body: dict, status: int) -> dict:
+        response = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/reorders", json=body)
+        context.check(response.status_code == status, f"reorder status={response.status_code}: {response.text}")
+        data = response.json()
+        ack = data.get("reorder") or {}
+        context.check(data.get("schema_version") == 1 and data.get("job_id") == context.job["id"]
+                      and ack.get("schema_version") == 1 and ack.get("task_id") == context.job["id"]
+                      and all(ack.get(key) == body[key] for key in ("reorder_key", "expected_version", "message_ids"))
+                      and type(ack.get("order_revision")) is int and ack["order_revision"] > 0 and ack.get("created_at", 0) > 0,
+                      "reorder ACK does not identify the immutable request")
+        queue = data.get("queue") or {}
+        context.check(queue.get("task_id") == context.job["id"] and queue.get("order_revision", -1) >= ack["order_revision"]
+                      and isinstance(data.get("messages"), list), "reorder response lacks separate current queue snapshot")
+        return data
+
+    def assert_reordered_execution(self, context: ScenarioContext, ordered_ids: list[int], texts: dict[int, str],
+                                   revisions: dict[int, int], order_revisions: list[int]) -> None:
+        deadline = time.monotonic() + 65
+        page = None
+        while time.monotonic() < deadline:
+            page = self.queue_page(context)
+            rows = {row["id"]: row for row in page["messages"] if row["type"] == "follow_up"}
+            for row in rows.values():
+                if row.get("follow_up_job_id"):
+                    self.pump.watch(row["follow_up_job_id"])
+            if all(rows[message_id]["delivery_state"] == "follow_up_created" for message_id in ordered_ids):
+                break
+            time.sleep(0.1)
+        ordered = [rows[message_id] for message_id in ordered_ids]
+        context.check(all(row["delivery_state"] == "follow_up_created" for row in ordered), "reordered queue did not dispatch completely")
+        children = self.assert_edit_children(context, ordered, [texts[value] for value in ordered_ids], [revisions[value] for value in ordered_ids])
+        events = context.client.conversation_events(context.conversation_id)
+        for child, expected_revision in zip(children, order_revisions):
+            prompts = [event["payload"] for event in events if event.get("turn_id") == child["turn_id"]
+                       and event.get("event_type") == "user_message" and (event.get("payload") or {}).get("task_message_id")]
+            context.check(len(prompts) == 1 and prompts[0].get("queue_order_revision") == expected_revision,
+                          "child's canonical input does not record the applied queue order")
+        queue = self.queue_page(context)["queue"]
+        context.check(queue["pending_message_ids"] == [] and queue["can_reorder"] is False,
+                      "finished queue still offers reordering")
+
+    def driver_reorder_queue(self, context: ScenarioContext) -> None:
+        bodies, originals = self.paused_edit_queue(context)
+        ids = [row["id"] for row in originals]
+        before = self.queue_page(context)["queue"]
+        context.check(before["message_ids"] == before["pending_message_ids"] == ids and before["can_reorder"]
+                      and before["order_revision"] == 0, "legacy queue did not start in receipt order")
+        ordered = [ids[index] for index in context.scenario["order"]]
+        body = {"reorder_key": "first-order", "expected_version": before["version"], "message_ids": ordered}
+        stranger = self.foreign_client()
+        try:
+            denied = stranger.http.post(f"/api/jobs/{context.job['id']}/messages/reorders", json=body)
+            context.check(denied.status_code == 404, "cross-account queue order disclosed or changed source")
+        finally:
+            stranger.close()
+        accepted = self.reorder_receipt(context, body, 201)
+        context.check(accepted["queue"]["message_ids"] == ordered and accepted["reorder"]["order_revision"] == 1,
+                      "accepted queue order differs from requested order")
+        url = f"/api/jobs/{context.job['id']}/messages/reorders"
+        context.check(context.client.http.post(url, json={**body, "reorder_key": "stale-new-key"}).status_code == 409,
+                      "stale queue version accepted a new operation")
+        context.check(context.client.http.post(url, json={**body, "message_ids": ids}).status_code == 409,
+                      "same reorder identity accepted changed body")
+        edited_id = ordered[0]
+        edited_text = f"[[{context.scenario['id']}]] latest body at new queue head"
+        self.edit_receipt(context, edited_id, {"edit_key": "edit-after-order", "expected_revision": 0,
+                                             "payload": {"text": edited_text}}, 201)
+        edited_queue = self.queue_page(context)["queue"]
+        context.check(edited_queue["message_ids"] == ordered and edited_queue["order_revision"] == 1
+                      and edited_queue["version"] != accepted["queue"]["version"], "editing failed to invalidate the old queue snapshot")
+        self.stack.restart_idle_agent()
+        replay = self.reorder_receipt(context, body, 200)
+        context.check(replay["reorder"] == accepted["reorder"] and replay["queue"]["message_ids"] == ordered,
+                      "restart or old reorder ACK reset current order")
+        page = self.queue_page(context)
+        context.check({row["id"]: (row["message_key"], row["created_at"]) for row in page["messages"] if row["type"] == "follow_up"}
+                      == {row["id"]: (row["message_key"], row["created_at"]) for row in originals}, "reorder changed message identity")
+        context.client.resume_job(context.job["id"])
+        context.job = context.client.wait_job(context.job["id"])
+        self.wait_terminal_events(context)
+        texts = {row["id"]: original["payload"]["text"] for row, original in zip(originals, bodies)}
+        texts[edited_id] = edited_text
+        self.assert_reordered_execution(context, ordered, texts, {value: int(value == edited_id) for value in ids}, [1, 1, 1])
+        final_replay = self.reorder_receipt(context, body, 200)
+        context.check(final_replay["reorder"] == accepted["reorder"] and not final_replay["queue"]["can_reorder"],
+                      "terminal replay lost original ACK or revived queue")
+
+    def driver_reorder_created(self, context: ScenarioContext) -> None:
+        bodies, originals = self.paused_edit_queue(context)
+        ids = [row["id"] for row in originals]
+        old = self.queue_page(context)["queue"]
+        context.client.resume_job(context.job["id"])
+        context.job = context.client.wait_job(context.job["id"])
+        self.wait_terminal_events(context)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            page = self.queue_page(context)
+            first = next(row for row in page["messages"] if row["id"] == ids[0])
+            if first.get("follow_up_job_id"):
+                break
+            time.sleep(0.1)
+        child_id = first["follow_up_job_id"]
+        approval = context.client.wait_approval(child_id)
+        child = context.client.get_job(child_id)
+        queue = self.queue_page(context)["queue"]
+        context.check(queue["pending_message_ids"] == ids[1:] and queue["can_reorder"], "created prefix did not leave reorderable tail")
+        url = f"/api/jobs/{context.job['id']}/messages/reorders"
+        for token, desired in ((old["version"], ids[::-1]), (queue["version"], ids[::-1])):
+            refused = context.client.http.post(url, json={"reorder_key": "move-created", "expected_version": token, "message_ids": desired})
+            context.check(refused.status_code == 409, "reorder moved a task already created")
+        body = {"reorder_key": "tail-order", "expected_version": queue["version"], "message_ids": ids[:0:-1]}
+        accepted = self.reorder_receipt(context, body, 201)
+        desired = [ids[0], ids[2], ids[1]]
+        context.check(accepted["queue"]["message_ids"] == desired, "reorder changed locked prefix")
+        after = context.client.get_job(child_id)
+        context.check(all(after.get(key) == child.get(key) for key in ("status", "cancel_requested", "prompt", "turn_id"))
+                      and approval["id"] in {item["id"] for item in context.client.pending_approvals(child_id)},
+                      "reordering implicitly approved or changed the prefix task")
+        self.pump.watch(child_id)
+        self.assert_reordered_execution(context, desired, {row["id"]: body["payload"]["text"] for row, body in zip(originals, bodies)},
+                                        {value: 0 for value in ids}, [0, 1, 1])
+
+    def driver_reorder_membership(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        bodies, originals = self.paused_edit_queue(context)
+        ids = [row["id"] for row in originals]
+        queue = self.queue_page(context)["queue"]
+        initial_body = {"reorder_key": "lost-order-ack", "expected_version": queue["version"], "message_ids": ids[::-1]}
+        initial = self.reorder_receipt(context, initial_body, 201)
+        extra_body = {"message_key": "new-member", "type": "follow_up", "payload": {"text": f"[[{context.scenario['id']}]] appended D"}}
+        extra = context.client.http.post(f"/api/jobs/{context.job['id']}/messages", json=extra_body)
+        context.check(extra.status_code == 201, "new queue member was not accepted")
+        extra_id = extra.json()["message"]["id"]
+        queue = self.queue_page(context)["queue"]
+        context.check(queue["message_ids"] == [*ids[::-1], extra_id] and queue["order_revision"] == 1
+                      and queue["version"] != initial["queue"]["version"], "new message was not appended or snapshot stayed reusable")
+        url = f"/api/jobs/{context.job['id']}/messages/reorders"
+        stale = {"reorder_key": "stale-members", "expected_version": initial["queue"]["version"], "message_ids": ids}
+        context.check(context.client.http.post(url, json=stale).status_code == 409, "reorder silently dropped a newly received message")
+        withdrawn = self.withdraw_receipt(context, ids[1])
+        queue = self.queue_page(context)["queue"]
+        pending = [ids[2], ids[0], extra_id]
+        context.check(queue["pending_message_ids"] == pending and queue["message_ids"][1] == withdrawn["id"],
+                      "withdrawal lost its historical queue slot")
+        competing = [{"reorder_key": f"client-{index}", "expected_version": queue["version"], "message_ids": order}
+                     for index, order in enumerate((pending[::-1], [pending[1], pending[2], pending[0]]))]
+        second_client = E2EClient(self.stack)
+        second_client.http.headers["Authorization"] = f"Bearer {context.client.token}"
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(client.http.post, url, json=body)
+                           for client, body in zip((context.client, second_client), competing)]
+                replies = [future.result() for future in futures]
+        finally:
+            second_client.close()
+        context.check(sorted(reply.status_code for reply in replies) == [201, 409], "two different queue orders won the same snapshot")
+        winner = next(reply.json() for reply in replies if reply.status_code == 201)
+        context.check(winner["reorder"]["order_revision"] == 2, "CAS winner did not append exactly one order revision")
+        self.stack.restart_idle_agent()
+        current = self.queue_page(context)["queue"]
+        replay = self.reorder_receipt(context, initial_body, 200)
+        context.check(replay["reorder"] == initial["reorder"] and replay["queue"] == current
+                      and current["message_ids"][1] == withdrawn["id"], "old ACK revived withdrawn work or restored an old order")
+        old_send = context.client.http.post(f"/api/jobs/{context.job['id']}/messages", json=bodies[1])
+        context.check(old_send.status_code == 200 and old_send.json()["message"]["delivery_state"] == "withdrawn",
+                      "original send replay revived the withdrawn member")
+        context.client.resume_job(context.job["id"])
+        context.job = context.client.wait_job(context.job["id"])
+        self.wait_terminal_events(context)
+        texts = {row["id"]: body["payload"]["text"] for row, body in zip(originals, bodies)}
+        texts[extra_id] = extra_body["payload"]["text"]
+        order = current["pending_message_ids"]
+        self.assert_reordered_execution(context, order, texts, {value: 0 for value in texts}, [2, 2, 2])
+        final = self.reorder_receipt(context, initial_body, 200)
+        context.check(final["reorder"] == initial["reorder"] and final["queue"]["message_ids"] == current["message_ids"],
+                      "terminal original ACK changed permanent queue history")
+
+    def driver_reorder_blocked(self, context: ScenarioContext) -> None:
+        bodies, originals = self.paused_edit_queue(context)
+        ids = [row["id"] for row in originals]
+        cancel_parent = context.scenario.get("cancel_parent", False)
+        if not cancel_parent:
+            self.edit_receipt(context, ids[2], {"edit_key": "failing-child", "expected_revision": 0,
+                "payload": {"text": "[[34_followup_failure]] actual failed reordered head"}}, 201)
+        queue = self.queue_page(context)["queue"]
+        body = {"reorder_key": "accepted-before-block", "expected_version": queue["version"], "message_ids": ids[::-1]}
+        accepted = self.reorder_receipt(context, body, 201)
+        if cancel_parent:
+            context.client.cancel_job(context.job["id"])
+            context.job = context.client.wait_job(context.job["id"], until={"canceled"})
+            expected_ids = {context.job["id"]}
+            blocker = context.job
+        else:
+            context.client.resume_job(context.job["id"])
+            context.job = context.client.wait_job(context.job["id"])
+            deadline = time.monotonic() + 20
+            child_id = None
+            while time.monotonic() < deadline:
+                rows = self.message_receipts(context)
+                head = next(row for row in rows if row["id"] == ids[2])
+                if head.get("follow_up_job_id"):
+                    child_id = head["follow_up_job_id"]
+                    break
+                time.sleep(0.1)
+            context.check(bool(child_id), "new queue head was never dispatched")
+            blocker = context.client.wait_job(child_id)
+            context.check(blocker["status"] == "failed", "reordered failure fixture did not fail")
+            expected_ids = {context.job["id"], child_id}
+        self.wait_terminal_events(context)
+        page = self.queue_page(context)
+        queue = page["queue"]
+        context.check(queue["can_reorder"] is False and queue["message_ids"] == ids[::-1], "failed prefix still permits new reordering")
+        for row in page["messages"]:
+            if row["type"] == "follow_up" and row["id"] in queue["pending_message_ids"]:
+                context.check(row["delivery_state"] == "blocked", "failed predecessor did not block remaining members")
+                self.assert_blocking_target(context, row, blocker)
+        refusal = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/reorders", json={
+            "reorder_key": "bypass-failure", "expected_version": queue["version"], "message_ids": queue["pending_message_ids"][::-1]})
+        context.check(refusal.status_code == 409, "reorder bypassed the failed prefix")
+        self.stack.restart_idle_agent()
+        replay = self.reorder_receipt(context, body, 200)
+        context.check(replay["reorder"] == accepted["reorder"] and replay["queue"]["can_reorder"] is False,
+                      "historical confirmation automatically unblocked queued work")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check({job["id"] for job in listing.json()["jobs"]} == expected_ids, "blocked reorder created recovery or tail tasks")
+        context.check(context.workspace_file("app/src/test/edited-prompts.txt").splitlines()
+                      == [f"[[{context.scenario['id']}]] {context.scenario['prompt']}"], "blocked queue executed ordinary tail instructions")
+
     def driver_approval(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])
@@ -1171,6 +1450,7 @@ class E2ERunner:
             "total": len(self.results),
             "failed": failed,
             "results": self.results,
+            "projects_per_account": list(self.account_project_counts.values()),
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         if self.stack.keep:
             print(f"  report: {report_path}", flush=True)

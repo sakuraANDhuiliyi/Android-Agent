@@ -177,6 +177,11 @@ async function main() {
     { type: 'tool', calls: [{ name: 'run_gradle', arguments: { task: 'assembleDebug' } }] },
     { type: 'final', text: 'BLOCKING_CHILD_BUILD_FINISHED' },
   ] }));
+  fs.writeFileSync(path.join(scenarios, 'queue-child.json'), JSON.stringify({ id: 'desktop_queue_child', steps: [
+    { type: 'tool', calls: [{ name: 'run_command', arguments: { argv: ['python3', '-c',
+      'from pathlib import Path; import sys,time; p=Path("app/src/test/desktop-order.txt"); p.parent.mkdir(parents=True,exist_ok=True); p.open("a").write(sys.argv[1]+"\\n"); time.sleep(5); print("QUEUE_ITEM_EXECUTED")'] }, append_user_prompt_arg: true }] },
+    { type: 'final', text: 'QUEUE_CHILD_DONE' },
+  ] }));
   track(spawn('python3', [SHARED_STUB], { cwd: repoRoot,
     env: isolatedSmokeEnv({ AGENT_E2E_STUB_PORT: String(STUB_PORT), AGENT_E2E_SCENARIO_DIR: scenarios }), stdio: 'ignore' }));
   await waitForTcp(STUB_PORT, 15000); startService(); await waitForTcp(AGENT_PORT, 30000);
@@ -242,9 +247,11 @@ async function main() {
     const queued = (await httpJson('GET', `/api/jobs/${source}/messages?include_consumed=true`, { token })).json.messages.filter(row => row.type === 'follow_up');
     assert.equal(queued.length, 3);
     const canceledFollow = queued[1];
-    let withdrawPosts = 0;
+    let withdrawPosts = 0, holdWithdrawalReads = false;
+    await page.route(`**/api/jobs/${source}/messages?*`, route => holdWithdrawalReads
+      ? route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }) : route.continue());
     await page.route(`**/api/jobs/${source}/messages/${canceledFollow.id}/withdraw`, async route => {
-      withdrawPosts++;
+      withdrawPosts++; holdWithdrawalReads = true;
       assert.equal(route.request().postData(), null, 'withdrawal sends no body');
       const response = await route.fetch();
       assert.equal(response.status(), 200);
@@ -254,6 +261,7 @@ async function main() {
     await page.locator(`#cxMessageReceipts [data-message-key="${canceledFollow.message_key}"]`).getByRole('button', { name: '撤回追问', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('cxMessageReceipts').textContent.includes('撤回结果待确认'));
     assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem(JobMessages.STORAGE_KEY)).filter(row => row.kind === 'withdraw').length), 1);
+    holdWithdrawalReads = false;
     await page.reload(); await page.waitForFunction(() => window.AiPanel?.getState().connected);
     await page.evaluate(id => AiPanel.openJob(id), source);
     await page.locator(`#aiMessageReceipts [data-message-key="${canceledFollow.message_key}"][data-state="withdrawn"]`).waitFor();
@@ -522,6 +530,109 @@ async function main() {
       assert.equal(afterRows.filter(row => row.follow_up_job_id).length, 1, 'viewing never starts blocked tail');
       console.log(`ok - actual ${mode} child shown in both read-only details; original selection, drafts, child and tail unchanged`);
     }
+    // Reorder actual child executions. The first accepted POST response is
+    // lost; reopening only GETs, then exact original retry confirms its ACK.
+    const queueSource = await page.evaluate(async () => {
+      await AiPanel.createConversation(AiPanel.getState().selectedProjectId);
+      const reply = await AiPanel.client.askConversation(AiPanel.getState().conversationId,
+        { prompt: '桌面顺序验收 [[desktop_edit_parent]]', run_mode: 'workspace' });
+      await AiPanel.client.pauseJob(reply.job.id); AiPanel.adoptJob(reply.job); return reply.job.id;
+    });
+    await waitUntil(async () => (await httpJson('GET', `/api/jobs/${queueSource}`, { token })).json.job.status === 'paused', 20000, 'queue parent paused');
+    const queueMessages = [];
+    for (const name of ['A', 'B', 'C', 'D']) {
+      const response = await httpJson('POST', `/api/jobs/${queueSource}/messages`, { token, body: {
+        message_key: `queue-${name}`, type: 'follow_up', payload: { text: `顺序 ${name} [[desktop_queue_child]]` },
+      } });
+      assert.equal(response.status, 201); queueMessages.push(response.json.message);
+    }
+    const [a, b, c, d] = queueMessages;
+    await page.evaluate(id => AiPanel.openJob(id), queueSource);
+    const aiRow = id => page.locator(`#aiMessageReceipts [data-message-id="${id}"]`);
+    await waitUntil(() => aiRow(b.id).getByRole('button', { name: '下移追问' }).isEnabled().catch(() => false), 15000, 'queue reorder capability');
+    let reorderPosts = 0, originalReorder;
+    await page.route(`**/api/jobs/${queueSource}/messages/reorders`, async route => {
+      reorderPosts++;
+      if (reorderPosts !== 1) return route.continue();
+      originalReorder = route.request().postDataJSON();
+      const accepted = await route.fetch(); assert.equal(accepted.status(), 201);
+      await route.abort('failed');
+    });
+    await aiRow(b.id).getByRole('button', { name: '下移追问' }).click();
+    await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试排序' }).waitFor();
+    assert.deepEqual(originalReorder.message_ids, [a.id, c.id, b.id, d.id]);
+    await page.reload(); await page.waitForFunction(() => window.AiPanel?.getState().connected);
+    await page.evaluate(id => AiPanel.openJob(id), queueSource);
+    await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试排序' }).waitFor();
+    assert.equal(reorderPosts, 1, 'reopening sends no reorder POST');
+    // A second client wins r2 while the first client still has an unconfirmed r1.
+    const currentQueue = (await httpJson('GET', `/api/jobs/${queueSource}/messages?include_consumed=true`, { token })).json.queue;
+    const r2 = await httpJson('POST', `/api/jobs/${queueSource}/messages/reorders`, { token, body: {
+      reorder_key: 'second-client-r2', expected_version: currentQueue.version, message_ids: [c.id, a.id, b.id, d.id],
+    } }); assert.equal(r2.status, 201);
+    await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试排序' }).click();
+    await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试排序' }).waitFor({ state: 'detached' });
+    await page.waitForFunction(id => document.querySelector('#aiMessageReceipts [data-queue-position="1"]')?.dataset.messageId === String(id), c.id);
+    assert.equal(reorderPosts, 2);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem(JobMessages.QUEUE_STORAGE_KEY)).length), 0);
+    // A real CAS loser is reconciled without automatically applying its order.
+    let conflictSeen = false;
+    await page.route(`**/api/jobs/${queueSource}/messages/reorders`, async route => {
+      const body = route.request().postDataJSON();
+      if (!conflictSeen) {
+        conflictSeen = true;
+        const winning = await httpJson('POST', `/api/jobs/${queueSource}/messages/reorders`, { token, body: {
+          reorder_key: 'second-client-r3', expected_version: body.expected_version, message_ids: [c.id, b.id, a.id, d.id],
+        } }); assert.equal(winning.status, 201);
+        const result = await route.fetch(); assert.equal(result.status(), 409); return route.fulfill({ response: result });
+      }
+      return route.fallback();
+    });
+    await waitUntil(() => aiRow(a.id).getByRole('button', { name: '上移追问' }).isEnabled().catch(() => false), 15000, 'reconciled capability after ACK');
+    await aiRow(a.id).getByRole('button', { name: '上移追问' }).click();
+    await page.waitForFunction(() => document.querySelector('#aiMessageReceipts .message-queue-status')?.textContent.includes('队列已变化'));
+    await page.waitForFunction(id => document.querySelector('#aiMessageReceipts [data-queue-position="2"]')?.dataset.messageId === String(id), b.id);
+    assert.equal((await httpJson('GET', `/api/jobs/${queueSource}/messages?include_consumed=true`, { token })).json.queue.order_revision, 3);
+    // While C is executing, the workbench may reorder only its remaining suffix.
+    assert.equal((await httpJson('POST', `/api/jobs/${queueSource}/resume`, { token })).status, 202);
+    const started = await waitUntil(async () => {
+      const rows = (await httpJson('GET', `/api/jobs/${queueSource}/messages?include_consumed=true`, { token })).json.messages;
+      return rows.find(row => row.id === c.id && row.follow_up_job_id);
+    }, 30000, 'reordered head actually starts');
+    await page.locator('[data-mode="agent-windows"]').click(); await page.evaluate(() => CodexiaAgentView.refresh());
+    await page.locator('.cx-project-task').filter({ hasText: '桌面顺序验收' }).click();
+    const cxRow = id => page.locator(`#cxMessageReceipts [data-message-id="${id}"]`);
+    await waitUntil(() => cxRow(a.id).getByRole('button', { name: '上移追问' }).isEnabled().catch(() => false), 10000, 'remaining suffix may reorder');
+    assert.equal(await cxRow(c.id).getByRole('button', { name: '上移追问' }).count(), 0, 'created prefix has no ordering action');
+    await cxRow(a.id).getByRole('button', { name: '上移追问' }).click();
+    await page.waitForFunction(id => document.querySelector('#cxMessageReceipts [data-queue-position="1"]')?.dataset.messageId === String(id), a.id);
+    const completedQueue = await waitUntil(async () => {
+      const response = (await httpJson('GET', `/api/jobs/${queueSource}/messages?include_consumed=true`, { token })).json;
+      const rows = response.messages.filter(row => row.type === 'follow_up');
+      const jobs = [];
+      for (const row of rows.filter(item => item.follow_up_job_id)) {
+        const result = await httpJson('GET', `/api/jobs/${row.follow_up_job_id}`, { token }); jobs.push(result);
+        if (result.json.job.status === 'awaiting_approval') {
+          const approvals = (await httpJson('GET', `/api/jobs/${row.follow_up_job_id}/approvals`, { token })).json.approvals;
+          for (const approval of approvals) {
+            assert.equal(approval.payload.tool_name, 'run_command');
+            const argv = JSON.parse(fs.readFileSync(path.join(scenarios, 'queue-child.json'), 'utf8')).steps[0].calls[0].arguments.argv;
+            assert.deepEqual(approval.payload.argv, [...argv, row.payload.text], 'approve only this isolated recording command');
+            assert.equal((await httpJson('POST', `/api/jobs/${row.follow_up_job_id}/approvals/${approval.id}`, { token, body: { approved: true } })).status, 200);
+          }
+        }
+      }
+      return jobs.length === 4 && jobs.every(result => result.json.job.status === 'succeeded') ? response : null;
+    }, 65000, 'all ordered child tools complete');
+    assert.deepEqual(completedQueue.queue.message_ids, [c.id, a.id, b.id, d.id]);
+    assert.equal(completedQueue.messages.find(row => row.id === c.id).follow_up_job_id, started.follow_up_job_id, 'prefix child is unchanged');
+    const executed = fs.readFileSync(path.join(workspace, 'app/src/test/desktop-order.txt'), 'utf8').trim().split('\n');
+    assert.deepEqual(executed, ['C', 'A', 'B', 'D'].map(name => `顺序 ${name} [[desktop_queue_child]]`));
+    const historicalAck = await httpJson('POST', `/api/jobs/${queueSource}/messages/reorders`, { token, body: originalReorder });
+    assert.equal(historicalAck.status, 200); assert.equal(historicalAck.json.reorder.order_revision, 1);
+    assert.deepEqual(historicalAck.json.queue.message_ids, completedQueue.queue.message_ids);
+    assert.equal(historicalAck.json.queue.can_reorder, false);
+    console.log('ok - real reorder lost ACK/reload/exact retry/current r2, CAS conflict, immutable executing prefix, and tool effects C/A/B/D once');
     assert.deepEqual(errors, []);
     console.log('ok - both real desktop entries, repeated text as distinct intents, one canonical receipt per steer, terminal idempotency, and authoritative child navigation');
     console.log('electron-messages-smoke.test: OK');

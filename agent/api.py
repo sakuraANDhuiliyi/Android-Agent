@@ -12,7 +12,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -384,6 +384,18 @@ class JobMessageEditRequest(StrictRequest):
     def validate_key(self):
         if not self.edit_key.strip():
             raise ValueError("编辑标识不能为空")
+        return self
+
+
+class JobMessageReorderRequest(StrictRequest):
+    reorder_key: str = Field(..., min_length=1, max_length=200, strict=True)
+    expected_version: str = Field(..., min_length=67, max_length=67, pattern=r'^q1:[0-9a-f]{64}$', strict=True)
+    message_ids: list[Annotated[int, Field(strict=True, gt=0, lt=2**63)]]
+
+    @model_validator(mode='after')
+    def validate_order(self):
+        if not self.reorder_key.strip() or len(set(self.message_ids)) != len(self.message_ids):
+            raise ValueError('重排标识不能为空，消息标识不能重复')
         return self
 
 
@@ -1864,22 +1876,36 @@ def create_app(
         return {"schema_version": 1, "job_id": job_id,
                 "message": JobMessageResponse(**receipt).model_dump(), "edit": edit}
 
+    @app.post('/api/jobs/{job_id}/messages/reorders', status_code=201,
+              responses={200: {'description': 'Immutable reorder acknowledgement and current queue snapshot'}})
+    def reorder_job_messages(job_id: str, body: JobMessageReorderRequest, response: Response,
+                             user_id: str = Depends(current_user)) -> dict[str, Any]:
+        from agent.database import TaskMessageConflict
+        from agent.task_messages import reorder_follow_ups
+        try:
+            result = reorder_follow_ups(effective_task_store, job_id, user_id, **body.model_dump())
+        except TaskMessageConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail=f'任务不存在: {job_id}')
+        page, created = result
+        response.status_code = 201 if created else 200
+        return page
+
     @app.get("/api/jobs/{job_id}/messages")
     def get_job_messages(
         job_id: str,
         include_consumed: bool = False,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
-        messages = list_job_messages(job_id, user_id, include_consumed=include_consumed)
-        if messages is None:
+        from agent.task_messages import message_page
+        page = message_page(effective_task_store, job_id, user_id, include_consumed=include_consumed)
+        if page is None:
             raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
-        return {
-            "schema_version": 1,
-            "job_id": job_id,
-            "messages": [
-                JobMessageResponse(**msg).model_dump() for msg in messages
-            ],
-        }
+        if not include_consumed:
+            # A complete queue must not accompany a filtered message page.
+            page.pop('queue')
+        return page
 
     @app.post("/api/jobs/{job_id}/pause", status_code=202)
     def pause_job_endpoint(job_id: str, user_id: str = Depends(current_user)) -> dict[str, Any]:

@@ -341,6 +341,38 @@ class TaskStore:
                 CREATE TRIGGER IF NOT EXISTS immutable_task_message_withdrawal
                 BEFORE UPDATE ON task_message_withdrawals
                 BEGIN SELECT RAISE(ABORT, 'immutable_message_withdrawal'); END;
+                CREATE TABLE IF NOT EXISTS task_message_queue_orders (
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    order_revision INTEGER NOT NULL CHECK (order_revision > 0),
+                    reorder_key TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    expected_version TEXT NOT NULL,
+                    message_ids TEXT NOT NULL,
+                    full_message_ids TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (task_id, order_revision),
+                    UNIQUE (task_id, reorder_key)
+                );
+                CREATE TRIGGER IF NOT EXISTS immutable_task_message_queue_order
+                BEFORE UPDATE ON task_message_queue_orders
+                BEGIN SELECT RAISE(ABORT, 'immutable_queue_order'); END;
+                CREATE TRIGGER IF NOT EXISTS prevent_stale_followup_queue_order
+                BEFORE INSERT ON task_message_followups
+                WHEN EXISTS (SELECT 1 FROM task_message_queue_orders q JOIN task_messages m ON m.task_id=q.task_id
+                    WHERE m.id=NEW.message_id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM conversation_events e
+                    WHERE e.task_id=NEW.task_id AND e.turn_id=NEW.turn_id
+                      AND e.event_key='turn:' || NEW.turn_id || ':user_message'
+                      AND e.event_type='user_message' AND e.role='user' AND e.context_visible=1
+                      AND json_type(e.payload_json, '$.task_message_id')='integer'
+                      AND json_extract(e.payload_json, '$.task_message_id')=NEW.message_id
+                      AND json_type(e.payload_json, '$.queue_order_revision')='integer'
+                      AND json_extract(e.payload_json, '$.queue_order_revision')=(
+                        SELECT MAX(q.order_revision) FROM task_message_queue_orders q
+                        JOIN task_messages m ON m.task_id=q.task_id WHERE m.id=NEW.message_id))
+                BEGIN SELECT RAISE(ABORT, 'follow_up_queue_order_mismatch'); END;
                 CREATE TABLE IF NOT EXISTS task_dependencies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "job_id": "job-001",
+  "queue": {
+    "schema_version": 1,
+    "task_id": "job-001",
+    "version": "q1:a4ddcc6ff6229fb038ad190ba44d9893a4170700c14c198b0d18e573418e3693",
+    "order_revision": 0,
+    "message_ids": [
+      1,
+      2,
+      3
+    ],
+    "pending_message_ids": [
+      1,
+      2,
+      3
+    ],
+    "can_reorder": true,
+    "reason": null
+  },
+  "messages": [
+    {
+      "id": 1,
+      "task_id": "job-001",
+      "message_key": "Follow A",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow A"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "pending",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_paused",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": true,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
+    },
+    {
+      "id": 2,
+      "task_id": "job-001",
+      "message_key": "Follow B",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow B"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "pending",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_paused",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": true,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
+    },
+    {
+      "id": 3,
+      "task_id": "job-001",
+      "message_key": "Follow C",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow C"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "pending",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_paused",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": true,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
+    }
+  ]
+}

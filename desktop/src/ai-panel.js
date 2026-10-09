@@ -1875,6 +1875,9 @@
     const current = selectionGuard();
     const operation = ++controlEpoch;
     const valid = () => current() && operation === controlEpoch;
+    const queueScope = action === "recover" ? null : messages.scope(state.currentJob);
+    const queueOperation = Symbol("task-control");
+    if (queueScope) { messages.mutationStart(queueScope, queueOperation); messages.emit(); }
     state.controlBusy = action;
     if (action === "cancel") state.cancelRequested = true;
     updateComposer();
@@ -1918,6 +1921,7 @@
         } catch (_) { /* preserve the last known job when offline */ }
       }
     } finally {
+      if (queueScope) { messages.mutationDone(queueScope, queueOperation); messages.emit(); }
       if (valid()) {
         state.controlBusy = null;
         updateComposer();

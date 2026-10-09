@@ -73,6 +73,8 @@ class ConversationMessageReceiptTest {
         val storage: MutableMap<String, String> = ConcurrentHashMap(),
         val withdrawalStorage: MutableMap<String, String> = ConcurrentHashMap(),
         val editStorage: MutableMap<String, String> = ConcurrentHashMap(),
+        val reorderStorage: MutableMap<String, String> = ConcurrentHashMap(),
+        val failReorderStorage: Boolean = false,
         val account: AtomicBoolean = AtomicBoolean(true),
         val selected: AtomicBoolean = AtomicBoolean(true),
         val respond: (Request) -> JSONObject? = { null },
@@ -84,6 +86,9 @@ class ConversationMessageReceiptTest {
         val serverMessages = CopyOnWriteArrayList<JSONObject>()
         val editBodies = CopyOnWriteArrayList<JSONObject>()
         val acceptedEdits = ConcurrentHashMap<String, JSONObject>()
+        val acceptedReorders = ConcurrentHashMap<String, JSONObject>()
+        val reorderBodies = CopyOnWriteArrayList<JSONObject>()
+        @Volatile var serverQueue: JSONObject? = null
         val watches = CopyOnWriteArrayList<Watcher>()
         var jobs = listOf(job())
         val api = AgentApi("https://receipts.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
@@ -91,12 +96,14 @@ class ConversationMessageReceiptTest {
             requests += "${req.method} ${req.url.encodedPath}"
             if (req.method == "POST" && req.url.encodedPath.endsWith("/messages")) postBodies += body(req)
             if (req.url.encodedPath.endsWith("/edits")) editBodies += body(req)
+            if (req.url.encodedPath.endsWith("/reorders")) reorderBodies += body(req)
             val reply = respond(req) ?: when (req.url.encodedPath) {
                 "/api/conversations/c/events" -> JSONObject().put("conversation_id", "c").put("events", JSONArray()).put("has_more", false)
                 "/api/jobs" -> JSONObject().put("jobs", JSONArray(jobs))
                 "/api/jobs/j", "/api/jobs/child" -> JSONObject().put("job", jobs.firstOrNull { it.getString("id") == req.url.pathSegments.last() } ?: job("child", "paused"))
                 "/api/jobs/j/approvals", "/api/jobs/child/approvals" -> JSONObject().put("approvals", JSONArray())
                 "/api/jobs/j/cancel" -> JSONObject().put("job", job(status = "canceled"))
+                "/api/jobs/j/messages/reorders" -> acceptReorder(body(req))
                 "/api/jobs/j/messages/1/edits" -> acceptEdit(body(req))
                 "/api/jobs/j/messages/1/withdraw" -> {
                     val row = serverMessages.first { it.getLong("id") == 1L }
@@ -104,7 +111,7 @@ class ConversationMessageReceiptTest {
                     JSONObject().put("schema_version", 1).put("job_id", "j").put("message", row)
                 }
                 "/api/jobs/j/messages", "/api/jobs/child/messages" -> if (req.method == "GET") {
-                    JSONObject().put("schema_version", 1).put("job_id", req.url.pathSegments[2]).put("messages", JSONArray(serverMessages))
+                    JSONObject().put("schema_version", 1).put("job_id", req.url.pathSegments[2]).put("messages", JSONArray(serverMessages)).put("queue", serverQueue ?: JSONObject.NULL)
                 } else {
                     val r = receipt(body(req)); serverMessages += r
                     JSONObject().put("schema_version", 1).put("job_id", "j").put("message", r)
@@ -127,10 +134,32 @@ class ConversationMessageReceiptTest {
             writePendingWithdrawal = { key, value -> if (value == null) withdrawalStorage.remove(key) else withdrawalStorage[key] = value.toJson().toString() },
             readMessageEdit = { SavedMessageEdit.parse(editStorage[it]) },
             writeMessageEdit = { key, value -> if (value == null) editStorage.remove(key) else editStorage[key] = value.toJson().toString() },
+            readPendingReorder = { PendingMessageReorder.parse(reorderStorage[it]) },
+            writePendingReorder = { key, value -> check(!failReorderStorage) { "storage full" }; if (value == null) reorderStorage.remove(key) else reorderStorage[key] = value.toJson().toString() },
         ).also { models += it }
         init {
             val scope = CoroutineScope(Dispatchers.Unconfined).also { scopes += it }
             scope.launch { vm.signals.collect { signals += it } }
+        }
+        fun page() = JSONObject().put("schema_version", 1).put("job_id", "j").put("messages", JSONArray(serverMessages)).put("queue", serverQueue ?: JSONObject.NULL)
+        @Synchronized fun acceptReorder(request: JSONObject): JSONObject {
+            val key = request.getString("reorder_key")
+            var ack = acceptedReorders[key]
+            if (ack == null) {
+                val q = serverQueue ?: error("No queue")
+                if (request.getString("expected_version") != q.getString("version")) return JSONObject().put("__status", 409).put("detail", "stale")
+                val ids = queueIds(request.getJSONArray("message_ids")); val pending = queueIds(q.getJSONArray("pending_message_ids"))
+                require(ids.toSet() == pending.toSet())
+                val revision = q.getLong("order_revision") + 1
+                val order = ids.iterator()
+                serverQueue = JSONObject(q.toString()).put("order_revision", revision).put("version", "q1:" + revision.toString().padStart(64, '0'))
+                    .put("message_ids", JSONArray(queueIds(q.getJSONArray("message_ids")).map { if (it in pending) order.next() else it }))
+                    .put("pending_message_ids", JSONArray(ids))
+                ack = JSONObject().put("schema_version", 1).put("task_id", "j").put("reorder_key", key).put("expected_version", request.getString("expected_version"))
+                    .put("message_ids", JSONArray(ids)).put("order_revision", revision).put("created_at", 1700000005)
+                acceptedReorders[key] = ack
+            }
+            return page().put("reorder", ack)
         }
         fun acceptEdit(request: JSONObject): JSONObject {
             val row = serverMessages.single()
@@ -695,4 +724,154 @@ class ConversationMessageReceiptTest {
         assertEquals(2, h.postBodies.size)
         assertNotEquals(h.postBodies[0].getString("message_key"), h.postBodies[1].getString("message_key"))
     }
+    private fun readyQueue(h: Harness) {
+        h.start()
+        for (id in 1..3) h.serverMessages += receipt(JSONObject().put("message_key", "q$id").put("type", "follow_up")
+            .put("payload", JSONObject().put("text", "queued $id"))).put("id", id).put("revision", 0).put("edited_at", JSONObject.NULL)
+            .put("withdrawn_at", JSONObject.NULL).put("can_withdraw", true).put("can_edit", true)
+        h.serverQueue = JSONObject().put("schema_version", 1).put("task_id", "j").put("version", "q1:ac1b5c0961a7269b6a053ee64276ed0e20a7f48aefb9f67519539d23aaf10149").put("order_revision", 0)
+            .put("message_ids", JSONArray(listOf(1, 2, 3))).put("pending_message_ids", JSONArray(listOf(1, 2, 3))).put("can_reorder", true).put("reason", JSONObject.NULL)
+        h.vm.setForeground(true); await { h.vm.state.value.queueFresh }
+    }
+
+    @Test fun `queue move is durable before one POST preserves drafts and leaves stop usable`() {
+        val entered = gate(); val release = gate(); lateinit var h: Harness
+        h = Harness { req -> if (req.url.encodedPath.endsWith("/reorders")) {
+            assertEquals(body(req).toString(), PendingMessageReorder.parse(h.reorderStorage["j"])!!.body().toString())
+            entered.countDown(); release.await(3, TimeUnit.SECONDS); h.acceptReorder(body(req))
+        } else null }
+        readyQueue(h); h.vm.beginMessageEdit("q1"); h.vm.updateMessageEditText("unsaved edit draft")
+        h.vm.moveFollowUp(2, -1); assertTrue(entered.await(2, TimeUnit.SECONDS)); h.vm.moveFollowUp(3, -1)
+        assertEquals(1, h.reorderBodies.size); assertTrue(h.vm.state.value.reordering)
+        assertEquals(listOf(1L, 2L, 3L), h.vm.state.value.messageQueue!!.messageIds) // no optimistic reorder
+        h.vm.send("new composer", true, emptyList()); assertTrue(h.postBodies.isEmpty())
+        h.vm.controlJob("cancel"); await { h.requests.contains("POST /api/jobs/j/cancel") }
+        release.countDown(); await { !h.vm.state.value.reordering && h.vm.state.value.queueFresh }
+        assertEquals(listOf(2L, 1L, 3L), h.vm.state.value.messageQueue!!.messageIds)
+        assertEquals("unsaved edit draft", h.vm.state.value.messageEdit!!.draft.text)
+        assertTrue(h.signals.none { it is ConversationSignal.ComposerAcknowledged }); assertTrue(h.reorderStorage.isEmpty())
+    }
+
+    @Test fun `lost reorder reload is GET only and matching order never confirms own operation`() {
+        lateinit var h: Harness
+        h = Harness { req -> if (req.url.encodedPath.endsWith("/reorders")) {
+            h.acceptReorder(body(req)); throw IOException("accepted response lost")
+        } else null }
+        readyQueue(h); h.vm.moveFollowUp(2, -1)
+        await { !h.vm.state.value.reordering && h.vm.state.value.pendingReorder != null && h.vm.state.value.queueFresh }
+        val original = h.vm.state.value.pendingReorder!!; assertEquals(listOf(2L, 1L, 3L), h.vm.state.value.messageQueue!!.messageIds)
+        h.vm.setForeground(false)
+        val reopened = Harness(reorderStorage = h.reorderStorage)
+        reopened.serverMessages.addAll(h.serverMessages); reopened.serverQueue = h.serverQueue
+        reopened.start(); reopened.vm.setForeground(true); await { reopened.vm.state.value.queueFresh }
+        assertEquals(original, reopened.vm.state.value.pendingReorder); assertTrue(reopened.reorderBodies.isEmpty())
+        // Later withdrawal and another reorder make the old ACK historical; current capability is false.
+        withdraw(reopened.serverMessages[1]); reopened.serverQueue = JSONObject(h.serverQueue.toString()).put("order_revision", 2).put("version", "q1:1d9283d848ea941ace1fe0d2378ef8b70056a0d4d1648b95a322d90163e78285")
+            .put("message_ids", JSONArray(listOf(2, 3, 1))).put("pending_message_ids", JSONArray(listOf(3, 1))).put("can_reorder", false).put("reason", "parent_failed")
+        reopened.acceptedReorders.putAll(h.acceptedReorders)
+        reopened.vm.refreshMessageReceipts(); await { reopened.vm.state.value.messageQueue?.version == "q1:1d9283d848ea941ace1fe0d2378ef8b70056a0d4d1648b95a322d90163e78285" }
+        reopened.vm.retryMessageReorder(); await { !reopened.vm.state.value.reordering && reopened.vm.state.value.pendingReorder == null && reopened.vm.state.value.queueFresh }
+        assertEquals(original.body().toString(), reopened.reorderBodies.single().toString())
+        assertEquals(listOf(2L, 3L, 1L), reopened.vm.state.value.messageQueue!!.messageIds); assertEquals(2L, reopened.vm.state.value.messageQueue!!.orderRevision)
+    }
+
+    @Test fun `queue conflict only refreshes and failed GET cannot restore previous eligibility`() {
+        val reject = AtomicBoolean(false)
+        val h = Harness { req -> when {
+            req.url.encodedPath.endsWith("/reorders") -> { reject.set(true); JSONObject().put("__status", 409).put("detail", "queue changed") }
+            reject.get() && req.url.encodedPath.endsWith("/messages") -> throw IOException("GET failed")
+            else -> null
+        } }
+        readyQueue(h); h.vm.beginMessageEdit("q1"); h.vm.updateMessageEditText("kept draft")
+        h.vm.moveFollowUp(2, -1); await { !h.vm.state.value.reordering && h.vm.state.value.pendingReorder == null }
+        h.vm.moveFollowUp(2, -1); h.vm.retryMessageReorder()
+        assertEquals(1, h.reorderBodies.size); assertFalse(h.vm.state.value.queueFresh); assertFalse(h.vm.state.value.messageQueue!!.canReorder)
+        assertEquals("kept draft", h.vm.state.value.messageEdit!!.draft.text); assertTrue(h.reorderStorage.isEmpty())
+    }
+
+    @Test fun `storage failure bad capability and queue edges cause zero reorder POSTs`() {
+        val failing = Harness(failReorderStorage = true); readyQueue(failing); failing.vm.moveFollowUp(2, -1)
+        assertTrue(failing.reorderBodies.isEmpty()); assertNull(failing.vm.state.value.pendingReorder)
+        val h = Harness(); readyQueue(h)
+        h.vm.moveFollowUp(1, -1); h.vm.moveFollowUp(3, 1); h.vm.moveFollowUp(99, -1); h.vm.moveFollowUp(2, 0)
+        assertTrue(h.reorderBodies.isEmpty())
+        h.serverQueue = h.serverQueue!!.put("can_reorder", false).put("reason", "parent_failed")
+        h.vm.refreshMessageReceipts(); await { h.vm.state.value.messageQueue?.canReorder == false }
+        h.vm.moveFollowUp(2, -1); assertTrue(h.reorderBodies.isEmpty())
+        h.session.guestMode = true; h.vm.retryMessageReorder(); assertTrue(h.reorderBodies.isEmpty())
+    }
+
+    @Test fun `late reorder acknowledgements cannot affect background replaced job conversation or account`() {
+        for (change in listOf("background", "job", "conversation", "account")) {
+            val entered = gate(); val release = gate()
+            lateinit var h: Harness
+            h = Harness { req -> if (req.url.encodedPath.endsWith("/reorders")) { entered.countDown(); release.await(3, TimeUnit.SECONDS); h.acceptReorder(body(req)) } else null }
+            readyQueue(h); h.vm.moveFollowUp(2, -1); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            when (change) {
+                "background" -> h.vm.setForeground(false)
+                "job" -> { h.jobs = listOf(job("child", "paused")); h.vm.refresh(); await { h.vm.state.value.jobId == "child" } }
+                "conversation" -> h.selected.set(false)
+                "account" -> { h.account.set(false); h.vm.refresh() }
+            }
+            release.countDown(); await { h.acceptedReorders.isNotEmpty() }; Thread.sleep(40)
+            assertNotNull(PendingMessageReorder.parse(h.reorderStorage["j"]))
+            assertFalse(h.vm.state.value.reorderNotice?.contains("已保存") == true)
+            h.vm.setForeground(false)
+        }
+    }
+
+    @Test fun `pre mutation GET cannot restore stale token after append edit or withdrawal`() {
+        for (mutation in listOf("send", "edit", "withdraw")) {
+            val armed = AtomicBoolean(false); val entered = gate(); val release = gate(); lateinit var h: Harness
+            h = Harness { req ->
+                if (req.method == "GET" && req.url.encodedPath.endsWith("/messages") && armed.compareAndSet(true, false)) {
+                    val old = h.page().toString(); entered.countDown(); release.await(3, TimeUnit.SECONDS); JSONObject(old)
+                } else null
+            }
+            readyQueue(h)
+            if (mutation == "edit") { h.vm.beginMessageEdit("q1"); h.vm.updateMessageEditText("changed") }
+            armed.set(true); h.vm.refreshMessageReceipts(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+            // The synthetic response omits queue like all single-message mutations; a subsequent GET has no trusted queue.
+            h.serverQueue = null
+            when (mutation) {
+                "send" -> h.vm.send("append", true, emptyList())
+                "edit" -> { h.serverMessages.removeAt(2); h.serverMessages.removeAt(1); h.vm.saveMessageEdit() }
+                else -> h.vm.withdrawMessage("q1")
+            }
+            await { !h.vm.state.value.sending && !h.vm.state.value.editingMessage && !h.vm.state.value.withdrawing }
+            release.countDown(); Thread.sleep(80)
+            assertFalse(h.vm.state.value.queueFresh); assertFalse(h.vm.state.value.messageQueue!!.canReorder)
+            h.vm.setForeground(false)
+        }
+    }
+
+    @Test fun `ABA foreground rejects old GET even when revision and token match prior display`() {
+        val armed = AtomicBoolean(false); val entered = gate(); val release = gate(); lateinit var h: Harness
+        h = Harness { req -> if (req.method == "GET" && req.url.encodedPath.endsWith("/messages") && armed.compareAndSet(true, false)) {
+            val old = h.page().toString(); entered.countDown(); release.await(3, TimeUnit.SECONDS); JSONObject(old)
+        } else null }
+        readyQueue(h); armed.set(true); h.vm.refreshMessageReceipts(); assertTrue(entered.await(2, TimeUnit.SECONDS))
+        h.vm.setForeground(false)
+        h.serverQueue = JSONObject(h.serverQueue.toString()).put("version", "q1:1fb9f4097256db2d7b1e13aff79cee44339891a31c556b9cf6093885773b3618")
+        h.serverMessages[0].put("revision", 1).put("edited_at", 1700000007).put("payload", JSONObject().put("text", "new body"))
+        h.vm.setForeground(true); await { h.vm.state.value.messageQueue?.version == "q1:1fb9f4097256db2d7b1e13aff79cee44339891a31c556b9cf6093885773b3618" }
+        release.countDown(); Thread.sleep(60)
+        assertEquals("q1:1fb9f4097256db2d7b1e13aff79cee44339891a31c556b9cf6093885773b3618", h.vm.state.value.messageQueue!!.version); assertEquals("new body", h.vm.state.value.messageReceipts.first().text)
+    }
+
+    @Test fun `older revision or incomplete projection revokes order without reverting its displayed sequence`() {
+        val h = Harness(); readyQueue(h); h.vm.moveFollowUp(2, -1)
+        await { h.vm.state.value.messageQueue?.orderRevision == 1L && !h.vm.state.value.reordering }
+        for (invalid in listOf("older", "missing", "unknown", "partial")) {
+            h.serverQueue = when (invalid) {
+                "missing" -> null
+                "unknown" -> JSONObject().put("schema_version", 9)
+                else -> JSONObject().put("schema_version", 1).put("task_id", "j").put("version", "q1:a03f2386ae06b21109577020844df367857b72c2fcce384c1896fed98a89c82b").put("order_revision", if (invalid == "older") 0 else 1)
+                    .put("message_ids", JSONArray(if (invalid == "partial") listOf(1, 2) else listOf(1, 2, 3))).put("pending_message_ids", JSONArray(listOf(1, 2, 3))).put("can_reorder", true).put("reason", JSONObject.NULL)
+            }
+            h.vm.refreshMessageReceipts(); await { !h.vm.state.value.refreshingMessages }
+            assertFalse(h.vm.state.value.queueFresh); assertEquals(listOf(2L, 1L, 3L), h.vm.state.value.messageQueue!!.messageIds)
+        }
+    }
+
 }

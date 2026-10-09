@@ -70,7 +70,7 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
     fun clearAuth() {
         ApkCache.clearAccount(cacheRoot, serverUrl, userId)
         prefs.edit().also { edit ->
-            prefs.all.keys.filter { it.startsWith("pending_job_message:") || it.startsWith("pending_message_withdrawal:") || it.startsWith("message_edit:") }.forEach(edit::remove)
+            prefs.all.keys.filter { it.startsWith("pending_job_message:") || it.startsWith("pending_message_withdrawal:") || it.startsWith("message_edit:") || it.startsWith("pending_message_reorder:") }.forEach(edit::remove)
         }.apply()
         apiToken = ""
         guestMode = true
@@ -181,6 +181,20 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
         val key = "message_edit:${session.sessionKey}:$jobId"
         if (value == null) edit.remove(key) else edit.putString(key, value.toJson().toString())
         check(edit.commit()) { "无法保存追问编辑，请重试" }
+    }
+
+    fun pendingMessageReorder(session: CacheSession, jobId: String): PendingMessageReorder? {
+        if (!session.isCurrent(this)) return null
+        return PendingMessageReorder.parse(prefs.getString("pending_message_reorder:${session.sessionKey}:$jobId", null))
+    }
+
+    fun setPendingMessageReorder(session: CacheSession, jobId: String, value: PendingMessageReorder?) {
+        check(session.isCurrent(this)) { "账号已变化，请重新打开会话" }
+        val key = "pending_message_reorder:${session.sessionKey}:$jobId"
+        check(value == null || prefs.contains(key) || prefs.all.keys.count { it.startsWith("pending_message_reorder:") } < 100) { "待确认排序过多，请先核对旧任务" }
+        val edit = prefs.edit()
+        if (value == null) edit.remove(key) else edit.putString(key, value.toJson().toString())
+        check(edit.commit()) { "无法保存待确认排序，请重试" }
     }
 
     fun approvalAllowlist(): MutableSet<String> =

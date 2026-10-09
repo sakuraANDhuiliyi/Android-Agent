@@ -103,7 +103,7 @@ data class JobMessageReceipt(
     }
 }
 
-data class JobMessagePage(val supported: Boolean, val messages: List<JobMessageReceipt>)
+data class JobMessagePage(val supported: Boolean, val messages: List<JobMessageReceipt>, val queue: JobMessageQueue? = null)
 
 /** Read-only inspection never changes the conversation's active job or drafts. */
 data class BlockingTaskInspection(val sourceJobId: String, val messageId: Long, val messageKey: String, val job: JobInfo) {

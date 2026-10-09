@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "job_id": "job-001",
+  "queue": {
+    "schema_version": 1,
+    "task_id": "job-001",
+    "version": "q1:082a0c13abe48bdc46748edd88ed15e723b34e5e6be4f7976441f8c0d2841fc2",
+    "order_revision": 2,
+    "message_ids": [
+      2,
+      3,
+      1
+    ],
+    "pending_message_ids": [
+      2,
+      3,
+      1
+    ],
+    "can_reorder": false,
+    "reason": "parent_canceled"
+  },
+  "messages": [
+    {
+      "id": 1,
+      "task_id": "job-001",
+      "message_key": "Follow A",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow A"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "blocked",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_canceled",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false,
+      "blocking_job_id": "job-001",
+      "blocking_turn_id": "turn-001"
+    },
+    {
+      "id": 2,
+      "task_id": "job-001",
+      "message_key": "Follow B",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow B"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "blocked",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_canceled",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false,
+      "blocking_job_id": "job-001",
+      "blocking_turn_id": "turn-001"
+    },
+    {
+      "id": 3,
+      "task_id": "job-001",
+      "message_key": "Follow C",
+      "type": "follow_up",
+      "payload": {
+        "text": "Follow C"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "schema_version": 1,
+      "delivery_state": "blocked",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_canceled",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false,
+      "blocking_job_id": "job-001",
+      "blocking_turn_id": "turn-001"
+    }
+  ],
+  "reorder": {
+    "schema_version": 1,
+    "task_id": "job-001",
+    "reorder_key": "client-reorder-001",
+    "expected_version": "q1:a4ddcc6ff6229fb038ad190ba44d9893a4170700c14c198b0d18e573418e3693",
+    "order_revision": 1,
+    "message_ids": [
+      3,
+      1,
+      2
+    ],
+    "created_at": 1007.0
+  }
+}

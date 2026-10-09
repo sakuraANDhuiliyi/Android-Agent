@@ -18,6 +18,9 @@ TABLES = (
     "task_message_revisions",
     "task_message_followups",
     "task_message_withdrawals",
+    # Historical mappings were created under earlier order revisions. Restore
+    # their evidence before enabling the latest queue-order worker guard.
+    "task_message_queue_orders",
     "checkpoints",
     "outbox",
 )

@@ -300,12 +300,9 @@ def list_job_messages(
     user_id: str,
     include_consumed: bool = False,
 ) -> list[dict[str, Any]] | None:
-    job = get_job(job_id, user_id=user_id)
-    if not job:
-        return None
-    from agent.task_messages import message_receipt
-    messages = _store.list_task_messages(job_id, include_consumed=include_consumed)
-    return [message_receipt(_store, msg, user_id) for msg in messages]
+    from agent.task_messages import message_page
+    page = message_page(_store, job_id, user_id, include_consumed=include_consumed)
+    return page['messages'] if page is not None else None
 
 
 def pause_job(job_id: str, user_id: str) -> bool:

@@ -254,6 +254,10 @@
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages/${messageId}/withdraw`, { method: "POST" });
     }
 
+    reorderJobMessages(jobId, intent) {
+      return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages/reorders`, { method: "POST", body: intent });
+    }
+
     editJobMessage(jobId, messageId, edit) {
       if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("消息编号无效");
       return this.request(`/api/jobs/${encodeURIComponent(jobId)}/messages/${messageId}/edits`, { method: "POST", body: edit });

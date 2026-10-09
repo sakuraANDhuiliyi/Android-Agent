@@ -247,7 +247,10 @@ class TaskMessageBlockerTests(IsolatedWorkspaceMixin, unittest.TestCase):
         self.finish(status='failed')
         parent_expected['job_id']=parent_expected['messages'][0]['task_id']='source'
         parent_expected['messages'][0].update(id=message['id'],blocking_job_id='source',blocking_turn_id=self.events.get_turn_by_task('source')['id'])
-        self.assertEqual(self.client.get('/api/jobs/source/messages?include_consumed=true').json(),parent_expected)
+        actual = self.client.get('/api/jobs/source/messages?include_consumed=true').json()
+        queue = actual.pop('queue')
+        self.assertEqual(actual,parent_expected)
+        self.assertEqual((queue['task_id'],queue['reason'],queue['can_reorder']),('source','parent_failed',False))
         self.source('child-source')
         head=self.add('head',task='child-source')
         with patch('agent.database.time.time',return_value=1002.0):

@@ -5,6 +5,7 @@
   root.document?.addEventListener("visibilitychange", () => { if (root.document.visibilityState === "hidden") visibilityEpoch += 1; });
   root.addEventListener?.("blur", () => { visibilityEpoch += 1; });
   const STORAGE_KEY = "android-agent-message-outbox-v1";
+  const QUEUE_STORAGE_KEY = "android-agent-message-queue-outbox-v1";
   const TYPES = new Set(["steer", "follow_up"]);
   const STATES = new Set(["pending", "consumed", "follow_up_created", "unapplied", "blocked", "withdrawn", "unknown"]);
   const LABELS = { sending: "发送中…", unconfirmed: "送达结果未确认", rejected: "发送未被接受", pending: "已接收，等待处理", consumed: "已加入本轮上下文", follow_up_created: "后续任务已创建", unapplied: "本轮结束前未加入上下文", blocked: "后续任务未创建", withdrawn: "追问已撤回", unknown: "回执状态未知" };
@@ -53,11 +54,42 @@
     return raw;
   }
 
+  const idsValid = ids => Array.isArray(ids) && ids.length <= 10000 && ids.every(id => Number.isSafeInteger(id) && id > 0) && new Set(ids).size === ids.length;
+  const queueVersion = value => typeof value === "string" && /^q1:[0-9a-f]{64}$/.test(value);
+  const sameIds = (a, b) => a.length === b.length && a.every((id, index) => id === b[index]);
+  function normalizeQueue(raw, messages, scope) {
+    if (raw?.schema_version !== 1 || raw.task_id !== scope.job || !revision(raw.order_revision)
+        || !(raw.version === null || queueVersion(raw.version)) || typeof raw.can_reorder !== "boolean"
+        || !idsValid(raw.message_ids) || !idsValid(raw.pending_message_ids) || !Array.isArray(messages)) return null;
+    const followUps = messages.filter(row => row?.type === "follow_up").map(row => normalize(row, scope));
+    if (followUps.some(row => !row) || !idsValid(followUps.map(row => row.id))
+        || followUps.length !== raw.message_ids.length || followUps.some(row => !raw.message_ids.includes(row.id))) return null;
+    const pending = new Set(raw.pending_message_ids);
+    if (!sameIds(raw.message_ids.filter(id => pending.has(id)), raw.pending_message_ids)) return null;
+    if (raw.can_reorder && (raw.reason !== null || !queueVersion(raw.version) || pending.size < 2 || followUps.some(row => !revision(row.revision)
+        || row.delivery_state === "unknown" || pending.has(row.id) !== (row.delivery_state === "pending")))) return null;
+    if (raw.can_reorder) {
+      let reachedPending = false;
+      const byId = new Map(followUps.map(row => [row.id, row]));
+      for (const id of raw.message_ids) {
+        if (pending.has(id)) reachedPending = true;
+        else if (reachedPending && byId.get(id).delivery_state !== "withdrawn") return null;
+      }
+    }
+    return { ...raw, message_ids: [...raw.message_ids], pending_message_ids: [...raw.pending_message_ids] };
+  }
+  function normalizeReorder(raw, scope, intent) {
+    if (raw?.schema_version !== 1 || raw.task_id !== scope.job || raw.reorder_key !== intent.reorder_key
+        || raw.expected_version !== intent.expected_version || !revision(raw.order_revision) || raw.order_revision === 0
+        || !stamp(raw.created_at) || !idsValid(raw.message_ids) || !sameIds(raw.message_ids, intent.message_ids)) return null;
+    return raw;
+  }
+
   class Store {
     constructor(client, identity, { storage = null, uuid = () => root.crypto.randomUUID() } = {}) {
       this.client = client; this.identity = identity; this.storage = storage; this.uuid = uuid;
-      this.records = new Map(); this.listeners = new Set(); this.requests = new Map(); this.loads = new Map(); this.watches = new Map();
-      this.timer = null; this.persistenceError = false;
+      this.records = new Map(); this.queues = new Map(); this.listeners = new Set(); this.requests = new Map(); this.loads = new Map(); this.watches = new Map();
+      this.timer = null; this.persistenceError = false; this.queuePersistenceError = false;
       try {
         const saved = JSON.parse(storage?.getItem(STORAGE_KEY) || "[]");
         for (const item of Array.isArray(saved) ? saved.slice(0, 100) : []) {
@@ -96,6 +128,17 @@
           this.bucket(s).set(record.message_key, record);
         }
       } catch (_) { /* Corrupt or disabled storage never causes a resend. */ }
+      try {
+        const saved = JSON.parse(storage?.getItem(QUEUE_STORAGE_KEY) || "[]");
+        for (const entry of Array.isArray(saved) ? saved.slice(0, 100) : []) {
+          const scope = entry.scope, pending = entry.pending;
+          if (!scope || ![scope.server, scope.user, scope.project, scope.conversation, scope.job].every(nonempty)
+              || !nonempty(pending?.reorder_key) || pending.reorder_key.length > 200 || !queueVersion(pending.expected_version)
+              || !idsValid(pending.message_ids) || pending.message_ids.length < 2) continue;
+          this.queue(scope).pending = { reorder_key: pending.reorder_key, expected_version: pending.expected_version,
+            message_ids: [...pending.message_ids], phase: "unconfirmed" };
+        }
+      } catch (_) { /* Cached ordering never grants capability or sends requests. */ }
     }
 
     scope(job) {
@@ -116,7 +159,7 @@
     list(scope) { return scope ? [...this.bucket(scope).values()].sort((a, b) => a.created_at - b.created_at || (a.id || 0) - (b.id || 0)) : []; }
     sending(scope) { return this.list(scope).some(row => row.phase === "sending"); }
     subscribe(callback) { this.listeners.add(callback); return () => this.listeners.delete(callback); }
-    emit() { this.save(); for (const listener of this.listeners) listener(); }
+    emit() { this.save(); this.saveQueueIntents(); for (const listener of this.listeners) listener(); }
     save() {
       const pending = [...this.records.values()].flatMap(map => [...map.values()]).filter(row => row.phase !== "received" && row.retryable || row.withdrawPhase || row.editIntent || row.editor);
       const rows = pending.map(row => ({ scope: { server: row.scope.server, user: row.scope.user, project: row.scope.project, conversation: row.scope.conversation, job: row.scope.job },
@@ -129,6 +172,94 @@
         message_key: row.message_key, type: row.type, payload: row.payload, created_at: row.created_at }));
       try { this.storage?.setItem(STORAGE_KEY, JSON.stringify(rows)); this.persistenceError = false; }
       catch (_) { this.persistenceError = true; }
+    }
+    queue(scope) {
+      const key = keyFor(scope);
+      if (!this.queues.has(key)) this.queues.set(key, { scope: { ...scope }, session: scope.session,
+        epoch: 0, viewEpoch: 0, valid: false, snapshot: null, pending: null, active: new Set(), error: null });
+      const value = this.queues.get(key);
+      if (value.session !== scope.session) {
+        value.session = scope.session; value.epoch++; value.valid = false; value.active.clear();
+        if (value.pending) value.pending.phase = "unconfirmed";
+      }
+      return value;
+    }
+    saveQueueIntents() {
+      const saved = [...this.queues.values()].filter(value => value.pending).map(value => ({
+        scope: { server: value.scope.server, user: value.scope.user, project: value.scope.project, conversation: value.scope.conversation, job: value.scope.job },
+        pending: { reorder_key: value.pending.reorder_key, expected_version: value.pending.expected_version, message_ids: value.pending.message_ids },
+      }));
+      try { this.storage?.setItem(QUEUE_STORAGE_KEY, JSON.stringify(saved)); this.queuePersistenceError = false; }
+      catch (_) { this.queuePersistenceError = true; }
+    }
+    invalidateQueue(scope) { const queue = this.queue(scope); queue.epoch++; queue.valid = false; }
+    mutationStart(scope, id) { this.invalidateQueue(scope); this.queue(scope).active.add(id); }
+    mutationDone(scope, id) {
+      // An old session's finally cannot revoke a new session's current snapshot.
+      const queue = this.queues.get(keyFor(scope)); queue?.active.delete(id);
+      if (!this.current(scope)) return;
+      this.invalidateQueue(scope);
+      if (queue?.snapshot || queue?.pending || [...this.watches.values()].some(value => keyFor(value.scope) === keyFor(scope))) void this.reconcile(scope);
+    }
+    queueReady(scope) {
+      if (!this.current(scope)) return false;
+      const queue = this.queue(scope);
+      return queue.valid && queue.visibleVersion === visibilityEpoch && root.document?.visibilityState !== "hidden" && queue.snapshot?.can_reorder === true && !queue.pending && queue.active.size === 0
+        && !this.list(scope).some(row => row.type === "follow_up" && (row.retryable || row.editIntent || row.withdrawPhase));
+    }
+    moveQueue(scope, messageId, direction) {
+      if (!this.queueReady(scope) || ![-1, 1].includes(direction)) return Promise.resolve(false);
+      const queue = this.queue(scope), ids = [...queue.snapshot.pending_message_ids], index = ids.indexOf(messageId);
+      if (index < 0 || index + direction < 0 || index + direction >= ids.length) return Promise.resolve(false);
+      if ([...this.queues.values()].filter(value => value.pending).length >= 100) return Promise.reject(new Error("待确认排序已达上限，请先核对旧任务"));
+      [ids[index], ids[index + direction]] = [ids[index + direction], ids[index]];
+      queue.pending = { reorder_key: this.uuid(), expected_version: queue.snapshot.version, message_ids: ids, phase: "unconfirmed" };
+      return this.submitReorder(scope);
+    }
+    submitReorder(scope) {
+      if (!this.current(scope)) return Promise.resolve(false);
+      const queue = this.queue(scope), intent = queue.pending;
+      if (!intent) return Promise.resolve(false);
+      const id = `reorder:${scope.session}:${keyFor(scope)}:${intent.reorder_key}`;
+      if (this.requests.has(id)) return this.requests.get(id);
+      intent.phase = "sending"; intent.requestId = id; queue.error = null; this.emit();
+      if (this.queuePersistenceError) {
+        intent.phase = "unconfirmed"; delete intent.requestId; queue.error = "本地保存失败，排序尚未发送；恢复存储后可核对并重试";
+        this.emit(); return Promise.resolve(false);
+      }
+      this.mutationStart(scope, id); this.emit();
+      const visibleVersion = visibilityEpoch, viewEpoch = queue.viewEpoch;
+      const request = this.client.reorderJobMessages(scope.job, { reorder_key: intent.reorder_key,
+        expected_version: intent.expected_version, message_ids: [...intent.message_ids] }).then(data => {
+        if (!this.current(scope)) return false;
+        if (visibleVersion !== visibilityEpoch || viewEpoch !== queue.viewEpoch || root.document?.visibilityState === "hidden") return false;
+        if (!this.envelope(data, scope) || !normalizeReorder(data.reorder, scope, intent)) throw new Error("排序回执无法确认，请使用原请求核对");
+        if (queue.pending?.reorder_key !== intent.reorder_key) return false;
+        queue.pending = null; queue.error = "该次排序已保存，正在核对当前队列";
+        // The ACK is historical. Only a fresh GET may establish current order.
+        return true;
+      }).catch(error => {
+        if (!this.current(scope) || queue.pending?.reorder_key !== intent.reorder_key
+            || visibleVersion !== visibilityEpoch || viewEpoch !== queue.viewEpoch) return false;
+        intent.phase = "unconfirmed";
+        queue.error = "排序结果待确认，可核对并重试原排序";
+        if ([400, 401, 403, 404, 409, 422].includes(error.status)) {
+          queue.pending = null;
+          queue.error = error.status === 409 ? "队列已变化，本次排序未保存；请核对当前顺序后重新选择" : "排序未被接受，请刷新后核对";
+        }
+        return false;
+      }).finally(() => {
+        this.requests.delete(id);
+        if (queue.pending?.requestId === id) { queue.pending.phase = "unconfirmed"; delete queue.pending.requestId; }
+        this.mutationDone(scope, id); this.emit();
+      });
+      this.requests.set(id, request); return request;
+    }
+    async retryReorder(scope) {
+      const visibleVersion = visibilityEpoch, viewEpoch = this.queue(scope).viewEpoch;
+      await this.reconcile(scope);
+      if (visibleVersion !== visibilityEpoch || viewEpoch !== this.queue(scope).viewEpoch || root.document?.visibilityState === "hidden") return false;
+      return this.submitReorder(scope); // Already accepted requests remain replayable after eligibility changes.
     }
     create(scope, type, text) {
       if (!this.current(scope) || !TYPES.has(type) || !nonempty(text)) throw new Error("请连接并选择当前任务");
@@ -178,6 +309,7 @@
       if (!row || !row.retryable) return Promise.resolve(false);
       const id = `${scope.session}:${keyFor(scope)}:${messageKey}`;
       if (this.requests.has(id)) return this.requests.get(id);
+      this.mutationStart(scope, id);
       Object.assign(row, { phase: "sending", error: null }); this.emit();
       const request = this.client.sendJobMessage(scope.job, row.type, { ...row.payload }, row.message_key).then(data => {
         if (!this.current(scope)) return false;
@@ -194,7 +326,7 @@
       }).finally(() => {
         this.requests.delete(id);
         if (row.phase === "sending") row.phase = "unconfirmed";
-        this.emit();
+        this.mutationDone(scope, id); this.emit();
       });
       this.requests.set(id, request); return request;
     }
@@ -211,6 +343,7 @@
       if (this.requests.has(id)) return this.requests.get(id);
       if (!row || row.phase !== "received" || !row.can_withdraw || row.editIntent || row.editor || !Number.isSafeInteger(row.id) || row.id <= 0) return Promise.resolve(false);
       if (!row.withdrawPhase && this.pendingCount() >= 100) return Promise.reject(new Error("待确认操作已达上限，请先核对旧记录"));
+      this.mutationStart(scope, id);
       Object.assign(row, { withdrawPhase: "sending", withdrawError: null, withdrawRequestId: id }); this.emit();
       const request = this.client.withdrawJobMessage(scope.job, row.id).then(data => {
         if (!this.current(scope)) return false;
@@ -242,7 +375,7 @@
           if (current.withdrawPhase === "sending") current.withdrawPhase = "unconfirmed";
           delete current.withdrawRequestId;
         }
-        this.emit();
+        this.mutationDone(scope, id); this.emit();
       });
       this.requests.set(id, request); return request;
     }
@@ -299,6 +432,7 @@
         intent.phase = "unconfirmed"; row.editError = "本地保存失败，编辑尚未发送；恢复存储后可核对并重试";
         delete intent.requestId; this.emit(); return Promise.resolve(false);
       }
+      this.mutationStart(scope, id); this.emit();
       const request = this.client.editJobMessage(scope.job, row.id, { edit_key: intent.edit_key,
         expected_revision: intent.expected_revision, payload: { ...intent.payload } }).then(data => {
         if (!this.current(scope)) return false;
@@ -332,7 +466,7 @@
         if (current?.editIntent?.requestId === id) {
           current.editIntent.phase = "unconfirmed"; delete current.editIntent.requestId;
         }
-        this.emit();
+        this.mutationDone(scope, id); this.emit();
       });
       this.requests.set(id, request); return request;
     }
@@ -349,7 +483,8 @@
     }
     reconcile(scope) {
       if (!this.current(scope)) return Promise.resolve(false);
-      const id = `${scope.session}:${keyFor(scope)}`;
+      const queue = this.queue(scope), epoch = queue.epoch, visibleVersion = visibilityEpoch;
+      const id = `${scope.session}:${keyFor(scope)}:${epoch}`;
       if (this.loads.has(id)) return this.loads.get(id);
       const request = this.client.jobMessages(scope.job, { includeConsumed: true }).then(data => {
         if (!this.current(scope)) return false;
@@ -357,11 +492,24 @@
         // Missing/unsupported rows revoke navigation; valid rows merge normally.
         if (!this.envelope(data, scope) || !Array.isArray(data.messages)) {
           for (const row of this.list(scope)) clearBlocker(row);
+          if (queue.epoch === epoch) queue.valid = false;
           this.emit(); return false;
         }
         const seen = new Set();
         for (const row of data.messages) if (this.merge(scope, row)) seen.add(row.message_key);
         for (const row of this.list(scope)) if (!seen.has(row.message_key)) clearBlocker(row);
+        if (queue.epoch === epoch && visibleVersion === visibilityEpoch && root.document?.visibilityState !== "hidden") {
+          const next = normalizeQueue(data.queue, data.messages, scope);
+          const follows = data.messages.filter(row => row.type === "follow_up");
+          const consistent = next && follows.every(raw => {
+            const known = this.bucket(scope).get(raw.message_key);
+            return known && ["id", "type", "revision", "delivery_state", "consumed_at", "withdrawn_at", "follow_up_job_id", "follow_up_turn_id"]
+              .every(key => (known[key] ?? null) === (raw[key] ?? null));
+          }) && this.list(scope).filter(row => row.type === "follow_up" && row.id && row.phase === "received")
+            .every(row => next.message_ids.includes(row.id));
+          queue.valid = Boolean(consistent && (!queue.snapshot || next.order_revision >= queue.snapshot.order_revision));
+          if (queue.valid) { queue.snapshot = next; queue.visibleVersion = visibleVersion; }
+        }
         this.emit(); return true;
       }).catch(() => false).finally(() => this.loads.delete(id));
       this.loads.set(id, request); return request;
@@ -369,17 +517,23 @@
     watch(id, scope, active = false) {
       const old = this.watches.get(id);
       if (!scope) {
+        if (old?.scope && this.current(old.scope)) { this.invalidateQueue(old.scope); this.queue(old.scope).viewEpoch++; }
         this.watches.delete(id);
         if (!this.watches.size && this.timer) { clearInterval(this.timer); this.timer = null; }
         return;
       }
+      const changedScope = !old || old.scope.session !== scope.session || keyFor(old.scope) !== keyFor(scope);
+      if (changedScope) {
+        if (old?.scope && this.current(old.scope)) { this.invalidateQueue(old.scope); this.queue(old.scope).viewEpoch++; }
+        this.queue(scope).viewEpoch++;
+      }
       const binding = `${scope.session}:${keyFor(scope)}:${active}`;
       this.watches.set(id, { scope, active, binding });
-      if (old?.binding !== binding) this.reconcile(scope);
+      if (old?.binding !== binding) { this.invalidateQueue(scope); this.reconcile(scope); }
       if (!this.timer) this.timer = setInterval(() => {
         if (root.document?.visibilityState === "hidden") return;
         const scopes = new Map();
-        for (const value of this.watches.values()) if (value.active || this.list(value.scope).some(row => row.retryable || row.withdrawPhase || row.editIntent || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
+        for (const value of this.watches.values()) if (value.active || this.queue(value.scope).pending || this.list(value.scope).some(row => row.retryable || row.withdrawPhase || row.editIntent || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
         for (const value of scopes.values()) this.reconcile(value);
       }, 2000);
     }
@@ -458,19 +612,52 @@
   function render(host, store, scope, { openChild, openBlocker } = {}) {
     for (const dialog of blockerDialogs.values()) dialog.check();
     if (!host) return;
-    const rows = store.list(scope);
-    host.hidden = !rows.length;
-    const signature = JSON.stringify([scope && keyFor(scope), scope?.session, store.persistenceError, rows]);
+    const records = store.list(scope), queue = scope ? store.queue(scope) : null;
+    const ready = Boolean(scope && store.queueReady(scope));
+    const followUps = new Map(records.filter(row => row.type === "follow_up" && row.id).map(row => [row.id, row]));
+    const ordered = (queue?.snapshot?.message_ids || []).map(id => followUps.get(id)).filter(Boolean);
+    const known = new Set(ordered.map(row => row.message_key));
+    const rows = [...records.filter(row => row.type === "steer"), ...ordered,
+      ...records.filter(row => row.type === "follow_up" && !known.has(row.message_key))];
+    host.hidden = !rows.length && !queue?.pending;
+    const signature = JSON.stringify([scope && keyFor(scope), scope?.session, store.persistenceError,
+      queue && [queue.valid, queue.snapshot, queue.pending, queue.error, queue.active.size, ready], rows]);
     if (host._messageSignature === signature) return;
     host._messageSignature = signature;
     const body = host.querySelector(".message-receipts-body");
     if (!body) return;
+    const focusedAction = body.contains(document.activeElement) && document.activeElement.tagName === "BUTTON"
+      ? { key: document.activeElement.closest(".message-receipt")?.dataset.messageKey, text: document.activeElement.textContent } : null;
     const focused = body.contains(document.activeElement) && document.activeElement.classList.contains("message-edit-text")
       ? { key: document.activeElement.closest(".message-receipt").dataset.messageKey,
         start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
     body.replaceChildren();
+    if (queue?.snapshot || queue?.pending) {
+      const note = document.createElement("p"); note.className = "message-queue-status"; note.setAttribute("role", "status");
+      const reasons = { not_enough_pending: "至少两条待执行追问才能调整顺序", parent_failed: "前序任务失败，暂不可排序",
+        parent_canceled: "前序任务已取消，暂不可排序", parent_interrupted: "前序任务中断，暂不可排序",
+        legacy_missing_receipt: "旧记录缺少关联证据", unknown_status: "任务状态未知", invalid_queue: "队列无法确认" };
+      note.textContent = queue.pending ? (queue.pending.phase === "sending" ? "正在保存队列顺序…" : "排序结果待确认")
+        : queue.valid ? (reasons[queue.snapshot.reason] || "追问按服务端队列顺序展示") : "队列顺序待核对，暂不可调整";
+      if (queue.error) note.textContent += ` · ${queue.error}`;
+      body.appendChild(note);
+      if (queue.pending?.phase === "unconfirmed") {
+        const retry = document.createElement("button"); retry.type = "button"; retry.className = "ghost-btn sm";
+        retry.textContent = "核对并重试排序";
+        retry.addEventListener("click", async () => { retry.disabled = true; try { await store.retryReorder(scope); }
+          catch (error) { note.textContent = error.message; } finally { retry.disabled = false; } });
+        body.appendChild(retry);
+      }
+    }
+    let group;
     for (const row of rows) {
+      const nextGroup = row.type === "steer" ? "引导记录" : known.has(row.message_key) ? "服务端追问队列" : "未确认队位的追问";
+      if (group !== nextGroup) {
+        group = nextGroup; const label = document.createElement("h4"); label.className = "message-queue-group";
+        label.textContent = group; body.appendChild(label);
+      }
       const section = document.createElement("div"); section.className = "message-receipt";
+      section.dataset.messageId = row.id || "";
       section.dataset.messageKey = row.message_key; section.dataset.state = row.phase === "received" ? row.delivery_state : row.phase;
       const text = document.createElement("p"); text.className = "message-receipt-text"; text.textContent = `${row.type === "steer" ? "引导" : "追问"} · ${bodyText(row.payload)}`;
       const status = document.createElement("small"); status.textContent = LABELS[section.dataset.state] || LABELS.unknown;
@@ -488,6 +675,14 @@
         section.appendChild(button);
         return button;
       };
+      const pendingIndex = queue?.snapshot?.pending_message_ids.indexOf(row.id) ?? -1;
+      if (pendingIndex >= 0) {
+        section.dataset.queuePosition = String(pendingIndex + 1);
+        const up = action("上移追问", () => store.moveQueue(scope, row.id, -1));
+        const down = action("下移追问", () => store.moveQueue(scope, row.id, 1));
+        up.disabled = !ready || pendingIndex === 0;
+        down.disabled = !ready || pendingIndex === queue.snapshot.pending_message_ids.length - 1;
+      }
       if (row.retryable && row.phase !== "sending") action("核对并重试", () => store.retry(scope, row.message_key));
       if (row.phase === "unconfirmed" || row.phase === "rejected") action("移除本地记录", () => store.remove(scope, row.message_key));
       if (row.withdrawPhase === "unconfirmed") action("核对并重试撤回", () => store.retryWithdrawal(scope, row.message_key));
@@ -510,6 +705,10 @@
       if (hasBlocker(row) && openBlocker) action("查看阻塞任务", () => openBlocker(scope, row));
       if (row.delivery_state === "follow_up_created" && openChild) action("查看后续任务", () => openChild(scope, row));
       body.appendChild(section);
+      if (focusedAction?.key === row.message_key) {
+        const button = [...section.querySelectorAll("button")].find(item => item.textContent === focusedAction.text && !item.disabled);
+        button?.focus({ preventScroll: true });
+      }
       if (focused?.key === row.message_key) {
         const field = section.querySelector(".message-edit-text");
         if (field) { field.focus({ preventScroll: true }); field.setSelectionRange(focused.start, focused.end); }
@@ -520,7 +719,7 @@
     }
   }
 
-  const api = { Store, normalize, normalizeEdit, render, showBlocker, keyFor, STORAGE_KEY };
+  const api = { Store, normalize, normalizeEdit, normalizeQueue, normalizeReorder, render, showBlocker, keyFor, STORAGE_KEY, QUEUE_STORAGE_KEY };
   root.JobMessages = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

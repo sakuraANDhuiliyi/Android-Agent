@@ -243,6 +243,34 @@
       "path": "/api/jobs/{job_id}/messages?include_consumed=true",
       "fixture": "job_messages_blocked_child_200.json",
       "status": 200
+    },
+    {
+      "id": "job_messages_queue_200",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}/messages?include_consumed=true",
+      "fixture": "job_messages_queue_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_message_reorder_201",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/reorders",
+      "fixture": "job_message_reorder_201.json",
+      "status": 201
+    },
+    {
+      "id": "job_message_reorder_200",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/reorders",
+      "fixture": "job_message_reorder_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_message_reorder_blocked_200",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/reorders",
+      "fixture": "job_message_reorder_blocked_200.json",
+      "status": 200
     }
   ],
   "client_tests": [

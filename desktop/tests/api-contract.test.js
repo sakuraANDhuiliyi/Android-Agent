@@ -307,6 +307,23 @@
   assertErrorFixture("errors/rate_limited_429.json", 429);
   assertErrorFixture("errors/internal_error_500.json", 500);
 
+  const { normalizeQueue, normalizeReorder } = require("../src/job-messages");
+  for (const name of ["job_messages_queue_200.json", "job_message_reorder_201.json", "job_message_reorder_200.json", "job_message_reorder_blocked_200.json"]) {
+    const fixture = loadJson(name), scope = { job: fixture.job_id };
+    const queue = normalizeQueue(fixture.queue, fixture.messages, scope);
+    assert.ok(queue, name);
+    assert.strictEqual(queue.pending_message_ids.length, 3);
+    if (fixture.reorder) {
+      const ack = normalizeReorder(fixture.reorder, scope, fixture.reorder);
+      assert.ok(ack, name);
+      if (name.includes("reorder_200")) {
+        assert.strictEqual(ack.order_revision, 1); assert.strictEqual(queue.order_revision, 2);
+        assert.notDeepStrictEqual(ack.message_ids, queue.message_ids);
+      }
+    }
+    if (name.includes("blocked")) { assert.strictEqual(queue.can_reorder, false); assert.strictEqual(queue.reason, "parent_canceled"); }
+  }
+
   const deprecation = loadJson("deprecation.json");
   assert.ok(Array.isArray(deprecation.deprecated_fields));
 

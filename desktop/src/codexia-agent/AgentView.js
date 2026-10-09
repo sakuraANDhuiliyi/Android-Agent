@@ -832,6 +832,10 @@
     if (action === "recover" && !(job.can_recover === true || job.recovery_job_id)) return;
     let current = selectionGuard();
     const panelBinding = window.AiPanel?.getState?.().loadToken;
+    const messages = window.AiPanel?.messages;
+    const queueScope = action === "recover" ? null : messages?.scope(job);
+    const queueOperation = Symbol("task-control");
+    if (queueScope) { messages.mutationStart(queueScope, queueOperation); messages.emit(); }
     state.controlBusy = action;
     updateTaskControls();
     updateSendButton();
@@ -867,6 +871,7 @@
         } catch (_) { /* retain the last known state while offline */ }
       }
     } finally {
+      if (queueScope) { messages.mutationDone(queueScope, queueOperation); messages.emit(); }
       if (current()) {
         state.controlBusy = null;
         renderAgents();

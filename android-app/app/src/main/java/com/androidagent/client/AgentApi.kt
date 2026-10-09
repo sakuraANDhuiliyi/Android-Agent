@@ -788,6 +788,10 @@ class AgentApi(
 
     fun listJobMessages(jobId: String): JobMessagePage {
         val json = getJson("/api/jobs/$jobId/messages?include_consumed=true")
+        return parseJobMessagePage(json, jobId)
+    }
+
+    private fun parseJobMessagePage(json: JSONObject, jobId: String): JobMessagePage {
         require(json.opt("job_id") == jobId) { "消息列表不属于当前任务" }
         val supported = json.opt("schema_version") == 1
         val messages = json.getJSONArray("messages")
@@ -795,7 +799,23 @@ class AgentApi(
             .filter { it.opt("type") in setOf("steer", "follow_up") }
             .map { JobMessageReceipt.parse(it, jobId, supported) }
         require(receipts.map { it.key }.distinct().size == receipts.size) { "消息列表包含重复身份" }
-        return JobMessagePage(supported, receipts.sortedBy { it.id })
+        return JobMessagePage(supported, receipts.sortedBy { it.id }, if (supported) JobMessageQueue.parse(json.optJSONObject("queue"), jobId, receipts) else null)
+    }
+
+    fun reorderJobMessages(pending: PendingMessageReorder): JobMessageReorderAck {
+        require(PendingMessageReorder.parse(pending.toJson().toString()) == pending)
+        val json = postJson("/api/jobs/${pending.jobId}/messages/reorders", pending.body())
+        require(json.opt("schema_version") == 1 && json.opt("job_id") == pending.jobId) { "排序回执不属于当前任务" }
+        val ack = json.getJSONObject("reorder")
+        require(ack.opt("schema_version") == 1 && ack.opt("task_id") == pending.jobId &&
+            ack.opt("reorder_key") == pending.reorderKey && ack.opt("expected_version") == pending.expectedVersion &&
+            queueIds(ack.getJSONArray("message_ids")) == pending.messageIds) { "排序确认与原请求不符" }
+        val revision = queueInteger(ack.opt("order_revision"))?.takeIf { it > 0 } ?: error("排序版本无效")
+        val created = (ack.opt("created_at") as? Number)?.toDouble()
+        require(created != null && created.isFinite() && created > 0 && created <= 253402300799.0)
+        // An immutable acknowledgement never supplies the visible queue order. Its current projection is separate.
+        return JobMessageReorderAck(pending.reorderKey, pending.expectedVersion, pending.messageIds, revision, created,
+            runCatching { parseJobMessagePage(json, pending.jobId) }.getOrElse { JobMessagePage(false, emptyList()) })
     }
 
     fun withdrawJobMessage(jobId: String, messageId: Long, messageKey: String): JobMessageReceipt {

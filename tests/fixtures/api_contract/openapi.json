@@ -1814,6 +1814,40 @@
         "title": "JobMessageEditRequest",
         "type": "object"
       },
+      "JobMessageReorderRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "maxLength": 67,
+            "minLength": 67,
+            "pattern": "^q1:[0-9a-f]{64}$",
+            "title": "Expected Version",
+            "type": "string"
+          },
+          "message_ids": {
+            "items": {
+              "exclusiveMaximum": 9.223372036854776e+18,
+              "exclusiveMinimum": 0.0,
+              "type": "integer"
+            },
+            "title": "Message Ids",
+            "type": "array"
+          },
+          "reorder_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reorder Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reorder_key",
+          "expected_version",
+          "message_ids"
+        ],
+        "title": "JobMessageReorderRequest",
+        "type": "object"
+      },
       "JobMessageRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6765,6 +6799,76 @@
           }
         },
         "summary": "Post Job Message"
+      }
+    },
+    "/api/jobs/{job_id}/messages/reorders": {
+      "post": {
+        "operationId": "reorder_job_messages_api_jobs__job_id__messages_reorders_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobMessageReorderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Immutable reorder acknowledgement and current queue snapshot"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reorder Job Messages Api Jobs  Job Id  Messages Reorders Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reorder Job Messages"
       }
     },
     "/api/jobs/{job_id}/messages/{message_id}/edits": {
@@ -13360,6 +13464,7 @@
     "GET /api/jobs/{job_id}/log",
     "GET /api/jobs/{job_id}/messages",
     "POST /api/jobs/{job_id}/messages",
+    "POST /api/jobs/{job_id}/messages/reorders",
     "POST /api/jobs/{job_id}/messages/{message_id}/edits",
     "POST /api/jobs/{job_id}/messages/{message_id}/withdraw",
     "POST /api/jobs/{job_id}/pause",

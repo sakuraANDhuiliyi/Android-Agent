@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -72,6 +73,29 @@ class TaskStoreTests(unittest.TestCase):
 
 
 class ConversationStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Retire any previous test's pool before replacing jobs' store or mocks.
+        self._stop_workers()
+
+    def _stop_workers(self) -> None:
+        workers = list(dict.fromkeys(
+            jobs_mod._worker_pool + ([jobs_mod._worker] if jobs_mod._worker else [])
+        ))
+        jobs_mod.stop_worker(wait=True, timeout=5.0)
+        self.assertTrue(
+            all(worker._thread is None or not worker._thread.is_alive() for worker in workers),
+            "Test worker pool did not stop before its store and mocks were removed",
+        )
+
+    @contextmanager
+    def _worker_lifetime(self):
+        try:
+            yield
+        finally:
+            # Terminal state and released project locks do not stop the persistent
+            # polling pool. Join it while run_agent/store/path patches still apply.
+            self._stop_workers()
+
     @staticmethod
     def _settings(**overrides):
         base = dict(
@@ -147,6 +171,7 @@ class ConversationStoreTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", return_value="这是纯文本回答，未构建"),
+                self._worker_lifetime(),
             ):
                 job = jobs_mod.start_ask_job(
                     "u",
@@ -191,6 +216,7 @@ class ConversationStoreTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", side_effect=fake_agent),
+                self._worker_lifetime(),
             ):
                 job = jobs_mod.start_ask_job("u", "p", "改一下再构建", self._settings())
                 task = self._wait_task(store, job["id"], "u", locks=locks)
@@ -228,6 +254,7 @@ class ConversationStoreTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", side_effect=fake_agent),
+                self._worker_lifetime(),
             ):
                 job = jobs_mod.start_ask_job("u", "p", "跑一下 clean", self._settings())
                 task = self._wait_task(store, job["id"], "u", locks=locks)
@@ -258,6 +285,7 @@ class ConversationStoreTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", side_effect=fake_agent),
+                self._worker_lifetime(),
             ):
                 job = jobs_mod.start_ask_job(
                     "u", "p", "继续", self._settings(), conversation_id=b["id"]
@@ -281,6 +309,7 @@ class ConversationStoreTests(unittest.TestCase):
                 patch("agent.jobs.snapshot_workspace", return_value={}),
                 patch("agent.jobs.compare_snapshots", return_value=([], "")),
                 patch("agent.jobs.run_agent", side_effect=fake_agent),
+                self._worker_lifetime(),
             ):
                 job2 = jobs_mod.start_ask_job(
                     "u", "p", "继续 A", self._settings(), conversation_id=a["id"]
