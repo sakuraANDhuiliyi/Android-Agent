@@ -119,7 +119,7 @@ class E2ERunner:
     def setup(self) -> None:
         self.stack.start()
         self.client = E2EClient(self.stack)
-        self.client.guest_login()
+        self.client.register_account()
         self.pump = ApprovalPump(self.client)
         self.pump.start()
 
@@ -140,11 +140,13 @@ class E2ERunner:
             return 2
         try:
             self.setup()
+            if self.stack.keep:
+                print(f"E2E artifacts: {self.stack.tmp_root}", flush=True)
             for scenario_id in wanted:
                 self.run_one(self.scenarios[scenario_id])
+            self.report()
         finally:
             self.teardown()
-        self.report()
         failures = [r for r in self.results if not r["ok"]]
         return 1 if failures else 0
 
@@ -160,6 +162,7 @@ class E2ERunner:
             getattr(self, f"driver_{driver_name}")(context)
             self.assert_expectations(context)
             record["ok"] = True
+            record["duration_ms"] = round((time.monotonic() - started) * 1000)
             print(f"   PASS ({record.get('duration_ms', 0)}ms)", flush=True)
         except ScenarioFailure as exc:
             record["error"] = str(exc)
@@ -406,6 +409,9 @@ class E2ERunner:
         for rel_path, needle in (expect.get("file_contains") or {}).items():
             content = context.workspace_file(rel_path)
             context.check(needle in content, f"{rel_path} does not contain {needle!r}: {content[:200]!r}")
+        for rel_path, lines in (expect.get("file_lines") or {}).items():
+            actual_lines = context.workspace_file(rel_path).splitlines()
+            context.check(actual_lines == lines, f"{rel_path} lines {actual_lines!r} != {lines!r}")
         if "final_text_contains" in expect:
             combined = context.final_text() + "\n" + str(job.get("result") or "")
             context.check(
@@ -483,6 +489,14 @@ class E2ERunner:
             print(f"  {status}  {record['id']:<28} {record['duration_ms']:>7}ms  {record['error'][:120]}")
         failed = sum(1 for r in self.results if not r["ok"])
         print(f"  total {len(self.results)}, failed {failed}", flush=True)
+        report_path = self.stack.tmp_root / "e2e-report.json"
+        report_path.write_text(json.dumps({
+            "total": len(self.results),
+            "failed": failed,
+            "results": self.results,
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if self.stack.keep:
+            print(f"  report: {report_path}", flush=True)
 
 
 def main() -> int:

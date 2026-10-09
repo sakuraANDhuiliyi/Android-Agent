@@ -19,6 +19,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { _electron } = require("playwright");
+const { isolatedSmokeEnv, latestToolResult } = require("./smoke/environment");
 
 const desktopDir = path.join(__dirname, "..");
 const repoRoot = path.join(desktopDir, "..");
@@ -169,11 +170,10 @@ async function main() {
   // 1) the SAME scenario stub model the backend E2E runner uses
   track(
     spawn("python3", [SHARED_STUB], {
-      env: {
-        ...process.env,
+      env: isolatedSmokeEnv({
         AGENT_E2E_STUB_PORT: String(STUB_PORT),
         AGENT_E2E_SCENARIO_DIR: SHARED_SCENARIOS,
-      },
+      }),
       stdio: "ignore",
     }),
   );
@@ -184,25 +184,18 @@ async function main() {
   const svc = track(
     spawn("python3", ["-m", "agent", "serve", "--host", "127.0.0.1", "--port", String(AGENT_PORT)], {
       cwd: repoRoot,
-      env: {
-        ...process.env,
+      env: isolatedSmokeEnv({
         AGENT_DATA_DIR: SMOKE_DATA,
+        AGENT_CONFIG_PATH: path.join(SMOKE_DATA, "test-config.yaml"),
+        AGENT_WORKSPACES_DIR: path.join(SMOKE_DATA, "workspaces"),
+        AGENT_BUILDS_DIR: path.join(SMOKE_DATA, "builds"),
         AGENT_BASE_URL: `http://127.0.0.1:${STUB_PORT}`,
         AGENT_API_KEY: "sk-scenario-smoke-stub",
+        AGENT_PROVIDER: "deepseek",
         AGENT_REGISTRATION_ENABLED: "1",
         AGENT_REGISTRATION_TOKEN: REG_TOKEN,
-        NO_PROXY: "*",
-        no_proxy: "*",
-        HTTP_PROXY: "",
-        HTTPS_PROXY: "",
-        ALL_PROXY: "",
-        http_proxy: "",
-        https_proxy: "",
-        all_proxy: "",
-        // This host blocks sandbox_apply, which would fail every run_command.
-        AGENT_CMD_SANDBOX: "0",
         PYTHONUNBUFFERED: "1",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     }),
   );
@@ -231,14 +224,14 @@ async function main() {
 
   // 4) launch real Electron with isolated profile
   const app = await _electron.launch({
-    args: [".", "--no-sandbox", "--disable-gpu"],
+    args: ["."],
     cwd: desktopDir,
-    env: {
-      ...process.env,
+    env: isolatedSmokeEnv({
       AGENT_DESKTOP_USER_DATA: SMOKE_PROFILE,
       ANDROID_AGENT_SERVER_URL: SERVER_URL,
-    },
+    }),
   });
+  track(app.process());
   const page = await app.firstWindow();
   const pageErrors = [];
   let closing = false;
@@ -324,7 +317,7 @@ async function main() {
     "scenario 03 review button",
   );
   const wsFile = path.join(
-    repoRoot,
+    SMOKE_DATA,
     "workspaces",
     userId,
     projectId,
@@ -365,6 +358,9 @@ async function main() {
     "scenario 08 final text",
   );
   await waitUntil(jobDone, 30000, "scenario 08 job succeeded");
+  const commandResult = await latestToolResult(page, "run_command");
+  assert.strictEqual(commandResult?.ok, true, `command actually succeeded: ${JSON.stringify(commandResult)}`);
+  assert.ok(JSON.stringify(commandResult).includes("E2E-APPROVAL-OK"), "actual tool output contains expected marker");
   console.log("ok - scenario 08_approval full approval chain in desktop UI");
 
   // 10) no uncaught exceptions

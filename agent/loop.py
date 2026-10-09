@@ -108,6 +108,7 @@ def run_agent(
                     conversation_events,
                     current_settings.provider,
                     current_user_prompt=user_prompt,
+                    current_turn_id=turn_id,
                 )
                 append_user_prompt = False
             else:
@@ -134,6 +135,10 @@ def run_agent(
                 extra_system_prompt=extra_system_prompt,
                 run_mode=run_mode,
                 permission_profile=permission_profile,
+                prior_turn_events=[
+                    event for event in (conversation_events or [])
+                    if turn_id is not None and event.get("turn_id") == turn_id
+                ],
             )
         except (CancellationRequested, PauseRequested, TaskLeaseLost):
             # Control-flow signals must reach run_task untouched; wrapping
@@ -185,6 +190,7 @@ def _run_agent_with_provider(
     extra_system_prompt: str | None = None,
     run_mode: str = "workspace",
     permission_profile: str | None = None,
+    prior_turn_events: list[dict[str, Any]] | None = None,
 ) -> str:
     system_prompt, rules_bundle = build_system_prompt(
         settings,
@@ -241,6 +247,7 @@ def _run_agent_with_provider(
             allowed_tools=allowed_tools,
             run_mode=run_mode,
             permission_profile=permission_profile,
+            prior_turn_events=prior_turn_events,
         )
     return _run_openai_compatible(
         settings,
@@ -263,6 +270,7 @@ def _run_agent_with_provider(
         allowed_tools=allowed_tools,
         run_mode=run_mode,
         permission_profile=permission_profile,
+        prior_turn_events=prior_turn_events,
     )
 
 
@@ -310,6 +318,23 @@ def _new_message_id(
 ) -> str:
     seed = f"android-agent:{turn_id or uuid.uuid4().hex}:{provider}:{response_index}"
     return uuid.uuid5(uuid.NAMESPACE_URL, seed).hex
+
+
+def _resume_progress(events: list[dict[str, Any]] | None) -> tuple[int, int]:
+    """Continue model identities and edit evidence across a paused turn."""
+    response_ids: set[str] = set()
+    edit_ids: set[str] = set()
+    for event in events or []:
+        payload = event.get("payload") or {}
+        if event.get("event_type") == EventType.ASSISTANT_MESSAGE:
+            response_ids.add(str(payload.get("message_id") or event.get("id")))
+        if (
+            event.get("event_type") == EventType.TOOL_RESULT
+            and payload.get("name") in EDIT_TOOLS
+            and payload.get("ok") is True
+        ):
+            edit_ids.add(str(payload.get("tool_call_id") or event.get("id")))
+    return len(response_ids), len(edit_ids)
 
 
 def _tool_call_id(
@@ -656,6 +681,7 @@ def _run_openai_compatible(
     allowed_tools: set[str] | frozenset[str] | None = None,
     run_mode: str = "workspace",
     permission_profile: str | None = None,
+    prior_turn_events: list[dict[str, Any]] | None = None,
 ) -> str:
     try:
         from openai import OpenAI
@@ -677,7 +703,7 @@ def _run_openai_compatible(
     gradle_failures = 0
     max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
     compact_max = int(getattr(settings, "compact_max_chars", 2_500_000))
-    successful_edits = 0
+    turn_offset, successful_edits = _resume_progress(prior_turn_events)
     honesty_nudges = 0
     max_honesty_nudges = 2
     auto_build_count = 0
@@ -685,7 +711,7 @@ def _run_openai_compatible(
     max_output = max(1024, int(getattr(settings, "max_output_tokens", 65_536)))
 
     total_turns = _total_turns(settings)
-    for turn in range(1, total_turns + 1):
+    for turn in range(turn_offset + 1, total_turns + 1):
         _emit_continuation(on_event, turn, settings)
         if cancel_check:
             cancel_check()
@@ -1211,6 +1237,7 @@ def _run_anthropic(
     allowed_tools: set[str] | frozenset[str] | None = None,
     run_mode: str = "workspace",
     permission_profile: str | None = None,
+    prior_turn_events: list[dict[str, Any]] | None = None,
 ) -> str:
     try:
         import anthropic
@@ -1237,13 +1264,13 @@ def _run_anthropic(
     max_gradle_retries = max(0, int(getattr(settings, "max_gradle_retries", 3)))
     compact_max = int(getattr(settings, "compact_max_chars", 2_500_000))
     max_output = max(1024, int(getattr(settings, "max_output_tokens", 65_536)))
-    successful_edits = 0
+    turn_offset, successful_edits = _resume_progress(prior_turn_events)
     honesty_nudges = 0
     max_honesty_nudges = 2
     auto_build_count = 0
 
     total_turns = _total_turns(settings)
-    for turn in range(1, total_turns + 1):
+    for turn in range(turn_offset + 1, total_turns + 1):
         _emit_continuation(on_event, turn, settings)
         if cancel_check:
             cancel_check()

@@ -301,7 +301,7 @@ internal fun StyleKinetic(s: CreativeStyleSpec, p: CreativePattern, interactive:
                     fontWeight = FontWeight.Black, letterSpacing = (-7).sp, maxLines = 1)
             }
             Box(Modifier.align(Alignment.Center).offset(y = if (alternate) 61.dp else 18.dp)
-                .rotate(if (alternate) 9f else -10f).fillMaxWidth(1.15f).background(s.text).padding(horizontal = 22.dp, vertical = 8.dp)) {
+                .rotate(if (alternate) 9f else -10f).fillMaxWidth().background(s.text).padding(horizontal = 22.dp, vertical = 8.dp)) {
                 Text(if (alternate) "灵感，从不循规蹈矩。" else "让 灵 感 大 声 一 点", color = s.bg, fontSize = 16.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 2.sp, maxLines = 1)
             }

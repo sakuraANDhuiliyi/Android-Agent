@@ -449,6 +449,8 @@
     if (!els.headerTitle) return;
     const project = selectedProject();
     const job = selectedJob();
+    window.AgentEmotion?.update("cxAgentEmotion", PREVIEW_MODE || window.AiPanel?.getState?.().connected
+      ? (job ? displayStatus(job) : "idle") : "offline");
     els.headerTitle.textContent = job ? titleFor(job) : (project?.name || "智能工作台");
     els.headerTitle.title = project?.workspace || els.headerTitle.textContent;
   }
@@ -1415,6 +1417,7 @@
     els.root.classList.toggle("cx-panel-focused", state.panelFocused);
     els.root.classList.remove("cx-panel-collapsed");
     document.getElementById("cxFocusPanel").textContent = state.panelFocused ? "↙" : "↗";
+    syncEmotionPlayback();
     setTimeout(fitTerminal, 0);
   }
 
@@ -1424,6 +1427,7 @@
     els.root.classList.toggle("cx-panel-collapsed", state.panelCollapsed);
     els.root.classList.remove("cx-panel-focused");
     document.getElementById("cxCollapsePanel").textContent = state.panelCollapsed ? "◨" : "◧";
+    syncEmotionPlayback();
   }
 
   function bind() {
@@ -1624,11 +1628,19 @@
     updateSendButton();
   }
 
+  function syncEmotionPlayback() {
+    const emotionHost = document.getElementById("cxAgentEmotion");
+    // Focused right panels hide the main header with visibility:hidden,
+    // which does not change IntersectionObserver's geometric intersection.
+    if (emotionHost) window.AgentEmotion?.mount(emotionHost).setActive(state.visible && !state.panelFocused);
+  }
+
   function setVisible(visible) {
     if (!state.initialized) init();
     state.visible = Boolean(visible);
     if (!els.root) return;
     els.root.hidden = !state.visible;
+    syncEmotionPlayback();
     if (state.timer) clearInterval(state.timer);
     state.timer = null;
     if (state.visible) {

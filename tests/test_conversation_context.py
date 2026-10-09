@@ -574,5 +574,70 @@ class ContextBoundaryAndCompatibilityTests(unittest.TestCase):
         self.assertEqual(build_anthropic_messages(events), [])
 
 
+class CurrentTurnPromptTests(unittest.TestCase):
+    @staticmethod
+    def user_texts(messages: list[dict[str, Any]]) -> list[str]:
+        texts = []
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                texts.extend(block["text"] for block in content if block.get("type") == "text")
+        return texts
+
+    def test_resumed_turn_preserves_tool_results_and_user_messages_without_repeating_prompt(self) -> None:
+        for provider in ("openai", "anthropic"):
+            with self.subTest(provider=provider):
+                events = [
+                    user_event(1, "执行任务"),
+                    tool_call_event(2, message_id="m1", tool_call_id="c1", block_index=0),
+                    tool_result_event(3, "c1", "已完成"),
+                    user_event(4, "保留刚才的结果"),
+                    # An unfinished tool is never invented as successful or
+                    # sent to the provider as a dangling tool call.
+                    tool_call_event(5, message_id="m2", tool_call_id="pending", block_index=0),
+                ]
+                for item in events:
+                    item["turn_id"] = "active-turn"
+                messages = build_provider_messages(
+                    iter(events), provider, current_user_prompt="执行任务", current_turn_id="active-turn",
+                )
+                self.assertEqual(self.user_texts(messages), ["执行任务", "保留刚才的结果"])
+                serialized = json.dumps(messages, ensure_ascii=False)
+                self.assertIn("已完成", serialized)
+                self.assertNotIn("pending", serialized)
+
+    def test_same_text_in_a_new_turn_is_still_a_new_prompt(self) -> None:
+        for provider in ("openai", "anthropic"):
+            for already_recorded in (False, True):
+                with self.subTest(provider=provider, already_recorded=already_recorded):
+                    events = [{**user_event(1, "继续"), "turn_id": "previous-turn"}]
+                    if already_recorded:
+                        events.extend([
+                            {**assistant_event(2, "已完成"), "turn_id": "previous-turn"},
+                            {**user_event(3, "继续"), "turn_id": "new-turn"},
+                        ])
+                    messages = build_provider_messages(
+                        events, provider, current_user_prompt="继续", current_turn_id="new-turn",
+                    )
+                    self.assertEqual(self.user_texts(messages), ["继续", "继续"])
+
+    def test_recovery_turn_without_user_event_still_adds_its_prompt(self) -> None:
+        for provider in ("openai", "anthropic"):
+            with self.subTest(provider=provider):
+                events = [
+                    {**user_event(1, "原始任务"), "turn_id": "old-turn"},
+                    {**event(2, "recovery_note", {"content": "服务重启后继续"}, context_visible=True),
+                     "turn_id": "recovery-turn"},
+                ]
+                messages = build_provider_messages(
+                    events, provider, current_user_prompt="确认恢复", current_turn_id="recovery-turn",
+                )
+                self.assertEqual(self.user_texts(messages).count("确认恢复"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

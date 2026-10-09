@@ -2808,3 +2808,9 @@ body[data-focus-mode="agent"] .tl-user-body { max-width: 92%; }
     scroll-behavior: auto !important;
   }
 }
+
+/* One local SVG engine per visible assistant header. */
+.agent-emotion-avatar { display: inline-block; width: 52px; height: 52px; flex: 0 0 52px; pointer-events: none; overflow: hidden; -webkit-app-region: no-drag; }
+.agent-emotion-avatar svg { width: 100%; height: 100%; }
+#aiAgentEmotion { width: 30px; height: 30px; flex-basis: 30px; }
+#cxAgentEmotion > svg, #aiAgentEmotion > svg { width: 100%; height: 100%; stroke: none; stroke-width: 0; }

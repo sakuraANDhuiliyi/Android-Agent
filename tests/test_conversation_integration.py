@@ -89,6 +89,77 @@ def anthropic_response(
 
 
 class ProviderLoopCanonicalEventTests(unittest.TestCase):
+    def test_pause_resume_preserves_tool_effects_response_ids_and_edit_evidence(self) -> None:
+        from agent.loop import PauseRequested, run_agent
+
+        for provider in ("openai", "anthropic"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
+                workspace = Path(directory)
+                prompt = "修改文件，然后结束任务"
+                events = [{
+                    "id": "prompt", "seq": 1, "turn_id": "paused-turn", "event_type": "user_message",
+                    "payload": {"content": prompt},
+                }]
+                if provider == "openai":
+                    tool_response = openai_response(
+                        tool_calls=[openai_tool_call("edit-call", "write_file", '{"path":"result.txt","content":"edited"}')],
+                        finish_reason="tool_calls",
+                    )
+                    final_response = openai_response(text="文件修改完成。")
+                    fallback_name = "agent.loop._chat_completion_with_fallback"
+                else:
+                    tool_response = anthropic_response([
+                        SimpleNamespace(type="tool_use", id="edit-call", name="write_file",
+                                        input={"path": "result.txt", "content": "edited"}),
+                    ], stop_reason="tool_use", response_id="tool-response")
+                    final_response = anthropic_response([
+                        SimpleNamespace(type="text", text="文件修改完成。"),
+                    ], stop_reason="end_turn", response_id="final-response")
+                    fallback_name = "agent.loop._anthropic_message_with_fallback"
+                fallback = Mock(side_effect=[(tool_response, "fake-model"), (final_response, "fake-model")])
+
+                def persist(kind, payload):
+                    if kind in {"assistant_message", "tool_call", "tool_result"}:
+                        events.append({"id": f"event-{len(events)}", "seq": len(events) + 1,
+                                       "turn_id": "paused-turn", "event_type": kind, "payload": payload})
+
+                def edit(*args, **kwargs):
+                    with (workspace / "effects.log").open("a") as log:
+                        log.write("edited\n")
+                    return ToolResult(True, "edited")
+
+                def pause():
+                    if fallback.call_count:
+                        raise PauseRequested("pause after the edit")
+
+                with (
+                    patch.dict(sys.modules, {
+                        "openai": SimpleNamespace(OpenAI=lambda **kwargs: object()),
+                        "anthropic": SimpleNamespace(Anthropic=lambda **kwargs: object()),
+                    }),
+                    patch(fallback_name, fallback),
+                    patch("agent.loop.build_system_prompt", return_value=("system", None)),
+                    patch("agent.loop.get_mcp_manager"),
+                    patch("agent.loop.run_hooks"),
+                    patch("agent.loop.get_tool_definitions", return_value=[]),
+                    patch("agent.loop.dispatch_tool", side_effect=edit) as execute,
+                ):
+                    with self.assertRaises(PauseRequested):
+                        run_agent(settings(provider), workspace, "user", "project", prompt,
+                                  on_event=persist, check_pause=pause, conversation_events=list(events),
+                                  task_id="task", turn_id="paused-turn")
+                    answer = run_agent(settings(provider), workspace, "user", "project", prompt,
+                                       on_event=persist, conversation_events=list(events),
+                                       task_id="task", turn_id="paused-turn")
+
+                self.assertEqual(execute.call_count, 1)
+                self.assertEqual((workspace / "effects.log").read_text(), "edited\n")
+                self.assertEqual(fallback.call_count, 2, "completed edits must not trigger an honesty retry")
+                self.assertIn("文件修改完成", answer)
+                responses = [item["payload"] for item in events if item["event_type"] == "assistant_message"]
+                self.assertEqual(len({item["message_id"] for item in responses}), 2)
+                self.assertTrue(responses[-1]["is_final"])
+
     def test_openai_records_multiple_responses_and_complete_tool_pair(self) -> None:
         responses = [
             openai_response(

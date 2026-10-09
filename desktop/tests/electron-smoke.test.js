@@ -12,6 +12,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { _electron } = require("playwright");
+const { isolatedSmokeEnv, latestToolResult } = require("./smoke/environment");
 
 const desktopDir = path.join(__dirname, "..");
 const repoRoot = path.join(desktopDir, "..");
@@ -156,7 +157,7 @@ async function main() {
   // 1) stub model server
   track(
     spawn("python3", [path.join(__dirname, "smoke", "stub_model_server.py")], {
-      env: { ...process.env, AGENT_SMOKE_STUB_PORT: String(STUB_PORT) },
+      env: isolatedSmokeEnv({ AGENT_SMOKE_STUB_PORT: String(STUB_PORT) }),
       stdio: "ignore",
     }),
   );
@@ -166,28 +167,18 @@ async function main() {
   const svc = track(
     spawn("python3", ["-m", "agent", "serve", "--host", "127.0.0.1", "--port", String(AGENT_PORT)], {
       cwd: repoRoot,
-      env: {
-        ...process.env,
+      env: isolatedSmokeEnv({
         AGENT_DATA_DIR: SMOKE_DATA,
+        AGENT_CONFIG_PATH: path.join(SMOKE_DATA, "test-config.yaml"),
+        AGENT_WORKSPACES_DIR: path.join(SMOKE_DATA, "workspaces"),
+        AGENT_BUILDS_DIR: path.join(SMOKE_DATA, "builds"),
         AGENT_BASE_URL: `http://127.0.0.1:${STUB_PORT}`,
         AGENT_API_KEY: "sk-smoke-stub",
+        AGENT_PROVIDER: "deepseek",
         AGENT_REGISTRATION_ENABLED: "1",
         AGENT_REGISTRATION_TOKEN: REG_TOKEN,
-        // macOS can expose a system proxy through urllib/httpx even when no
-        // proxy variables are printed in the shell. The model stub is local.
-        NO_PROXY: "*",
-        no_proxy: "*",
-        HTTP_PROXY: "",
-        HTTPS_PROXY: "",
-        ALL_PROXY: "",
-        http_proxy: "",
-        https_proxy: "",
-        all_proxy: "",
-        // This host blocks sandbox_apply, which would fail every run_command
-        // with exit 71 before the stub's expected output is produced.
-        AGENT_CMD_SANDBOX: "0",
         PYTHONUNBUFFERED: "1",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     }),
   );
@@ -216,18 +207,16 @@ async function main() {
   // 4) launch real Electron with isolated profile
   const launchApp = () =>
     _electron.launch({
-      // Restricted CI sandboxes cannot start Chromium's own sandbox/GPU
-      // subprocesses; without these flags the app FATALs on startup.
-      args: [".", "--no-sandbox", "--disable-gpu"],
+      args: ["."],
       cwd: desktopDir,
-      env: {
-        ...process.env,
+      env: isolatedSmokeEnv({
         AGENT_DESKTOP_USER_DATA: SMOKE_PROFILE,
         ANDROID_AGENT_SERVER_URL: SERVER_URL,
-      },
+      }),
     });
 
   let app = await launchApp();
+  track(app.process());
   let page = await app.firstWindow();
   const pageErrors = [];
   let closing = false;
@@ -379,7 +368,7 @@ async function main() {
     "review button ready",
   );
   const wsFile = path.join(
-    repoRoot,
+    SMOKE_DATA,
     "workspaces",
     userId,
     projectId,
@@ -468,6 +457,7 @@ async function main() {
   await app.close();
   closing = false;
   app = await launchApp();
+  track(app.process());
   page = await app.firstWindow();
   wireErrors(page);
   await page.waitForSelector("#promptInput", { timeout: 20000 });
@@ -596,6 +586,9 @@ async function main() {
     30000,
     "command turn final answer",
   );
+  const commandResult = await latestToolResult(page, "run_command");
+  assert.strictEqual(commandResult?.ok, true, `command actually succeeded: ${JSON.stringify(commandResult)}`);
+  assert.ok(JSON.stringify(commandResult).includes("smoke-command-ok-9"), "actual tool output contains expected marker");
   console.log("ok - command approval card -> approve -> tool executed");
 
   // 12c) network approval: web_search asks, approve -> tool runs
@@ -611,7 +604,10 @@ async function main() {
     30000,
     "network turn final answer",
   );
-  console.log("ok - network approval card -> approve -> tool executed");
+  const searchResult = await latestToolResult(page, "web_search");
+  assert.strictEqual(searchResult?.ok, false, "search remains offline without test credentials");
+  assert.ok(JSON.stringify(searchResult).includes("未配置 Tavily API Key"), "approved search reaches the tool credential check");
+  console.log("ok - network approval card -> approve -> isolated credential check");
 
   // 13) no uncaught exceptions
   closing = true;

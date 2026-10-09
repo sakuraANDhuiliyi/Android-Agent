@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None, env: dict | None = None) -> dict:
+    print("RUN", cmd, flush=True)
     started = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -33,6 +34,12 @@ def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None, 
             "stdout_tail": (proc.stdout or "")[-2000:],
             "stderr_tail": (proc.stderr or "")[-2000:],
             "ok": proc.returncode == 0,
+        }
+    except OSError as exc:
+        return {
+            "cmd": cmd, "returncode": 127,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "stdout_tail": "", "stderr_tail": str(exc), "ok": False,
         }
     except subprocess.TimeoutExpired as exc:
         return {
@@ -63,15 +70,18 @@ def main() -> int:
     steps.append(run([sys.executable, str(ROOT / "scripts" / "check_api_contract.py")]))
     steps.append(run([sys.executable, str(ROOT / "scripts" / "export_creative_seed.py"), "--check"]))
     steps.append(run(["git", "diff", "--check"], timeout=60))
+    steps.append(run([sys.executable, str(ROOT / "scripts" / "sync_aora_assets.py"), "--check"], timeout=60))
     steps.append(
         run(
             [sys.executable, "-m", "pytest", "tests", "-q", "--tb=line"],
             timeout=1800,
         )
     )
+    steps.append(run([sys.executable, str(ROOT / "tests" / "e2e" / "run_e2e.py")], timeout=900))
     if not args.skip_desktop:
         steps.append(run(["npm", "run", "check"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:unit"], cwd=ROOT / "desktop", timeout=120))
+        steps.append(run(["npm", "run", "test:emotion"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:studio"], cwd=ROOT / "desktop", timeout=120))
         steps.append(run(["npm", "run", "test:creative-live"], cwd=ROOT / "desktop", timeout=180,
                          env={**os.environ, "CREATIVE_TEST_PYTHON": sys.executable}))
@@ -83,12 +93,21 @@ def main() -> int:
         steps.append(
             run(["npm", "run", "test:screenshot"], cwd=ROOT / "desktop", timeout=300)
         )
+        # Match the Python interpreter used for the backend suite; never depend
+        # on an unrelated system python3 or the developer's old .venv.
+        desktop_test_env = {
+            **os.environ,
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
+        }
+        for smoke in ("electron-smoke.test.js", "electron-scenario-smoke.test.js"):
+            steps.append(run(["node", "tests/" + smoke], cwd=ROOT / "desktop", timeout=300,
+                             env=desktop_test_env))
     if not args.skip_android:
         android = ROOT / "android-app"
         if (android / "gradlew").is_file():
             steps.append(
                 run(
-                    ["./gradlew", "testDebugUnitTest", "assembleDebug", "--quiet"],
+                    ["./gradlew", "testDebugUnitTest", "assembleDebug", "lintDebug", "--quiet"],
                     cwd=android,
                     timeout=1800,
                 )

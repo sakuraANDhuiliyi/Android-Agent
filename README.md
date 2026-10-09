@@ -28,6 +28,12 @@ Compose 目前仅作为新增视觉模块使用，不要求一次性迁移现有
 
 未登录用户可以在登录页选择“暂不登录，浏览创意广场”进入游客模式。公开目录无需账号；内置示例的预览与源码复制离线可用，项目、任务、审批以及内置示例的“应用到项目”会显示登录或服务连接引导。目录管理的历史验收见 [C1 实施记录](docs/CREATIVE_SQUARE_IMPLEMENTATION_STATUS.md)，本次投稿能力、配置、额度与备份恢复见 [C2 实施记录](docs/CREATIVE_SQUARE_C2_IMPLEMENTATION_STATUS.md)。
 
+## 助手动态表情
+
+Android 聊天页、桌面智能工作台和 AI 面板已接入 [aora-bot Emotion Ball](https://github.com/sam70361/aora-bot) 的 32 种 SVG 表情。任务排队、运行、等待审批、暂停、完成、失败与停止会自动切换表情；资源随应用离线打包，后台停止动画。接入位置、状态映射、验证与许可证说明见 [Aora 表情接入](docs/AORA_EMOTIONS.md)。
+
+注意：上游球形角色仅供个人技术学习与研究，禁止商用；原许可证与 NOTICE 已随两端资源保留。
+
 ## 第一阶段能力
 
 - SQLite 持久化项目任务、事件、Token usage、改动摘要和构建产物。
@@ -212,19 +218,19 @@ python3 scripts/check_api_contract.py
 CREATIVE_TEST_PYTHON=python3 node desktop/tests/creative-live.test.js
 
 # Desktop
-cd desktop && npm run check && npm run test:unit && npm run test:screenshot
+cd desktop && npm run check && npm run test:unit && npm run test:emotion && npm run test:screenshot
 
 # Android
-cd android-app && ./gradlew testDebugUnitTest assembleDebug --offline
+cd android-app && ./gradlew testDebugUnitTest assembleDebug lintDebug --offline
 
-# 发布门禁（敏感信息扫描 + git diff --check + 上述客户端）
+# 完整发布门禁（扫描、契约、全部 Python/HTTP/WS/Electron/浏览器测试、Android 单测/构建/Lint）
 python3 scripts/release_check.py
 
 # 离线 Eval 套件（16 场景，确定性 fake，无付费模型）
 PYTHONPATH=. python3 -c "from evals import run_all_evals; print(sum(r.passed for r in run_all_evals()))"
 ```
 
-手机端 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。有模拟器时可另行执行 `./gradlew connectedDebugAndroidTest`（可选 smoke）。
+手机端 Debug APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`。模拟器上的表情生命周期验收见 [Aora 接入说明](docs/AORA_EMOTIONS.md)；当前未配置 Android instrumentation 测试，不能用空的 connectedDebugAndroidTest 结果代替设备验收。
 
 架构说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 

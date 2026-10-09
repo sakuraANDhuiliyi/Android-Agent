@@ -326,6 +326,9 @@
         title = `当前任务${statusLabel(status)}`;
       }
     }
+    window.AgentEmotion?.update("aiAgentEmotion", !state.connected ? "offline"
+      : pending ? "awaiting_approval" : state.pauseRequested && status === "running" ? "pause_requested"
+      : status || "idle");
     els.aiStatusDot.dataset.state = name;
     els.aiStatusDot.title = title;
     if (els.aiStatusText) {

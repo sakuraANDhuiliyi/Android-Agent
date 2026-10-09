@@ -17,6 +17,23 @@ import com.google.android.material.appbar.MaterialToolbar
 
 /** Offline visual fixtures. Debug source set only; no credentials, API or task execution. */
 class WorkbenchPreviewActivity : AppCompatActivity() {
+    private var emotionView: AgentEmotionView? = null
+
+    override fun onResume() {
+        super.onResume()
+        emotionView?.setForeground(true)
+    }
+
+    override fun onPause() {
+        emotionView?.setForeground(false)
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        emotionView?.release()
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -74,6 +91,9 @@ class WorkbenchPreviewActivity : AppCompatActivity() {
         )
         val previewLayout = layouts[name] ?: resources.getIdentifier(name, "layout", packageName).takeIf { it != 0 }
         setContentView(previewLayout ?: R.layout.activity_project_detail)
+        emotionView = findViewById<AgentEmotionView>(R.id.agentEmotion)?.apply {
+            setStatus(intent.getStringExtra("emotionStatus") ?: "idle")
+        }
         val fixture = mapOf(
             "textHubName" to "Android Workspace",
             "textHubPackage" to "com.example.workspace · main",

@@ -237,8 +237,30 @@ def build_provider_messages(
     provider: str,
     *,
     current_user_prompt: str | None = None,
+    current_turn_id: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized = provider.strip().lower()
+    if current_turn_id is not None:
+        # A resumed turn already contains its prompt, even when its latest
+        # event is a tool result or a steer. Text equality cannot distinguish
+        # that continuation from a new turn asking the same question again.
+        events = list(events)
+        prompt_recorded = any(
+            event.get("turn_id") == current_turn_id
+            and event.get("event_type") == EventType.USER_MESSAGE
+            for event in events
+        )
+        messages = (
+            build_anthropic_messages(events)
+            if normalized == "anthropic"
+            else build_openai_messages(events)
+        )
+        if current_user_prompt and not prompt_recorded:
+            if normalized == "anthropic":
+                _append_anthropic_user_text(messages, current_user_prompt)
+            else:
+                messages.append({"role": "user", "content": current_user_prompt})
+        return messages
     if normalized == "anthropic":
         return build_anthropic_messages(
             events,

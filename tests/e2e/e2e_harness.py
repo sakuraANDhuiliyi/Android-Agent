@@ -1,16 +1,19 @@
 """E2E harness: real agent service + scenario stub model + real HTTP/WS client.
 
 Everything runs against throwaway directories: a temp AGENT_DATA_DIR,
-AGENT_WORKSPACES_DIR and AGENT_BUILDS_DIR, plus a fake ANDROID_HOME so the
-build scenarios can run the real build pipeline against a scripted gradlew.
+AGENT_WORKSPACES_DIR, AGENT_BUILDS_DIR and config file, with an isolated
+full account. A fake ANDROID_HOME lets the build scenarios run the real
+build pipeline against a scripted gradlew; command sandboxing stays enabled.
 """
 from __future__ import annotations
 
 import json
 import os
 import queue
+import secrets
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -54,7 +57,8 @@ def load_scenarios(directory: Path = SCENARIO_DIR) -> dict[str, dict[str, Any]]:
 class E2EStack:
     """Spawns the scenario stub model and the real agent service."""
 
-    def __init__(self, python_bin: str = ".venv/bin/python", keep: bool = False) -> None:
+    def __init__(self, python_bin: str | None = None, keep: bool = False) -> None:
+        python_bin = python_bin or sys.executable
         self.python_bin = str(REPO_ROOT / python_bin) if not Path(python_bin).is_absolute() else python_bin
         self.keep = keep
         self.tmp_root = Path(tempfile.mkdtemp(prefix="agent-e2e-"))
@@ -64,6 +68,17 @@ class E2EStack:
         self.fake_sdk = self.tmp_root / "fake-android-sdk"
         for directory in (self.data_dir, self.workspaces_dir, self.builds_dir, self.fake_sdk):
             directory.mkdir(parents=True, exist_ok=True)
+        (self.fake_sdk / "platforms").mkdir()
+        self.config_path = self.tmp_root / "config.yaml"
+        self.config_path.write_text(
+            "provider: deepseek\n"
+            "model: deepseek-v4-pro\n"
+            "model_fallbacks: []\n"
+            "provider_fallbacks: []\n"
+            "registration_enabled: true\n"
+            "auto_build_after_edit: false\n",
+            encoding="utf-8",
+        )
         self.stub_port = free_port()
         self.agent_port = free_port()
         self.stub_process: subprocess.Popen | None = None
@@ -73,7 +88,12 @@ class E2EStack:
 
     def start(self) -> None:
         env = {
-            **os.environ,
+            # The user's service settings and provider credentials must never
+            # select a real model, account database or remote storage backend.
+            **{
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("AGENT_", "ANTHROPIC_", "DEEPSEEK_", "OPENAI_", "TAVILY_"))
+            },
             "NO_PROXY": "*",
             "no_proxy": "*",
             "HTTP_PROXY": "",
@@ -106,15 +126,15 @@ class E2EStack:
             cwd=str(REPO_ROOT),
             env={
                 **env,
+                "AGENT_CONFIG_PATH": str(self.config_path),
                 "AGENT_DATA_DIR": str(self.data_dir),
                 "AGENT_WORKSPACES_DIR": str(self.workspaces_dir),
                 "AGENT_BUILDS_DIR": str(self.builds_dir),
                 "AGENT_BASE_URL": f"http://127.0.0.1:{self.stub_port}",
                 "AGENT_API_KEY": "sk-e2e-stub",
-                "AGENT_CMD_SANDBOX": "0",
-                "AGENT_GUEST_MESSAGE_LIMIT": "1000",
                 "AGENT_MAX_REQUESTS_PER_MINUTE": "100000",
                 "ANDROID_HOME": str(self.fake_sdk),
+                "ANDROID_SDK_ROOT": str(self.fake_sdk),
             },
             stdout=open(self.agent_log_path, "wb"),
             stderr=subprocess.STDOUT,
@@ -275,10 +295,14 @@ class E2EClient:
 
     # —— auth / projects ——
 
-    def guest_login(self) -> None:
+    def register_account(self) -> None:
+        """Guests are read-only; register a throwaway full account via HTTP."""
         response = self.http.post(
-            "/api/auth/guest",
+            "/api/auth/register",
             json={
+                "email": f"e2e-{secrets.token_hex(8)}@example.test",
+                "password": f"E2e!{secrets.token_urlsafe(24)}",
+                "display_name": "E2E Harness",
                 "device": {
                     "device_id": "e2e-device",
                     "device_name": "E2E Harness",

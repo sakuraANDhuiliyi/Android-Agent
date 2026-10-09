@@ -226,6 +226,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             viewModel.state.collect { st ->
                 binding.btnSend.isEnabled = !st.sending
                 binding.bannerDisconnect.isVisible = st.offline
+                binding.agentEmotion.setStatus(when {
+                    st.offline -> "offline"
+                    st.sending -> "sending"
+                    else -> st.job?.resolvedStatus() ?: "idle"
+                })
                 if (st.job !== lastJobInstance) {
                     lastJobInstance = st.job
                     renderJobChrome(st.job)
@@ -304,6 +309,21 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         // （MVP §21）。回到前台时 refresh 会重新接管并复用游标去重。
         if (::viewModel.isInitialized && cacheSession.isCurrent(prefs)) viewModel.persistJobCursor()
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        binding.agentEmotion.setForeground(true)
+    }
+
+    override fun onPause() {
+        binding.agentEmotion.setForeground(false)
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        binding.agentEmotion.release()
+        super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
