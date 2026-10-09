@@ -50,8 +50,9 @@ internal fun exactRevision(value: Any?): Int? = (value as? Number)?.toDouble()
 fun mergeJobMessageReceipts(current: List<JobMessageReceipt>, incoming: List<JobMessageReceipt>, replace: Boolean = true): List<JobMessageReceipt> {
     fun newest(next: JobMessageReceipt): JobMessageReceipt {
         val previous = current.firstOrNull { it.jobId == next.jobId && it.id == next.id && it.key == next.key } ?: return next
-        if (previous.revision != null && next.revision == null) return previous.copy(canEdit = false, canWithdraw = false)
-        if (previous.revision != null && next.revision != null && next.revision < previous.revision) return previous
+        if (previous.revision != null && next.revision == null) return previous.copy(canEdit = false, canWithdraw = false, blockingJobId = null, blockingTurnId = null)
+        if (previous.revision != null && next.revision != null && next.revision < previous.revision)
+            return previous.copy(blockingJobId = null, blockingTurnId = null)
         val terminal = setOf(MessageDelivery.WITHDRAWN, MessageDelivery.FOLLOW_UP_CREATED, MessageDelivery.CONSUMED, MessageDelivery.UNAPPLIED)
         if (previous.delivery in terminal && next.delivery != previous.delivery && previous.revision == next.revision) return previous
         return next

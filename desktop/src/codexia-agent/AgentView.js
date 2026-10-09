@@ -1403,6 +1403,11 @@
       if (!child || !current()) return;
       mergeJob(child);
       selectJobFromSidebar(child);
+    }, openBlocker: async (binding, row) => {
+      const current = selectionGuard();
+      const blocker = await messages.blocker(binding, row);
+      if (!blocker || !current()) return;
+      window.JobMessages.showBlocker(els.messageReceipts, messages, binding, row, blocker, current);
     } });
   }
 

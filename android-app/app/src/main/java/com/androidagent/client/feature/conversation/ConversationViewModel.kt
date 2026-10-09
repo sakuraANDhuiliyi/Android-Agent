@@ -10,6 +10,7 @@ import com.androidagent.client.PendingMessageEdit
 import com.androidagent.client.SavedMessageEdit
 import com.androidagent.client.mergeJobMessageReceipts
 import com.androidagent.client.AgentPrefs
+import com.androidagent.client.BlockingTaskInspection
 import com.androidagent.client.ApiException
 import com.androidagent.client.ApprovalAllowlist
 import com.androidagent.client.ApprovalCardBinder
@@ -69,6 +70,8 @@ data class ConversationUiState(
     val messageEdit: SavedMessageEdit? = null,
     val editingMessage: Boolean = false,
     val editNotice: String? = null,
+    val blockingTask: BlockingTaskInspection? = null,
+    val loadingBlockingTask: Boolean = false,
 ) {
     enum class Source { NONE, CACHE, FRESH }
 }
@@ -126,6 +129,7 @@ class ConversationViewModel(
     private var receiptPollJob: Job? = null
     private var receiptPollBudget = 0
     private var editRequest = 0L
+    private var blockingRequest = 0L
     private var editJob: Job? = null
     private var withdrawalRequest = 0L
     private var withdrawalJob: Job? = null
@@ -241,7 +245,8 @@ class ConversationViewModel(
                     watcher?.stop()
                     watcher = null
                     updateState { it.copy(job = null, jobId = null, messageReceipts = emptyList(), pendingMessage = null, messageNotice = null, sending = false,
-                        pendingWithdrawal = null, withdrawing = false, withdrawalNotice = null, messageEdit = null, editingMessage = false, editNotice = null) }
+                        pendingWithdrawal = null, withdrawing = false, withdrawalNotice = null, messageEdit = null, editingMessage = false, editNotice = null,
+                        blockingTask = null, loadingBlockingTask = false) }
                     bumpTimeline()
                 }
                 active.id == _state.value.jobId && watcher != null -> applyJob(active)
@@ -318,7 +323,8 @@ class ConversationViewModel(
         updateState { it.copy(jobId = jobId, job = initialJob, sending = false, messageReceipts = emptyList(),
             pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false,
             pendingWithdrawal = withdrawal, withdrawing = false, withdrawalNotice = withdrawal?.let { "上次撤回结果待确认，请核对后重试" },
-            messageEdit = savedEdit, editingMessage = false, editNotice = savedEdit?.pending?.let { "上次编辑结果待确认，可核对并重试原编辑" }) }
+            messageEdit = savedEdit, editingMessage = false, editNotice = savedEdit?.pending?.let { "上次编辑结果待确认，可核对并重试原编辑" },
+            blockingTask = null, loadingBlockingTask = false) }
         rememberSelectedJob(jobId)
         watcher?.stop()
         val cursor = if (resume) session.eventCursor(jobId) else 0L
@@ -542,7 +548,10 @@ class ConversationViewModel(
             if (editJob?.isActive != true && _state.value.messageEdit?.pending != null) updateState { it.copy(editingMessage = false) }
             if (withdrawalJob?.isActive != true && _state.value.pendingWithdrawal != null) updateState { it.copy(withdrawing = false) }
             refreshMessageReceipts()
-        } else stopReceiptRefresh()
+        } else {
+            dismissBlockingTask()
+            stopReceiptRefresh()
+        }
     }
 
     private fun stopReceiptRefresh() {
@@ -577,7 +586,8 @@ class ConversationViewModel(
                 throw cancelled
             } catch (_: Exception) {
                 if (request == receiptRequest && isBoundJob(jobId, generation)) {
-                    updateState { it.copy(messageNotice = "回执暂不可用，发送结果尚未确认") }
+                    updateState { it.copy(messageNotice = "回执暂不可用，发送结果尚未确认",
+                        messageReceipts = it.messageReceipts.map { row -> row.copy(blockingJobId = null, blockingTurnId = null) }) }
                 }
             } finally {
                 if (request == receiptRequest && isBoundJob(jobId, generation)) {
@@ -652,6 +662,48 @@ class ConversationViewModel(
                 if (request == recoveryRequest) updateState { it.copy(recovering = false) }
             }
         }
+    }
+
+    fun openBlockingTask(messageKey: String) {
+        if (!foreground || !hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        if (current.loadingBlockingTask) return
+        val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.jobId == current.jobId &&
+            it.verifiedIdentity && it.delivery == MessageDelivery.BLOCKED && it.blockingJobId != null && it.blockingTurnId != null } ?: return
+        val generation = bindingGeneration
+        val request = ++blockingRequest
+        fun isCurrent() = foreground && request == blockingRequest && isBoundJob(receipt.jobId, generation) &&
+            isSelectedConversation(projectId, conversationId) && _state.value.messageReceipts.any {
+                it.id == receipt.id && it.key == receipt.key && it.jobId == receipt.jobId &&
+                    it.blockingJobId == receipt.blockingJobId && it.blockingTurnId == receipt.blockingTurnId
+            }
+        updateState { it.copy(loadingBlockingTask = true, blockingTask = null) }
+        viewModelScope.launch {
+            try {
+                val target = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.getJob(receipt.blockingJobId!!) }
+                if (!isCurrent()) return@launch
+                check(target.id == receipt.blockingJobId && belongsToConversation(target) && target.turnId == receipt.blockingTurnId) {
+                    "阻塞任务与当前会话回执不符"
+                }
+                // Do not attach, schedule task sync or refresh approvals: inspection has no execution side effects.
+                updateState { it.copy(blockingTask = BlockingTaskInspection(receipt.jobId, receipt.id, receipt.key, target)) }
+            } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+            } catch (e: Exception) {
+                if (isCurrent()) {
+                    if (e is ApiException && e.code in setOf(403, 404)) updateState { it.copy(messageReceipts = it.messageReceipts.map { row ->
+                        if (row.id == receipt.id && row.key == receipt.key) row.copy(blockingJobId = null, blockingTurnId = null) else row
+                    }) }
+                    emitSignal(errorSignal(e))
+                }
+            } finally {
+                if (request == blockingRequest && isBoundJob(receipt.jobId, generation)) updateState { it.copy(loadingBlockingTask = false) }
+            }
+        }
+    }
+
+    fun dismissBlockingTask() {
+        ++blockingRequest
+        updateState { it.copy(blockingTask = null, loadingBlockingTask = false) }
     }
 
     fun withdrawMessage(messageKey: String) {
@@ -1118,6 +1170,7 @@ class ConversationViewModel(
     // ---------- 内部 ----------
 
     private fun clearConversationState() {
+        blockingRequest++
         loadToken++
         bindingGeneration++
         recoveryRequest++
@@ -1155,7 +1208,12 @@ class ConversationViewModel(
 
     private fun updateState(transform: (ConversationUiState) -> ConversationUiState) {
         if (!hasCurrentSession()) return
-        _state.update(transform)
+        _state.update { previous ->
+            val next = transform(previous)
+            val inspected = next.blockingTask
+            if (inspected != null && (inspected.sourceJobId != next.jobId || next.messageReceipts.none(inspected::matches)))
+                next.copy(blockingTask = null) else next
+        }
     }
 
     private fun bumpTimeline() {

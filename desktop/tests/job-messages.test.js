@@ -6,15 +6,16 @@ const job = { id: 'job', project_id: 'project', conversation_id: 'conversation' 
 function fixture(saved = storage()) {
   let number = 0;
   const who = { connected: true, userId: 'alice' };
-  const calls = [], reads = [], withdrawals = [], edits = [];
+  const calls = [], reads = [], withdrawals = [], edits = [], jobs = [];
   const client = { baseUrl: 'https://isolated.invalid', sessionVersion: 1, token: 'never-store-this-token',
     sendJobMessage(id, type, payload, key) { const pending = deferred(); calls.push({ id, type, payload, key, ...pending }); return pending.promise; },
     withdrawJobMessage(id, messageId) { const pending = deferred(); withdrawals.push({ id, messageId, ...pending }); return pending.promise; },
     editJobMessage(id, messageId, body) { const pending = deferred(); edits.push({ id, messageId, body, ...pending }); return pending.promise; },
+    job(id) { const pending = deferred(); jobs.push({ id, ...pending }); return pending.promise; },
     jobMessages(id, options) { const pending = deferred(); reads.push({ id, options, ...pending }); return pending.promise; } };
   const store = new Store(client, () => who, { storage: saved, uuid: () => `stable-uuid-${++number}` });
   const scope = store.scope(job);
-  return { store, client, who, scope, calls, reads, withdrawals, edits, saved };
+  return { store, client, who, scope, calls, reads, withdrawals, edits, jobs, saved };
 }
 function receipt(row, state = 'pending', overrides = {}) {
   return { schema_version: 1, id: 1, task_id: 'job', message_key: row.message_key,
@@ -355,5 +356,66 @@ const list = messages => ({ schema_version: 1, job_id: 'job', messages });
   assert.equal(editStale.store.list(newEditScope)[0].editIntent.phase, 'sending');
   editStale.edits[1].resolve(editReply(editStale, 1, editedReceipt(1, 'same frozen edit'))); await newEdit;
   assert.equal(editStale.store.list(newEditScope)[0].editIntent, undefined);
+  // Blocker links are independent of edited text; only a complete authoritative
+  // receipt and a same-scope job GET can authorize viewing a source or child.
+  const blockedReceipt = (extra = {}) => receipt(followBody, 'blocked', { revision: 2, edited_at: 300,
+    reason: 'parent_failed', blocking_job_id: 'blocker', blocking_turn_id: 'blocker-turn', ...extra });
+  for (const reason of ['parent_failed', 'parent_canceled', 'parent_interrupted']) {
+    for (const target of ['job', 'blocker']) {
+      const parsed = normalize(blockedReceipt({ reason, blocking_job_id: target }), f.scope);
+      assert.equal(parsed.blocking_job_id, target);
+      assert.equal(parsed.blocking_turn_id, 'blocker-turn');
+    }
+  }
+  for (const extra of [ { blocking_job_id: null }, { blocking_job_id: '' }, { blocking_job_id: 9 },
+    { blocking_turn_id: null }, { blocking_turn_id: '  ' }, { blocking_turn_id: 2 }, { reason: 'legacy_missing_receipt' },
+    { reason: 'awaiting_dispatch' }, { type: 'steer' }, { delivery_state: 'pending' }, { delivery_state: 'unknown' },
+    { consumed_at: 200 }, { follow_up_job_id: 'unexpected' }, { revision: undefined }, { revision: '2' } ]) {
+    const parsed = normalize(blockedReceipt(extra), f.scope);
+    assert.equal(parsed.blocking_job_id, null); assert.equal(parsed.blocking_turn_id, null);
+  }
+  for (const extra of [ { blocking_turn_id: null }, { revision: undefined }, { revision: 0, edited_at: null },
+    { schema_version: 2 }, { delivery_state: 'pending' }, { delivery_state: 'unknown' } ]) {
+    const stale = fixture(); stale.store.merge(stale.scope, blockedReceipt());
+    stale.store.merge(stale.scope, blockedReceipt(extra));
+    assert.equal(stale.store.list(stale.scope)[0].blocking_job_id, null, 'unverified snapshot revokes prior link');
+    assert.equal(stale.store.list(stale.scope)[0].blocking_turn_id, null);
+    await assert.rejects(stale.store.blocker(stale.scope, stale.store.list(stale.scope)[0]), /缺少/);
+    assert.equal(stale.jobs.length, 0);
+  }
+  for (const data of [list([]), { schema_version: 2, job_id: 'job', messages: [] }, list([{ id: 1 }])]) {
+    const absent = fixture(); absent.store.merge(absent.scope, blockedReceipt());
+    const refresh = absent.store.reconcile(absent.scope); absent.reads[0].resolve(data); await refresh;
+    assert.equal(absent.store.list(absent.scope)[0].blocking_job_id, null, 'missing/unsupported complete lists revoke links');
+  }
+  const validBlockerJob = { id: 'blocker', project_id: 'project', conversation_id: 'conversation', turn_id: 'blocker-turn', status: 'failed' };
+  const nav = fixture(); nav.store.merge(nav.scope, blockedReceipt());
+  const bRow = nav.store.list(nav.scope)[0];
+  const bp = nav.store.blocker(nav.scope, bRow);
+  assert.equal(nav.store.blocker(nav.scope, bRow), bp, 'duplicate view shares its GET');
+  assert.equal(nav.jobs.length, 1);
+  const pollDuringView = nav.store.reconcile(nav.scope); nav.reads[0].resolve(list([blockedReceipt()])); await pollDuringView;
+  nav.jobs[0].resolve({ job: validBlockerJob }); assert.deepEqual(await bp, validBlockerJob);
+  assert.equal(nav.calls.length + nav.withdrawals.length + nav.edits.length, 0);
+  for (const extra of [{ id: 'other' }, { project_id: 'foreign' }, { conversation_id: 'other' }, { turn_id: 'other' }]) {
+    const bad = fixture(); bad.store.merge(bad.scope, blockedReceipt());
+    const badGet = bad.store.blocker(bad.scope, bad.store.list(bad.scope)[0]);
+    bad.jobs[0].resolve({ job: { ...validBlockerJob, ...extra } });
+    await assert.rejects(badGet, /归属与回执不一致/);
+  }
+  const self = fixture(); self.store.merge(self.scope, blockedReceipt({ blocking_job_id: 'job', blocking_turn_id: 'source-turn' }));
+  const selfGet = self.store.blocker(self.scope, self.store.list(self.scope)[0]);
+  self.jobs[0].resolve({ job: { ...validBlockerJob, id: 'job', turn_id: 'source-turn' } });
+  assert.equal((await selfGet).id, 'job', 'source itself is a valid blocker');
+  for (const change of ['account', 'server', 'session', 'receipt']) {
+    const stale = fixture(); stale.store.merge(stale.scope, blockedReceipt());
+    const pendingView = stale.store.blocker(stale.scope, stale.store.list(stale.scope)[0]);
+    if (change === 'account') stale.who.userId = 'bob';
+    if (change === 'server') stale.client.baseUrl = 'https://other.invalid';
+    if (change === 'session') stale.client.sessionVersion++;
+    if (change === 'receipt') stale.store.merge(stale.scope, blockedReceipt({ blocking_turn_id: null }));
+    stale.jobs[0].resolve({ job: validBlockerJob }); assert.equal(await pendingView, null, change);
+  }
+
   console.log('job-messages.test: OK (stable retry, restart reconciliation, identity, ordering, failures, child isolation)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,11 +1,18 @@
 (function (root) {
   "use strict";
 
+  let visibilityEpoch = 0;
+  root.document?.addEventListener("visibilitychange", () => { if (root.document.visibilityState === "hidden") visibilityEpoch += 1; });
+  root.addEventListener?.("blur", () => { visibilityEpoch += 1; });
   const STORAGE_KEY = "android-agent-message-outbox-v1";
   const TYPES = new Set(["steer", "follow_up"]);
   const STATES = new Set(["pending", "consumed", "follow_up_created", "unapplied", "blocked", "withdrawn", "unknown"]);
   const LABELS = { sending: "发送中…", unconfirmed: "送达结果未确认", rejected: "发送未被接受", pending: "已接收，等待处理", consumed: "已加入本轮上下文", follow_up_created: "后续任务已创建", unapplied: "本轮结束前未加入上下文", blocked: "后续任务未创建", withdrawn: "追问已撤回", unknown: "回执状态未知" };
   const REASONS = { awaiting_safe_boundary: "等待下一个安全边界", awaiting_parent_completion: "等待本轮完成", awaiting_dispatch: "等待创建后续任务", parent_paused: "前序任务已暂停", parent_failed: "前序任务失败", parent_canceled: "前序任务已取消", parent_interrupted: "前序任务中断", turn_finished_before_consumption: "本轮已结束", legacy_missing_receipt: "旧记录缺少关联回执" };
+  const BLOCKED_REASONS = new Set(["parent_failed", "parent_canceled", "parent_interrupted"]);
+  const clearBlocker = row => { if (row) { row.blocking_job_id = null; row.blocking_turn_id = null; } };
+  const hasBlocker = row => row?.phase === "received" && row.type === "follow_up" && row.delivery_state === "blocked"
+    && BLOCKED_REASONS.has(row.reason) && nonempty(row.blocking_job_id) && nonempty(row.blocking_turn_id);
   const stamp = value => typeof value === "number" && Number.isFinite(value) && value > 0;
   const nonempty = value => typeof value === "string" && Boolean(value.trim());
   const revision = value => Number.isSafeInteger(value) && value >= 0;
@@ -30,7 +37,9 @@
         || !stamp(raw.withdrawn_at) || raw.can_withdraw !== false)) state = "unknown";
     if (state !== "withdrawn" && raw.withdrawn_at != null) state = "unknown";
     const hasRevision = revision(raw.revision) && (raw.revision === 0 ? raw.edited_at === null : stamp(raw.edited_at));
-    return { ...raw, delivery_state: state, phase: "received", retryable: false,
+    const blocking = raw.type === "follow_up" && state === "blocked" && BLOCKED_REASONS.has(raw.reason)
+      && hasRevision && nonempty(raw.blocking_job_id) && nonempty(raw.blocking_turn_id);
+    return { ...raw, blocking_job_id: blocking ? raw.blocking_job_id : null, blocking_turn_id: blocking ? raw.blocking_turn_id : null, delivery_state: state, phase: "received", retryable: false,
       revision: hasRevision ? raw.revision : null, edited_at: hasRevision ? raw.edited_at : null,
       can_edit: raw.can_edit === true && hasRevision && raw.type === "follow_up" && state === "pending",
       can_withdraw: raw.can_withdraw === true && raw.type === "follow_up" && ["pending", "blocked"].includes(state),
@@ -133,23 +142,27 @@
     pendingCount() { return [...this.records.values()].reduce((n, map) => n + [...map.values()].filter(row => row.retryable || row.withdrawPhase || row.editIntent || row.editor).length, 0); }
     merge(scope, raw, acknowledged = false) {
       const next = normalize(raw, scope);
-      if (!next) return false;
-      const prior = this.bucket(scope).get(next.message_key);
+      const prior = this.bucket(scope).get(raw?.message_key);
+      if (!next) {
+        if (prior?.id === raw?.id && raw?.task_id === scope.job) clearBlocker(prior);
+        return false;
+      }
       if (prior && prior.type !== next.type) return false;
       // A GET may contain redacted text. Keep the frozen local intent until
       // its explicit original-body POST is accepted by server idempotency.
       if (prior && prior.phase !== "received" && !acknowledged && !sameBody(prior, next)) return false;
       if (prior?.phase === "received" && prior.id !== next.id) return false;
       if (revision(prior?.revision) && !revision(next.revision)) {
-        prior.can_edit = false; prior.can_withdraw = false; return true;
+        prior.can_edit = false; prior.can_withdraw = false; clearBlocker(prior); return true;
       }
-      if (revision(prior?.revision) && next.revision < prior.revision) return true;
+      if (revision(prior?.revision) && next.revision < prior.revision) { clearBlocker(prior); return true; }
       if (prior?.phase === "received" && (settled(prior.delivery_state) && next.delivery_state !== prior.delivery_state
           && !(prior.delivery_state === "blocked" && next.delivery_state === "withdrawn")
           || prior.delivery_state !== "unknown" && next.delivery_state === "unknown")) {
         // Even a degraded receipt can revoke a previously offered capability.
         prior.can_withdraw = prior.can_withdraw && next.can_withdraw;
         prior.can_edit = prior.can_edit && next.can_edit;
+        clearBlocker(prior);
         return true;
       }
       const withdrawal = prior?.withdrawPhase && !["withdrawn", "follow_up_created"].includes(next.delivery_state)
@@ -339,8 +352,16 @@
       const id = `${scope.session}:${keyFor(scope)}`;
       if (this.loads.has(id)) return this.loads.get(id);
       const request = this.client.jobMessages(scope.job, { includeConsumed: true }).then(data => {
-        if (!this.current(scope) || !this.envelope(data, scope) || !Array.isArray(data.messages)) return false;
-        for (const row of data.messages) this.merge(scope, row);
+        if (!this.current(scope)) return false;
+        // Preserve unchanged row snapshots still captured by DOM handlers.
+        // Missing/unsupported rows revoke navigation; valid rows merge normally.
+        if (!this.envelope(data, scope) || !Array.isArray(data.messages)) {
+          for (const row of this.list(scope)) clearBlocker(row);
+          this.emit(); return false;
+        }
+        const seen = new Set();
+        for (const row of data.messages) if (this.merge(scope, row)) seen.add(row.message_key);
+        for (const row of this.list(scope)) if (!seen.has(row.message_key)) clearBlocker(row);
         this.emit(); return true;
       }).catch(() => false).finally(() => this.loads.delete(id));
       this.loads.set(id, request); return request;
@@ -371,10 +392,71 @@
           || job.turn_id !== row.follow_up_turn_id) throw new Error("后续任务归属与回执不一致");
       return job;
     }
+    blocker(scope, row) {
+      const targetId = row?.blocking_job_id, targetTurn = row?.blocking_turn_id, visibleVersion = visibilityEpoch;
+      const matches = () => {
+        const current = this.bucket(scope).get(row?.message_key);
+        return this.current(scope) && visibleVersion === visibilityEpoch && root.document?.visibilityState !== "hidden"
+          && hasBlocker(current) && current.id === row?.id
+          && current.blocking_job_id === targetId && current.blocking_turn_id === targetTurn;
+      };
+      if (!scope || !hasBlocker(row) || !matches()) return Promise.reject(new Error("缺少有效阻塞任务回执，请刷新后核对"));
+      const requestId = `blocker:${scope.session}:${keyFor(scope)}:${row.id}:${targetId}:${targetTurn}`;
+      if (this.requests.has(requestId)) return this.requests.get(requestId);
+      const request = this.client.job(targetId).then(data => {
+        if (!matches()) return null;
+        const job = data?.job;
+        if (!job || job.id !== targetId || job.project_id !== scope.project || job.conversation_id !== scope.conversation
+            || job.turn_id !== targetTurn) throw new Error("阻塞任务归属与回执不一致");
+        return job;
+      }).finally(() => this.requests.delete(requestId));
+      this.requests.set(requestId, request); return request;
+    }
     dispose() { if (this.timer) clearInterval(this.timer); this.timer = null; this.watches.clear(); this.listeners.clear(); }
   }
 
-  function render(host, store, scope, { openChild } = {}) {
+  const blockerDialogs = new Map();
+  function showBlocker(host, store, scope, row, job, isSelected = () => true) {
+    blockerDialogs.get(host)?.close();
+    const targetId = job.id, targetTurn = job.turn_id;
+    const valid = () => {
+      const current = store.list(scope).find(item => item.id === row.id && item.message_key === row.message_key);
+      return store.current(scope) && isSelected() && host.isConnected && host.getClientRects().length > 0
+        && document.visibilityState !== "hidden" && hasBlocker(current)
+        && current.blocking_job_id === targetId && current.blocking_turn_id === targetTurn;
+    };
+    if (!valid()) return;
+    const dialog = document.createElement("dialog"); dialog.className = "message-blocker-dialog";
+    dialog.setAttribute("aria-label", "阻塞任务详情");
+    const add = (tag, text, cls) => { const element = document.createElement(tag); element.textContent = text; if (cls) element.className = cls; dialog.appendChild(element); return element; };
+    add("h3", "阻塞任务详情");
+    add("p", `任务 ${job.id} · 轮次 ${job.turn_id}`, "message-blocker-identity");
+    const statuses = root.DeliveryUI?.labels || {}, statusKey = job.display_status || job.status;
+    const status = Object.hasOwn(statuses, statusKey) ? statuses[statusKey] : "状态未提供";
+    add("p", `任务状态：${status}`, "message-blocker-status");
+    add("h4", "任务请求"); add("pre", nonempty(job.prompt) ? job.prompt : "未提供任务请求", "message-blocker-prompt");
+    add("h4", "错误信息"); add("pre", nonempty(job.error_message) ? job.error_message : "未提供错误信息", "message-blocker-error");
+    if (root.DeliveryUI?.render) dialog.appendChild(root.DeliveryUI.render(job));
+    const closeButton = add("button", "关闭", "ghost-btn"); closeButton.type = "button";
+    let unsubscribe, observer, closed = false;
+    const close = () => {
+      if (closed) return; closed = true;
+      unsubscribe?.(); observer?.disconnect(); document.removeEventListener("visibilitychange", check);
+      root.removeEventListener?.("blur", close); blockerDialogs.delete(host);
+      if (dialog.open) dialog.close(); dialog.remove();
+    };
+    const check = () => { if (!valid()) close(); };
+    blockerDialogs.set(host, { close, check });
+    closeButton.addEventListener("click", close); dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
+    dialog.addEventListener("close", close, { once: true });
+    document.body.appendChild(dialog); dialog.showModal();
+    unsubscribe = store.subscribe(check); document.addEventListener("visibilitychange", check); root.addEventListener?.("blur", close);
+    observer = new MutationObserver(check);
+    for (let parent = host; parent; parent = parent.parentElement) observer.observe(parent, { attributes: true, attributeFilter: ["hidden", "class", "style"] });
+  }
+
+  function render(host, store, scope, { openChild, openBlocker } = {}) {
+    for (const dialog of blockerDialogs.values()) dialog.check();
     if (!host) return;
     const rows = store.list(scope);
     host.hidden = !rows.length;
@@ -425,6 +507,7 @@
         if (row.can_edit && row.editor.baseRevision !== row.revision && !row.editIntent) action("以最新版本继续编辑", () => store.rebaseEditor(scope, row.message_key));
         action(row.editIntent ? "收起编辑" : "取消编辑", () => store.closeEditor(scope, row.message_key));
       }
+      if (hasBlocker(row) && openBlocker) action("查看阻塞任务", () => openBlocker(scope, row));
       if (row.delivery_state === "follow_up_created" && openChild) action("查看后续任务", () => openChild(scope, row));
       body.appendChild(section);
       if (focused?.key === row.message_key) {
@@ -437,7 +520,7 @@
     }
   }
 
-  const api = { Store, normalize, normalizeEdit, render, keyFor, STORAGE_KEY };
+  const api = { Store, normalize, normalizeEdit, render, showBlocker, keyFor, STORAGE_KEY };
   root.JobMessages = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

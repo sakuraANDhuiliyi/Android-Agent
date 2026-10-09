@@ -21,7 +21,9 @@
     "can_withdraw": false,
     "revision": 2,
     "edited_at": 1008.0,
-    "can_edit": false
+    "can_edit": false,
+    "blocking_job_id": null,
+    "blocking_turn_id": null
   },
   "edit": {
     "schema_version": 1,

@@ -161,6 +161,109 @@ class ConversationMessageReceiptTest {
         h.vm.setForeground(false)
     }
 
+    private fun readyBlocker(h: Harness, target: String = "child", preserveDraft: Boolean = false) {
+        readyFollowUp(h)
+        if (preserveDraft) { h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("unsaved editor text") }
+        h.serverMessages.single().put("delivery_state", "blocked").put("reason", "parent_failed").put("can_edit", false)
+            .put("blocking_job_id", target).put("blocking_turn_id", if (target == "j") "parent-turn" else "child-turn")
+        h.vm.setForeground(true); await { h.vm.state.value.messageReceipts.singleOrNull()?.blockingJobId == target }
+    }
+
+    @Test fun `source and child blocker inspection uses only GET without selecting job or resetting drafts`() {
+        for (target in listOf("j", "child")) {
+            val h = Harness(); readyBlocker(h, target, preserveDraft = true)
+            val draft = h.vm.state.value.messageEdit
+            val watchers = h.watches.size; val selectedJob = h.session.selectedJobId; val prior = h.requests.size
+            h.vm.openBlockingTask("follow")
+            await { !h.vm.state.value.loadingBlockingTask && h.vm.state.value.blockingTask != null }
+            assertEquals(target, h.vm.state.value.blockingTask!!.job.id)
+            assertEquals("j", h.vm.state.value.jobId)
+            assertEquals(selectedJob, h.session.selectedJobId)
+            assertEquals(draft, h.vm.state.value.messageEdit)
+            assertEquals(watchers, h.watches.size)
+            assertTrue(h.requests.drop(prior).all { it.startsWith("GET") })
+            assertFalse(h.requests.drop(prior).any { it.endsWith("/approvals") })
+            assertTrue(h.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+            h.vm.setForeground(false); assertNull(h.vm.state.value.blockingTask)
+        }
+    }
+
+    @Test fun `blocker double tap shares a single GET and never enters execution controls`() {
+        val entered = gate(); val release = gate()
+        val h = Harness { req -> if (req.url.encodedPath == "/api/jobs/child") { entered.countDown(); release.await(5, TimeUnit.SECONDS) }; null }
+        readyBlocker(h); h.vm.openBlockingTask("follow"); assertTrue(entered.await(5, TimeUnit.SECONDS)); h.vm.openBlockingTask("follow")
+        assertEquals(1, h.requests.count { it == "GET /api/jobs/child" })
+        release.countDown(); await { h.vm.state.value.blockingTask != null }
+        assertFalse(h.requests.any { it.startsWith("POST") })
+        h.vm.setForeground(false)
+    }
+
+    @Test fun `blocker GET must match task project conversation and turn`() {
+        for (field in listOf("id", "project_id", "conversation_id", "turn_id")) {
+            val h = Harness { req -> if (req.url.encodedPath == "/api/jobs/child") JSONObject().put("job", job("child", "failed").put(field, "wrong")) else null }
+            readyBlocker(h); h.vm.openBlockingTask("follow")
+            await { h.requests.contains("GET /api/jobs/child") && !h.vm.state.value.loadingBlockingTask }
+            assertNull(h.vm.state.value.blockingTask); assertEquals("j", h.vm.state.value.jobId)
+            assertFalse(h.requests.any { it.startsWith("POST") }); h.vm.setForeground(false)
+        }
+    }
+
+    @Test fun `late blocker GET is ignored on account conversation binding foreground or receipt change`() {
+        for (change in listOf("account", "conversation", "job", "background", "pair")) {
+            val entered = gate(); val release = gate(); val finished = gate()
+            val h = Harness { req -> if (req.url.encodedPath == "/api/jobs/child") {
+                entered.countDown(); release.await(5, TimeUnit.SECONDS); finished.countDown()
+                JSONObject().put("job", job("child", "failed"))
+            } else null }
+            readyBlocker(h); h.vm.openBlockingTask("follow"); assertTrue(entered.await(5, TimeUnit.SECONDS))
+            when (change) {
+                "account" -> h.account.set(false)
+                "conversation" -> h.selected.set(false)
+                "job" -> { h.jobs = listOf(job("child", "paused")); h.vm.refresh(); await { h.vm.state.value.jobId == "child" } }
+                "background" -> h.vm.setForeground(false)
+                else -> { h.serverMessages.single().remove("blocking_turn_id"); h.vm.refreshMessageReceipts(); await { h.vm.state.value.messageReceipts.single().blockingJobId == null } }
+            }
+            release.countDown(); assertTrue(finished.await(5, TimeUnit.SECONDS)); Thread.sleep(40)
+            assertNull(h.vm.state.value.blockingTask); assertFalse(h.requests.any { it.startsWith("POST") }); h.vm.setForeground(false)
+        }
+    }
+
+    @Test fun `unavailable blocker removes stale entry while read failure never navigates or mutates`() {
+        for (status in listOf(403, 404, 500)) {
+            val h = Harness { req -> if (req.url.encodedPath == "/api/jobs/child") JSONObject().put("__status", status).put("detail", "unavailable") else null }
+            readyBlocker(h); h.vm.openBlockingTask("follow")
+            await { h.requests.contains("GET /api/jobs/child") && !h.vm.state.value.loadingBlockingTask }
+            assertNull(h.vm.state.value.blockingTask)
+            if (status != 500) assertNull(h.vm.state.value.messageReceipts.single().blockingJobId)
+            assertFalse(h.requests.any { it.startsWith("POST") }); h.vm.setForeground(false)
+        }
+    }
+
+    @Test fun `new untrusted snapshot closes displayed blocker and preserves newer edited body`() {
+        for (mode in listOf("missing", "unknown", "older", "empty", "invalid-envelope", "network")) {
+            val failGet = AtomicBoolean(false)
+            val h = Harness { req -> if (req.url.encodedPath.endsWith("/messages") && failGet.get()) {
+                if (mode == "network") throw IOException("offline")
+                JSONObject().put("schema_version", 2).put("job_id", "j").put("messages", JSONArray())
+            } else null }
+            readyBlocker(h)
+            h.serverMessages.single().put("revision", 2).put("edited_at", 1700000002).put("payload", JSONObject().put("text", "latest body"))
+            h.vm.refreshMessageReceipts(); await { h.vm.state.value.messageReceipts.single().revision == 2 }
+            h.vm.openBlockingTask("follow"); await { h.vm.state.value.blockingTask != null }
+            when (mode) {
+                "missing" -> h.serverMessages.single().remove("blocking_job_id")
+                "unknown" -> h.serverMessages.single().put("delivery_state", "unknown")
+                "older" -> h.serverMessages.single().put("revision", 1).put("payload", JSONObject().put("text", "old body"))
+                "empty" -> h.serverMessages.clear()
+                else -> failGet.set(true)
+            }
+            h.vm.refreshMessageReceipts(); await { h.vm.state.value.blockingTask == null }
+            assertTrue(h.vm.state.value.messageReceipts.none { it.blockingJobId != null })
+            if (mode == "older") assertEquals("latest body", h.vm.state.value.messageReceipts.single().text)
+            h.vm.setForeground(false)
+        }
+    }
+
     @Test fun `switching message cannot silently overwrite another edit draft`() {
         val h = Harness(); readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("unsaved A")
         h.serverMessages += JSONObject(h.serverMessages.single().toString()).put("id", 2).put("message_key", "B")

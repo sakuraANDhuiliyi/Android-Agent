@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "job_id": "job-001",
+  "messages": [
+    {
+      "schema_version": 1,
+      "id": 45,
+      "task_id": "job-001",
+      "message_key": "client-msg-004",
+      "type": "follow_up",
+      "payload": {
+        "text": "Focus on settings screen only"
+      },
+      "created_at": 1002.0,
+      "consumed_at": null,
+      "delivery_state": "blocked",
+      "context_message_id": null,
+      "follow_up_job_id": null,
+      "follow_up_turn_id": null,
+      "reason": "parent_failed",
+      "withdrawn_at": null,
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false,
+      "blocking_job_id": "job-002",
+      "blocking_turn_id": "turn-002"
+    }
+  ]
+}

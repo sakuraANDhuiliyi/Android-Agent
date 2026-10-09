@@ -173,6 +173,10 @@ async function main() {
     { type: 'tool', delay_ms: 1500, calls: [{ name: 'read_file', arguments: { path: 'app/src/main/AndroidManifest.xml' } }] },
     { type: 'final', text: 'EDIT_PARENT_DONE' },
   ] }));
+  fs.writeFileSync(path.join(scenarios, 'blocking-child.json'), JSON.stringify({ id: 'desktop_blocking_build', steps: [
+    { type: 'tool', calls: [{ name: 'run_gradle', arguments: { task: 'assembleDebug' } }] },
+    { type: 'final', text: 'BLOCKING_CHILD_BUILD_FINISHED' },
+  ] }));
   track(spawn('python3', [SHARED_STUB], { cwd: repoRoot,
     env: isolatedSmokeEnv({ AGENT_E2E_STUB_PORT: String(STUB_PORT), AGENT_E2E_SCENARIO_DIR: scenarios }), stdio: 'ignore' }));
   await waitForTcp(STUB_PORT, 15000); startService(); await waitForTcp(AGENT_PORT, 30000);
@@ -379,6 +383,7 @@ async function main() {
     await middleAi.getByRole('button', { name: '核对并重试编辑' }).click();
     await middleAi.getByRole('button', { name: '核对并重试编辑' }).waitFor({ state: 'detached' });
     assert.equal(editPosts, 2); assert.match(await middleAi.textContent(), /编辑队列 X/);
+    await middleAi.locator('textarea').waitFor({ state: 'detached' });
     assert.equal(await middleAi.locator('textarea').count(), 0);
 
     // A competing edit wins CAS; the UI retains its separate draft even after
@@ -421,6 +426,102 @@ async function main() {
     const editPrompts = editHistory.filter(event => editedChildren.some(row => row.id === event.payload?.task_message_id));
     assert.equal(editPrompts.length, 3); assert.deepEqual(editPrompts.map(event => event.payload.task_message_id), editQueue.map(row => row.id));
     console.log('ok - A/B/C edit B to X retains identity/FIFO; redacted lost ACK reload retries exactly; CAS draft survives reload; terminal old ACK cannot recreate child');
+    // Failed/canceled real build children block the tail. Both entry points
+    // inspect that exact child in a read-only modal without switching execution.
+    const workspace = path.join(SMOKE_DATA, 'workspaces', reg.json.user_id, projectId);
+    fs.writeFileSync(path.join(workspace, 'gradlew'), '#!/bin/sh\nmkdir -p app/build\necho started > app/build/blocker-started\nif [ "$(cat blocker-mode.txt)" = canceled ]; then sleep 15; fi\necho BUILD FAILED\nexit 1\n');
+    fs.chmodSync(path.join(workspace, 'gradlew'), 0o755);
+    const profile = await httpJson('PATCH', `/api/projects/${projectId}/settings`, { token, body: { permission_profile: 'full_access' } });
+    assert.equal(profile.status, 200);
+    for (const mode of ['failed', 'canceled']) {
+      fs.writeFileSync(path.join(workspace, 'blocker-mode.txt'), mode);
+      fs.rmSync(path.join(workspace, 'app/build/blocker-started'), { force: true });
+      const blockedSource = await page.evaluate(async mode => {
+        await AiPanel.createConversation(AiPanel.getState().selectedProjectId);
+        const reply = await AiPanel.client.askConversation(AiPanel.getState().conversationId,
+          { prompt: `核对阻塞任务来源 ${mode} [[desktop_edit_parent]]`, run_mode: 'workspace' });
+        await AiPanel.client.pauseJob(reply.job.id); AiPanel.adoptJob(reply.job); return reply.job.id;
+      }, mode);
+      await waitUntil(async () => (await httpJson('GET', `/api/jobs/${blockedSource}`, { token })).json.job.status === 'paused', 20000, 'blocking parent paused');
+      const first = await httpJson('POST', `/api/jobs/${blockedSource}/messages`, { token, body: {
+        message_key: `blocker-${mode}`, type: 'follow_up', payload: { text: '实际阻塞任务 [[desktop_blocking_build]]' },
+      } });
+      const tail = await httpJson('POST', `/api/jobs/${blockedSource}/messages`, { token, body: {
+        message_key: `tail-${mode}`, type: 'follow_up', payload: { text: '等待前序成功才执行 [[desktop_messages_child]]' },
+      } });
+      assert.equal(first.status, 201); assert.equal(tail.status, 201);
+      await page.evaluate(id => AiPanel.openJob(id), blockedSource);
+      const tailRow = page.locator(`#aiMessageReceipts [data-message-key="tail-${mode}"]`);
+      await tailRow.getByRole('button', { name: '编辑追问', exact: true }).click();
+      await tailRow.locator('textarea').fill('阻塞后仍应保留的编辑草稿');
+      await page.fill('#promptInput', '查看详情仍保留主草稿');
+      assert.equal((await httpJson('POST', `/api/jobs/${blockedSource}/resume`, { token })).status, 202);
+      const childReceipt = await waitUntil(async () => {
+        const rows = (await httpJson('GET', `/api/jobs/${blockedSource}/messages?include_consumed=true`, { token })).json.messages;
+        return rows.find(row => row.id === first.json.message.id && row.follow_up_job_id);
+      }, 30000, 'blocking candidate child created');
+      if (mode === 'canceled') {
+        await waitUntil(() => fs.existsSync(path.join(workspace, 'app/build/blocker-started')), 20000, 'child build actually started');
+        assert.equal((await httpJson('POST', `/api/jobs/${childReceipt.follow_up_job_id}/cancel`, { token })).status, 202);
+      }
+      const blocked = await waitUntil(async () => {
+        const rows = (await httpJson('GET', `/api/jobs/${blockedSource}/messages?include_consumed=true`, { token })).json.messages;
+        return rows.find(row => row.id === tail.json.message.id && row.delivery_state === 'blocked');
+      }, 35000, `${mode} child blocks tail`);
+      assert.equal(blocked.blocking_job_id, childReceipt.follow_up_job_id);
+      assert.equal(blocked.blocking_turn_id, childReceipt.follow_up_turn_id);
+      assert.equal(blocked.reason, mode === 'failed' ? 'parent_failed' : 'parent_canceled');
+      const before = await waitUntil(async () => {
+        const target = (await httpJson('GET', `/api/jobs/${blocked.blocking_job_id}`, { token })).json.job;
+        return ['succeeded', 'failed', 'canceled', 'interrupted'].includes(target.status) ? target : null;
+      }, 20000, 'blocker execution reaches terminal status after cancellation request');
+      assert.equal(before.status, mode); assert.equal(before.verification.build.state, mode);
+      const sourceJob = (await httpJson('GET', `/api/jobs/${blockedSource}`, { token })).json.job;
+      assert.equal(sourceJob.status, 'succeeded');
+      await page.evaluate(() => AiPanel.messages.reconcile(AiPanel.messages.scope(AiPanel.getState().currentJob)));
+      const mutatingViews = [];
+      const observeMutation = request => {
+        if (request.method() !== 'GET' && request.url().includes(`/api/jobs/${blocked.blocking_job_id}/`)) mutatingViews.push(request.url());
+      };
+      page.on('request', observeMutation);
+      for (const surface of ['ai', 'cx']) {
+        if (surface === 'cx') {
+          await page.locator('[data-mode="agent-windows"]').click(); await page.evaluate(() => CodexiaAgentView.refresh());
+          await page.locator(`.cx-project-task`).filter({ hasText: `核对阻塞任务来源 ${mode}` }).click();
+          await page.fill('#cxAgentPrompt', '工作台主草稿');
+        }
+        const host = surface === 'ai' ? '#aiMessageReceipts' : '#cxMessageReceipts';
+        const currentId = await page.evaluate(surface => surface === 'ai' ? AiPanel.getState().currentJobId : CodexiaAgentView._internal.getState().selectedId, surface);
+        assert.equal(currentId, blockedSource);
+        await page.locator(`${host} [data-message-key="tail-${mode}"]`).getByRole('button', { name: '查看阻塞任务' }).click();
+        const dialog = page.getByRole('dialog', { name: '阻塞任务详情' });
+        try { await dialog.waitFor({ timeout: 10000 }); } catch (error) {
+          console.error('blocker detail timeout', JSON.stringify(await page.evaluate(({ surface, host }) => ({
+            surface, visible: document.visibilityState, focused: document.hasFocus(),
+            selected: surface === 'ai' ? AiPanel.getState().currentJobId : CodexiaAgentView._internal.getState().selectedId,
+            text: document.querySelector(host)?.textContent,
+            dialogs: [...document.querySelectorAll('.message-blocker-dialog')].map(node => ({ open: node.open, text: node.textContent })),
+          }), { surface, host })));
+          throw error;
+        }
+        assert.match(await dialog.textContent(), new RegExp(blocked.blocking_job_id));
+        assert.match(await dialog.textContent(), new RegExp(blocked.blocking_turn_id));
+        assert.match(await dialog.locator('.message-blocker-status').textContent(), mode === 'failed' ? /执行失败/ : /已停止/);
+        assert.equal(await dialog.locator('[data-check="build"]').getAttribute('data-state'), mode);
+        assert.equal(await page.evaluate(surface => surface === 'ai' ? AiPanel.getState().currentJobId : CodexiaAgentView._internal.getState().selectedId, surface), blockedSource);
+        assert.equal(await page.locator(`${host} textarea`).inputValue(), '阻塞后仍应保留的编辑草稿');
+        assert.equal(await page.locator(surface === 'ai' ? '#promptInput' : '#cxAgentPrompt').inputValue(), surface === 'ai' ? '查看详情仍保留主草稿' : '工作台主草稿');
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      page.off('request', observeMutation); assert.deepEqual(mutatingViews, []);
+      const after = (await httpJson('GET', `/api/jobs/${blocked.blocking_job_id}`, { token })).json.job;
+      assert.equal(after.status, before.status);
+      const afterRows = (await httpJson('GET', `/api/jobs/${blockedSource}/messages?include_consumed=true`, { token })).json.messages;
+      assert.equal(afterRows.find(row => row.id === tail.json.message.id).follow_up_job_id, null);
+      assert.equal(afterRows.filter(row => row.follow_up_job_id).length, 1, 'viewing never starts blocked tail');
+      console.log(`ok - actual ${mode} child shown in both read-only details; original selection, drafts, child and tail unchanged`);
+    }
     assert.deepEqual(errors, []);
     console.log('ok - both real desktop entries, repeated text as distinct intents, one canonical receipt per steer, terminal idempotency, and authoritative child navigation');
     console.log('electron-messages-smoke.test: OK');

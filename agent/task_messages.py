@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from agent.conversation_events import ConversationEventStore
@@ -56,12 +57,42 @@ def _link(conn, message_id: int, parent):
         (message_id, parent["user_id"], parent["project_id"], parent["conversation_id"])).fetchone()
 
 
-def _follow_up_gate(conn, message, parent) -> tuple[str, str | None]:
+@dataclass(frozen=True)
+class _FollowUpGate:
+    state: str
+    reason: str | None
+    blocking_job_id: str | None = None
+    blocking_turn_id: str | None = None
+
+
+def _blocked_gate(conn, parent, reason: str, task_id: str, turn_id: str | None = None) -> _FollowUpGate:
+    """Expose a blocker only when both source and target have complete scope.
+
+    This lookup does not decide whether the queue may run. Missing or corrupt
+    historical links retain the gate's decision without supplying navigation.
+    """
+    row = conn.execute("""SELECT b.id AS task_id, r.id AS turn_id
+        FROM tasks s JOIN conversations c ON c.id=s.conversation_id
+          AND c.user_id=s.user_id AND c.project_id=s.project_id
+        JOIN conversation_turns source_turn ON source_turn.task_id=s.id
+          AND source_turn.user_id=s.user_id AND source_turn.project_id=s.project_id
+          AND source_turn.conversation_id=s.conversation_id
+        JOIN tasks b ON b.id=? AND b.user_id=s.user_id AND b.project_id=s.project_id
+          AND b.conversation_id=s.conversation_id
+        JOIN conversation_turns r ON r.task_id=b.id AND r.user_id=b.user_id
+          AND r.project_id=b.project_id AND r.conversation_id=b.conversation_id
+        WHERE s.id=? AND s.user_id=? AND s.project_id=? AND s.conversation_id=?
+          AND b.id!='' AND r.id!='' AND (? IS NULL OR r.id=?)""",
+        (task_id, parent['id'], parent['user_id'], parent['project_id'], parent['conversation_id'], turn_id, turn_id)).fetchone()
+    return _FollowUpGate('blocked', reason, row['task_id'] if row else None, row['turn_id'] if row else None)
+
+
+def _follow_up_gate(conn, message, parent) -> _FollowUpGate:
     reason = _blocked(parent)
     if reason:
-        return "blocked", reason
+        return _blocked_gate(conn, parent, reason, parent['id'])
     if parent["status"] != "succeeded":
-        return "pending", "parent_paused" if parent["status"] == "paused" else "awaiting_parent_completion"
+        return _FollowUpGate("pending", "parent_paused" if parent["status"] == "paused" else "awaiting_parent_completion")
     # Only dispatch the first outstanding instruction queued on this source task.
     # The previous child must have succeeded, not merely have been enqueued.
     prior = conn.execute("""SELECT m.* FROM task_messages m JOIN tasks t ON t.id=m.task_id
@@ -74,16 +105,17 @@ def _follow_up_gate(conn, message, parent) -> tuple[str, str | None]:
         if child:
             reason = _blocked(child)
             if reason:
-                return "blocked", reason
+                return _blocked_gate(conn, parent, reason, child['task_id'], child['turn_id'])
             if child["status"] != "succeeded":
-                return "pending", "awaiting_dispatch"
+                return _FollowUpGate("pending", "awaiting_dispatch")
         elif previous["consumed_at"] is not None or conn.execute(
             "SELECT 1 FROM task_message_followups WHERE message_id=?", (previous['id'],)
         ).fetchone():
-            return "blocked", "legacy_missing_receipt"
+            return _FollowUpGate("blocked", "legacy_missing_receipt")
         else:
-            return ("blocked", _blocked(previous_parent)) if _blocked(previous_parent) else ("pending", "awaiting_dispatch")
-    return "pending", "awaiting_dispatch"
+            reason = _blocked(previous_parent)
+            return _blocked_gate(conn, parent, reason, previous_parent['id']) if reason else _FollowUpGate("pending", "awaiting_dispatch")
+    return _FollowUpGate("pending", "awaiting_dispatch")
 
 
 def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
@@ -92,6 +124,7 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
     result.update(schema_version=1, delivery_state="unknown", context_message_id=None,
                   follow_up_job_id=None, follow_up_turn_id=None, reason="legacy_missing_receipt",
                   withdrawn_at=None, can_withdraw=False, revision=0, edited_at=None, can_edit=False)
+    result.update(blocking_job_id=None, blocking_turn_id=None)
     with nullcontext(_conn) if _conn is not None else store._connect() as conn:
         if _conn is None:
             conn.execute("BEGIN")
@@ -118,9 +151,10 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
             if child and message.get("consumed_at") is not None:
                 result.update(delivery_state="follow_up_created", follow_up_job_id=child["task_id"], follow_up_turn_id=child["turn_id"], reason=None)
             elif not raw_link and message.get("consumed_at") is None:
-                state, reason = _follow_up_gate(conn, message, parent)
-                result.update(delivery_state=state, reason=reason, can_withdraw=True,
-                              can_edit=state == 'pending' and _editable_source(conn, parent))
+                gate = _follow_up_gate(conn, message, parent)
+                result.update(delivery_state=gate.state, reason=gate.reason, can_withdraw=True,
+                              can_edit=gate.state == 'pending' and _editable_source(conn, parent),
+                              blocking_job_id=gate.blocking_job_id, blocking_turn_id=gate.blocking_turn_id)
         elif message["type"] == "steer":
             event = conn.execute("""SELECT e.payload_json FROM conversation_events e JOIN conversation_turns r ON r.id=e.turn_id
                 WHERE e.event_key=? AND r.task_id=? AND r.user_id=? AND e.role='user' AND e.context_visible=1""",
@@ -235,8 +269,8 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
             return None
         if row["consumed_at"] is not None or parent["status"] != "succeeded" or _blocked(parent):
             return None
-        state, reason = _follow_up_gate(conn, row, parent)
-        if state != "pending" or reason != "awaiting_dispatch":
+        gate = _follow_up_gate(conn, row, parent)
+        if gate.state != "pending" or gate.reason != "awaiting_dispatch":
             return None
         # A preceding pending or active follow-up returns the same display
         # reason; require all preceding instructions to have succeeded here.

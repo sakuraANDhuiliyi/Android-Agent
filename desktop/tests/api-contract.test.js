@@ -124,6 +124,24 @@
     if (currentRevision > 1) assert.notStrictEqual(acceptedEdit.payload.text, current.payload.text);
   }
 
+  for (const [file, targetJob, targetTurn] of [
+    ['job_messages_blocked_parent_200.json', 'job-001', 'turn-001'],
+    ['job_messages_blocked_child_200.json', 'job-002', 'turn-002'],
+  ]) {
+    const data = assertSuccessFixture(file, ['schema_version', 'job_id', 'messages']);
+    assert.strictEqual(data.job_id, scope.job);
+    const blocked = messages.normalize(data.messages[0], scope);
+    assert.strictEqual(blocked.delivery_state, 'blocked');
+    assert.strictEqual(blocked.blocking_job_id, targetJob);
+    assert.strictEqual(blocked.blocking_turn_id, targetTurn);
+    assert.strictEqual(blocked.follow_up_job_id, null);
+    assert.strictEqual(blocked.can_edit, false);
+  }
+  assert.strictEqual(receipts[3].blocking_job_id, scope.job);
+  for (const row of receipts.filter(row => row.delivery_state !== 'blocked')) {
+    assert.strictEqual(row.blocking_job_id, null); assert.strictEqual(row.blocking_turn_id, null);
+  }
+
   const eventsPage = assertSuccessFixture("conversation_events_200.json", [
     "conversation_id",
     "schema_version",

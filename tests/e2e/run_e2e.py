@@ -113,6 +113,7 @@ class E2ERunner:
         self.projects: dict[str, str] = {}
         self.conversations: dict[str, str] = {}
         self.results: list[dict[str, Any]] = []
+        self.foreign_identity: tuple[str, str] | None = None
 
     # —— lifecycle ——
 
@@ -130,6 +131,26 @@ class E2ERunner:
             self.client.close()
         self.stack.stop()
 
+    def foreign_client(self) -> E2EClient:
+        """Reuse one isolated second account across authorization checks.
+
+        A fresh HTTP client still owns each check, but the growing scenario
+        suite must not exhaust the production registration-per-IP limit.
+        """
+        client = E2EClient(self.stack)
+        try:
+            if self.foreign_identity is None:
+                client.register_account()
+                self.foreign_identity = (client.token, client.user_id)
+            else:
+                client.token, client.user_id = self.foreign_identity
+                client.http.headers["Authorization"] = f"Bearer {client.token}"
+            assert client.user_id != self.client.user_id
+            return client
+        except Exception:
+            client.close()
+            raise
+
     # —— scenario entry ——
 
     def run(self, scenario_ids: list[str] | None = None) -> int:
@@ -144,6 +165,10 @@ class E2ERunner:
                 print(f"E2E artifacts: {self.stack.tmp_root}", flush=True)
             for scenario_id in wanted:
                 self.run_one(self.scenarios[scenario_id])
+            # Keep full diagnostics on failure: the release runner's output
+            # tail may contain the summary but truncate the original exception.
+            if any(not result["ok"] for result in self.results):
+                self.stack.keep = True
             self.report()
         finally:
             self.teardown()
@@ -317,9 +342,8 @@ class E2ERunner:
         pending = context.client.http.get(f"/api/jobs/{job_id}/messages")
         pending.raise_for_status()
         context.check(pending.json()["messages"] == [], "consumed messages remain in pending-only list")
-        stranger = E2EClient(self.stack)
+        stranger = self.foreign_client()
         try:
-            stranger.register_account()
             context.check(stranger.http.get(f"/api/jobs/{job_id}/messages").status_code == 404, "cross-account receipts leaked")
             context.check(stranger.http.post(f"/api/jobs/{job_id}/messages", json=body).status_code == 404, "cross-account retry leaked")
         finally:
@@ -376,6 +400,7 @@ class E2ERunner:
         rows = self.wait_receipts(context, 1, "blocked")
         context.check(rows[0].get("reason") == context.scenario["blocked_reason"], f"wrong blocking reason: {rows[0]}")
         context.check(rows[0].get("follow_up_job_id") is None, "blocked message created a child")
+        self.assert_blocking_target(context, rows[0], context.job)
         if mode == "cancel":
             self.stack.restart_idle_agent()
             context.check(self.wait_receipts(context, 1, "blocked")[0]["id"] == rows[0]["id"], "restart changed blocked receipt")
@@ -384,6 +409,105 @@ class E2ERunner:
         listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
         listing.raise_for_status()
         context.check([row["id"] for row in listing.json()["jobs"]] == [job_id], "blocked follow-up was dispatched")
+
+    def assert_blocking_target(self, context: ScenarioContext, receipt: dict, expected: dict) -> None:
+        context.check(receipt.get("blocking_job_id") == expected["id"]
+                      and bool(expected.get("turn_id")) and receipt.get("blocking_turn_id") == expected["turn_id"],
+                      f"receipt does not identify the actual blocking task and turn: {receipt}")
+        target = context.client.get_job(receipt["blocking_job_id"])
+        context.check(target["id"] == expected["id"] and target["turn_id"] == receipt["blocking_turn_id"]
+                      and target["project_id"] == context.project_id and target["conversation_id"] == context.conversation_id,
+                      "blocking navigation target belongs to another scope or turn")
+        unchanged = ("status", "cancel_requested", "recovery_job_id", "turn_id", "prompt")
+        context.check(all(target.get(key) == expected.get(key) for key in unchanged), "viewing blocking task changed its execution state")
+        stranger = self.foreign_client()
+        try:
+            context.check(stranger.http.get(f"/api/jobs/{target['id']}").status_code == 404,
+                          "blocking task target leaked across accounts")
+        finally:
+            stranger.close()
+
+    def driver_blocking_child(self, context: ScenarioContext) -> None:
+        source = self.send_prompt(context)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not context.workspace_file("app/src/test/blocking-source.txt"):
+            time.sleep(0.05)
+        context.check(context.workspace_file("app/src/test/blocking-source.txt") == "source executed\n", "source tool did not execute exactly once")
+        context.client.pause_job(source["id"])
+        context.job = context.client.wait_job(source["id"], until={"paused"})
+        bodies = [{"message_key": key, "type": "follow_up", "payload": {"text": text}} for key, text in (
+            ("withdraw-before-blocker", "[[01_simple_answer]] withdrawn predecessor must never run"),
+            ("actual-blocker", f"[[{context.scenario['child_scenario']}]] create actual blocking child"),
+            ("blocked-tail", "[[01_simple_answer]] tail must wait for successful predecessor"))]
+        originals = []
+        for body in bodies:
+            response = context.client.http.post(f"/api/jobs/{source['id']}/messages", json=body)
+            context.check(response.status_code == 201, "could not queue blocker scenario")
+            originals.append(response.json()["message"])
+        self.withdraw_receipt(context, originals[0]["id"])
+        edit_body = {"edit_key": "tail-edit-before-block", "expected_revision": 0,
+                     "payload": {"text": "[[01_simple_answer]] edited tail must still wait"}}
+        accepted = self.edit_receipt(context, originals[2]["id"], edit_body, 201)
+        context.client.resume_job(source["id"])
+        context.job = context.client.wait_job(source["id"])
+        self.wait_terminal_events(context)
+        deadline = time.monotonic() + 20
+        child_id = None
+        while time.monotonic() < deadline:
+            rows = self.message_receipts(context)
+            if len(rows) == 3 and rows[1].get("follow_up_job_id"):
+                child_id = rows[1]["follow_up_job_id"]
+                break
+            time.sleep(0.1)
+        context.check(bool(child_id), "no blocking candidate child created")
+        mode = context.scenario["child_end"]
+        if mode in {"cancel", "crash"}:
+            # run_command waits for approval; run_gradle in the failure case is allowed directly.
+            approval = context.client.wait_approval(child_id)
+            before = self.message_receipts(context)
+            context.check(before[2]["delivery_state"] == "pending", "active child incorrectly blocked remaining queue")
+            context.check(all(row.get("blocking_job_id") is None and row.get("blocking_turn_id") is None for row in before),
+                          "pending/created/withdrawn queue exposed a false blocker")
+            context.check(approval["id"] in {item["id"] for item in context.client.pending_approvals(child_id)},
+                          "receipt query implicitly resolved child approval")
+            self.pump.watch(child_id)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and context.workspace_file("app/src/test/followup-started.txt") != "started":
+                time.sleep(0.05)
+            context.check(context.workspace_file("app/src/test/followup-started.txt") == "started", "candidate child never ran its real tool")
+            if mode == "cancel":
+                context.client.cancel_job(child_id)
+            else:
+                self.stack.restart_agent_after_crash(child_id)
+        child = context.client.wait_job(child_id)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            rows = self.message_receipts(context)
+            if rows[2]["delivery_state"] == "blocked":
+                break
+            time.sleep(0.1)
+        tail = rows[2]
+        context.check(tail["delivery_state"] == "blocked" and tail.get("reason") == context.scenario["blocked_reason"]
+                      and tail.get("can_edit") is False and tail.get("can_withdraw") is True,
+                      "failed child did not preserve correct tail state and capabilities")
+        self.assert_blocking_target(context, tail, child)
+        context.check(tail["blocking_job_id"] != source["id"], "successful source misidentified as failed child")
+        context.check(context.client.get_job(source["id"])["status"] == "succeeded", "child failure changed source task status")
+        replay = context.client.http.post(f"/api/jobs/{source['id']}/messages", json=bodies[2])
+        context.check(replay.status_code == 200, "blocked original send retry rejected")
+        self.assert_blocking_target(context, replay.json()["message"], child)
+        edit_replay = self.edit_receipt(context, tail["id"], edit_body, 200)
+        context.check(edit_replay["edit"] == accepted["edit"], "blocking changed immutable edit receipt")
+        self.assert_blocking_target(context, edit_replay["message"], child)
+        self.stack.restart_idle_agent()
+        after = self.message_receipts(context)
+        self.assert_blocking_target(context, after[2], context.client.get_job(child_id))
+        context.check(all(row.get("blocking_job_id") is None and row.get("blocking_turn_id") is None for row in after[:2]),
+                      "withdrawn or created receipt inherited tail blocker")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check({job["id"] for job in listing.json()["jobs"]} == {source["id"], child_id},
+                      "viewing or retrying a blocked receipt created recovery/tail tasks")
 
     def withdraw_receipt(self, context: ScenarioContext, message_id: int) -> dict[str, Any]:
         response = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{message_id}/withdraw")
@@ -396,6 +520,7 @@ class E2ERunner:
                       "withdrawal lacks authoritative identity/time")
         context.check(all(row.get(key) is None for key in ("consumed_at", "context_message_id", "follow_up_job_id", "follow_up_turn_id")),
                       "withdrawn message has execution evidence")
+        context.check(row.get("blocking_job_id") is None and row.get("blocking_turn_id") is None, "withdrawn message kept a blocking navigation target")
         return row
 
     def driver_withdraw_queue(self, context: ScenarioContext) -> None:
@@ -420,9 +545,8 @@ class E2ERunner:
             rows.append(row)
         index = context.scenario["withdraw_index"]
         target = rows[index]
-        stranger = E2EClient(self.stack)
+        stranger = self.foreign_client()
         try:
-            stranger.register_account()
             denied = stranger.http.post(f"/api/jobs/{source_id}/messages/{target['id']}/withdraw")
             context.check(denied.status_code == 404, "cross-account withdrawal disclosed or changed message")
         finally:
@@ -583,9 +707,8 @@ class E2ERunner:
         url = f"/api/jobs/{context.job['id']}/messages/{target['id']}/edits"
         first_body = {"edit_key": "revision-one", "expected_revision": 0,
                       "payload": {"text": f"[[{context.scenario['id']}]] edited once"}}
-        stranger = E2EClient(self.stack)
+        stranger = self.foreign_client()
         try:
-            stranger.register_account()
             context.check(stranger.http.post(url, json=first_body).status_code == 404, "cross-account edit disclosed or changed message")
         finally:
             stranger.close()
@@ -794,9 +917,8 @@ class E2ERunner:
         context.check(interrupted.get("can_recover") is True, "restarted source is not explicitly recoverable")
 
         # Recovery must never reveal or act on another account's source job.
-        stranger = E2EClient(self.stack)
+        stranger = self.foreign_client()
         try:
-            stranger.register_account()
             forbidden = stranger.http.post(f"/api/jobs/{source_id}/recover")
             context.check(forbidden.status_code == 404, f"cross-account recovery returned {forbidden.status_code}")
         finally:
@@ -989,9 +1111,8 @@ class E2ERunner:
             listing.raise_for_status()
             listed = next(item for item in listing.json()["jobs"] if item["id"] == job["id"])
             context.check(listed.get("verification") == verification, "job list disagrees with job evidence")
-            stranger = E2EClient(self.stack)
+            stranger = self.foreign_client()
             try:
-                stranger.register_account()
                 response = stranger.http.get(f"/api/projects/{context.project_id}/feedback", params={"job_id": job["id"]})
                 context.check(response.status_code == 404, "verification leaked across accounts")
             finally:

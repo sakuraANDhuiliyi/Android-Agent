@@ -229,6 +229,20 @@
       "path": "/api/jobs/{job_id}/messages/{message_id}/edits",
       "fixture": "job_message_edit_withdrawn_200.json",
       "status": 200
+    },
+    {
+      "id": "job_messages_blocked_parent",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}/messages?include_consumed=true",
+      "fixture": "job_messages_blocked_parent_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_messages_blocked_child",
+      "method": "GET",
+      "path": "/api/jobs/{job_id}/messages?include_consumed=true",
+      "fixture": "job_messages_blocked_child_200.json",
+      "status": 200
     }
   ],
   "client_tests": [

@@ -1,0 +1,39 @@
+{
+  "id": "48_blocking_child_failure",
+  "title": "前序追问failure后定位实际阻塞任务且不自动恢复",
+  "driver": "blocking_child",
+  "prompt": "执行源任务后验证阻塞任务定位",
+  "child_scenario": "34_followup_failure",
+  "child_end": "failure",
+  "blocked_reason": "parent_failed",
+  "expect": {
+    "job_status": "succeeded"
+  },
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import time; p=Path(\"app/src/test/blocking-source.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(\"source executed\\n\"); time.sleep(2); print(\"SOURCE_DONE\")"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "源任务已完成。"
+    }
+  ],
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\nsleep 3\necho BUILD FAILED\nexit 1\n"
+    }
+  }
+}

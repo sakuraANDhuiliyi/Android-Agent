@@ -154,7 +154,7 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
         if (surface === 'cx') await page.locator('[data-mode="agent-windows"]').click();
         const input = surface === 'ai' ? '#promptInput' : '#cxAgentPrompt';
         await page.locator(input).fill('delayed original'); await page.locator(surface === 'ai' ? '#btnSend' : '#cxSendAgent').click();
-        await page.evaluate(({ surface, change, job }) => {
+        await page.evaluate(async ({ surface, change, job }) => {
           if (change === 'account') {
             AiPanel.client.configure({ token: 'new-account' }); AiPanel.debug.setState({ userId: 'bob' });
           } else if (surface === 'ai') {
@@ -273,7 +273,7 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
 
       for (const change of ['job', 'account']) {
         await setup(); await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).click();
-        await page.evaluate(({ surface, change, job }) => {
+        await page.evaluate(async ({ surface, change, job }) => {
           if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
           else if (surface === 'ai') AiPanel.adoptJob({ ...job, id: 'new-job' });
           else { CodexiaAgentView._internal.getState().selectedId = 'new-job'; CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [{ ...job, id: 'new-job' }] }); }
@@ -360,7 +360,7 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
 
       for (const change of ['job', 'account']) {
         await setup(); await editor.fill('late edit'); await page.locator(host).getByRole('button', { name: '保存修改' }).click();
-        await page.evaluate(({ surface, change, job }) => {
+        await page.evaluate(async ({ surface, change, job }) => {
           if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
           else if (surface === 'ai') AiPanel.adoptJob({ ...job, id: 'new-job' });
           else { CodexiaAgentView._internal.getState().selectedId = 'new-job'; CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [{ ...job, id: 'new-job' }] }); }
@@ -377,6 +377,125 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
       await page.setViewportSize({ width: 1300, height: 1000 });
       if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
     }
+
+    // The blocker is a read-only detail: viewing neither selects an execution
+    // target nor starts its watcher/approval path, and preserves both drafts.
+    for (const surface of ['ai', 'cx']) {
+      const host = surface === 'ai' ? '#aiMessageReceipts' : '#cxMessageReceipts';
+      const input = surface === 'ai' ? '#promptInput' : '#cxAgentPrompt';
+      const dialog = page.getByRole('dialog', { name: '阻塞任务详情' });
+      const setup = async (target = 'child') => {
+        await fixture(page);
+        if (surface === 'cx') await page.locator('[data-mode="agent-windows"]').click();
+        await page.evaluate(({ target, job }) => {
+          requests.push({ id: 'job', key: 'blocked-row', type: 'follow_up', payload: { text: '等待前序完成的追问' } });
+          receipts = [receiptFor(0)];
+          const scope = AiPanel.messages.scope(job);
+          AiPanel.messages.merge(scope, receipts[0]); AiPanel.messages.openEditor(scope, 'blocked-row');
+          AiPanel.messages.updateEditor(scope, 'blocked-row', '保留未保存的编辑草稿');
+          receipts = [receiptFor(0, 'blocked', { reason: 'parent_failed', blocking_job_id: target,
+            blocking_turn_id: target === 'job' ? 'turn' : 'child-turn' })];
+          window.blockerJob = { ...job, id: target, turn_id: target === 'job' ? 'turn' : 'child-turn', status: 'failed',
+            prompt: '<img src=x onerror="window.blockerXss=1">真实阻塞请求', error_message: '<script>window.blockerXss=1</script>真实错误' };
+          AiPanel.client.job = async id => { jobReads.push(id); return { job: blockerJob }; };
+        }, { target, job });
+        await reconcile(page); await page.locator(input).fill('保留主输入草稿');
+      };
+      for (const target of ['child', 'job']) {
+        await setup(target);
+        const watchersBefore = await page.evaluate(() => watchers.length);
+        await reconcile(page); await reconcile(page); // Unchanged polling keeps existing DOM handlers usable.
+        await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click();
+        await dialog.waitFor();
+        assert.match(await dialog.textContent(), /执行失败/); assert.match(await dialog.textContent(), /真实阻塞请求/);
+        assert.match(await dialog.textContent(), /真实错误/); assert.match(await dialog.textContent(), /本任务最近一次验证/);
+        assert.match(await dialog.textContent(), /未验证/);
+        assert.equal(await page.evaluate(surface => surface === 'ai' ? AiPanel.getState().currentJobId : CodexiaAgentView._internal.getState().selectedId, surface), 'job');
+        assert.equal(await page.evaluate(() => watchers.length), watchersBefore);
+        assert.deepEqual(await page.evaluate(() => controlRequests), []);
+        assert.equal(await page.locator(input).inputValue(), '保留主输入草稿');
+        assert.equal(await page.locator(`${host} textarea`).inputValue(), '保留未保存的编辑草稿');
+        assert.equal(await dialog.locator('button').count(), 1, 'detail only offers closing');
+        assert.equal(await dialog.locator('img,script').count(), 0);
+        await dialog.evaluate(async node => { await Promise.all(node.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {}))); });
+        assert.equal(await dialog.evaluate(node => {
+          const rect = node.getBoundingClientRect();
+          return Number(getComputedStyle(node).opacity) === 1 && rect.width > 200 && rect.height > 200
+            && rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight + 1 && rect.right <= innerWidth + 1;
+        }), true, 'fully painted blocker detail lies within viewport');
+        if (process.env.AGENT_MESSAGES_SCREENSHOT_DIR && target === 'child') {
+          fs.mkdirSync(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, `blocker-${surface}.png`), fullPage: true });
+        }
+        await page.setViewportSize({ width: 390, height: 844 });
+        assert.equal(await dialog.evaluate(node => node.scrollWidth > node.clientWidth + 1), false);
+        await page.setViewportSize({ width: 1300, height: 1000 });
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      for (const invalid of [{ blocking_turn_id: null }, { revision: undefined }, { revision: -1 }, { schema_version: 2 }, { reason: 'legacy_missing_receipt' }]) {
+        await setup();
+        await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click(); await dialog.waitFor();
+        await page.evaluate(invalid => { receipts = [{ ...receipts[0], ...invalid }]; }, invalid); await reconcile(page);
+        await dialog.waitFor({ state: 'detached' });
+        assert.equal(await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).count(), 0);
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      for (const mismatch of [{ id: 'foreign' }, { project_id: 'foreign' }, { conversation_id: 'foreign' }, { turn_id: 'foreign' }]) {
+        await setup(); await page.evaluate(mismatch => { blockerJob = { ...blockerJob, ...mismatch }; }, mismatch);
+        await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click();
+        assert.equal(await dialog.count(), 0); assert.match(await page.locator(host).textContent(), /归属与回执不一致/);
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      await setup();
+      await page.evaluate(() => { window.blockerReads = []; AiPanel.client.job = id => new Promise(resolve => { blockerReads.push({ id, resolve }); }); });
+      await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click();
+      await page.waitForFunction(() => blockerReads.length === 1);
+      await reconcile(page); // A normal polling refresh can replace the captured row.
+      await page.evaluate(() => blockerReads[0].resolve({ job: blockerJob }));
+      await dialog.waitFor(); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      for (const change of ['job', 'conversation', 'account', 'receipt', 'background']) {
+        await setup();
+        await page.evaluate(() => { window.blockerReads = []; AiPanel.client.job = id => new Promise(resolve => { blockerReads.push({ id, resolve }); }); });
+        await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click();
+        await page.waitForFunction(() => blockerReads.length === 1);
+        await page.evaluate(async ({ surface, change, job }) => {
+          if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
+          else if (change === 'background') window.dispatchEvent(new Event('blur'));
+          else if (change === 'receipt') { receipts = [{ ...receipts[0], blocking_turn_id: null }]; }
+          else if (surface === 'ai') {
+            if (change === 'job') { AiPanel.adoptJob({ ...job, id: 'other' }); AiPanel.adoptJob(job); }
+            else { await AiPanel.selectConversation('other', { loadHistory: false }); await AiPanel.selectConversation('conversation', { loadHistory: false }); }
+          } else {
+            const state = CodexiaAgentView._internal.getState();
+            if (change === 'job') { state.selectedId = 'other'; state.selectedId = 'job'; }
+            else { state.selectedConversationId = 'other'; state.selectedConversationId = 'conversation'; }
+            CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [job] });
+          }
+        }, { surface, change, job });
+        if (change === 'receipt') await reconcile(page);
+        await page.locator(input).fill('较晚响应不能改变新草稿');
+        await page.evaluate(() => blockerReads[0].resolve({ job: blockerJob }));
+        assert.equal(await dialog.count(), 0, `${surface}/${change} rejects late view`);
+        assert.equal(await page.locator(input).inputValue(), '较晚响应不能改变新草稿');
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      for (const change of ['job', 'account']) {
+        await setup(); await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click(); await dialog.waitFor();
+        await page.evaluate(({ surface, change, job }) => {
+          if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
+          else if (surface === 'ai') AiPanel.adoptJob({ ...job, id: 'new-job' });
+          else { CodexiaAgentView._internal.getState().selectedId = 'new-job'; CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [{ ...job, id: 'new-job' }] }); }
+        }, { surface, change, job });
+        await dialog.waitFor({ state: 'detached' });
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      await setup(); await page.locator(host).getByRole('button', { name: '查看阻塞任务' }).click(); await dialog.waitFor();
+      await page.evaluate(() => window.dispatchEvent(new Event('blur'))); await dialog.waitFor({ state: 'detached' });
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+    }
+    assert.equal(await page.evaluate(() => window.blockerXss), undefined);
 
     // Untrusted body text is escaped; narrow layouts and keyboard disclosure
     // work on both actual entry points.

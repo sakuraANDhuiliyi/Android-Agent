@@ -24,6 +24,8 @@ data class JobMessageReceipt(
     val revision: Int? = null,
     val editedAt: Double? = null,
     val canEdit: Boolean = false,
+    val blockingJobId: String? = null,
+    val blockingTurnId: String? = null,
 ) {
     val label: String get() = when (delivery) {
         MessageDelivery.PENDING -> if (type == "steer") "待加入本轮上下文" else "等待创建后续任务"
@@ -77,6 +79,10 @@ data class JobMessageReceipt(
                     MessageDelivery.WITHDRAWN else MessageDelivery.UNKNOWN
                 else -> MessageDelivery.UNKNOWN
             }
+            val blockingJob = json.string("blocking_job_id")
+            val blockingTurn = json.string("blocking_turn_id")
+            val hasBlocker = verified && revision != null && state == MessageDelivery.BLOCKED && type == "follow_up" &&
+                json.opt("reason") in setOf("parent_failed", "parent_canceled", "parent_interrupted") && blockingJob != null && blockingTurn != null
             return JobMessageReceipt(id, expectedJob, key, type, text, created, consumed, state,
                 contextId.takeIf { state == MessageDelivery.CONSUMED },
                 child.takeIf { state == MessageDelivery.FOLLOW_UP_CREATED },
@@ -87,7 +93,8 @@ data class JobMessageReceipt(
                     json.isNull("withdrawn_at") && state in setOf(MessageDelivery.PENDING, MessageDelivery.BLOCKED),
                 revision.takeIf { verified }, editedAt.takeIf { verified && revision != null },
                 verified && revision != null && json.opt("can_edit") == true && type == "follow_up" && untouched &&
-                    json.isNull("withdrawn_at") && state == MessageDelivery.PENDING)
+                    json.isNull("withdrawn_at") && state == MessageDelivery.PENDING,
+                blockingJob.takeIf { hasBlocker }, blockingTurn.takeIf { hasBlocker })
         }
         private val REASONS = setOf("awaiting_safe_boundary", "awaiting_parent_completion", "awaiting_dispatch",
             "parent_paused", "parent_failed", "parent_canceled", "parent_interrupted", "turn_finished_before_consumption", "legacy_missing_receipt")
@@ -97,6 +104,13 @@ data class JobMessageReceipt(
 }
 
 data class JobMessagePage(val supported: Boolean, val messages: List<JobMessageReceipt>)
+
+/** Read-only inspection never changes the conversation's active job or drafts. */
+data class BlockingTaskInspection(val sourceJobId: String, val messageId: Long, val messageKey: String, val job: JobInfo) {
+    fun matches(receipt: JobMessageReceipt): Boolean = receipt.verifiedIdentity && receipt.jobId == sourceJobId &&
+        receipt.id == messageId && receipt.key == messageKey && receipt.delivery == MessageDelivery.BLOCKED &&
+        receipt.blockingJobId == job.id && receipt.blockingTurnId == job.turnId
+}
 
 /** Only immutable server identity is needed to reconcile or retry a withdrawal. */
 data class PendingMessageWithdrawal(

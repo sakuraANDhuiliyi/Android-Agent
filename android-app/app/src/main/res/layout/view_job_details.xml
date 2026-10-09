@@ -11,6 +11,7 @@
         android:padding="@dimen/space_section">
 
         <TextView
+            android:id="@+id/textDetailsTitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/task_details"
@@ -71,6 +72,7 @@
             tools:text="2 分 18 秒" />
 
         <TextView
+            android:id="@+id/textPromptLabel"
             style="@style/JobDetailsLabel"
             android:text="@string/prompt_hint" />
 
@@ -78,5 +80,10 @@
             android:id="@+id/textPrompt"
             style="@style/JobDetailsValue"
             tools:text="做一个计数器" />
+
+        <TextView
+            android:id="@+id/textInspectionEvidence"
+            style="@style/JobDetailsValue"
+            android:visibility="gone" />
     </LinearLayout>
 </ScrollView>

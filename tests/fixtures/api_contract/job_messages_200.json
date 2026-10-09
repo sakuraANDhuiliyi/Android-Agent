@@ -22,7 +22,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     },
     {
       "schema_version": 1,
@@ -44,7 +46,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     },
     {
       "schema_version": 1,
@@ -66,7 +70,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     },
     {
       "schema_version": 1,
@@ -88,7 +94,9 @@
       "can_withdraw": true,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": "job-001",
+      "blocking_turn_id": "turn-001"
     },
     {
       "schema_version": 1,
@@ -110,7 +118,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     },
     {
       "schema_version": 1,
@@ -132,7 +142,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     },
     {
       "schema_version": 1,
@@ -154,7 +166,9 @@
       "can_withdraw": false,
       "revision": 0,
       "edited_at": null,
-      "can_edit": false
+      "can_edit": false,
+      "blocking_job_id": null,
+      "blocking_turn_id": null
     }
   ]
 }

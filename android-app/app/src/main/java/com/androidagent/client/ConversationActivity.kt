@@ -87,6 +87,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private var editMessageInfo: TextView? = null
     private var editMessageIdentity: PendingMessageWithdrawal? = null
     private var renderingMessageEdit = false
+    private var blockingTaskDialog: BottomSheetDialog? = null
+    private var renderedBlockingTask: BlockingTaskInspection? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -257,6 +259,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 }
                 renderMessageReceipts()
                 renderMessageEditor()
+                renderBlockingTask()
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
@@ -362,6 +365,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     override fun onDestroy() {
+        blockingTaskDialog?.dismiss()
         editMessageDialog?.dismiss()
         receiptsDialog?.dismiss()
         binding.agentEmotion.release()
@@ -461,7 +465,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val state = viewModel.state.value
         // Job status/event updates must not replace the button beneath a pending touch.
         val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering,
-            state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice, state.messageEdit, state.editingMessage, state.editNotice)
+            state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice, state.messageEdit, state.editingMessage, state.editNotice,
+            state.loadingBlockingTask)
         if (key == receiptRenderKey) return
         receiptRenderKey = key
         content.removeAllViews()
@@ -518,6 +523,9 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                     viewModel.openFollowUpMessage(receipt.key)
                     receiptsDialog?.dismiss()
                 }
+            }
+            if (receipt.blockingJobId != null && receipt.blockingTurnId != null) {
+                action("查看阻塞任务", !state.loadingBlockingTask) { viewModel.openBlockingTask(receipt.key) }
             }
         }
         action("刷新回执") { viewModel.refreshMessageReceipts() }
@@ -657,6 +665,30 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
 
     private fun showTaskDetails() {
         val job = viewModel.state.value.job ?: run { toast(getString(R.string.no_task_selected)); return }
+        createTaskDetails(job).show()
+    }
+
+    private fun renderBlockingTask() {
+        val inspection = viewModel.state.value.blockingTask
+        if (inspection == renderedBlockingTask && blockingTaskDialog?.isShowing == true) return
+        blockingTaskDialog?.dismiss()
+        blockingTaskDialog = null
+        renderedBlockingTask = null
+        if (inspection == null || !cacheSession.isCurrent(prefs)) return
+        renderedBlockingTask = inspection
+        blockingTaskDialog = createTaskDetails(inspection.job, inspectBlocker = true).also { dialog ->
+            dialog.setOnDismissListener {
+                if (blockingTaskDialog === dialog) {
+                    blockingTaskDialog = null
+                    renderedBlockingTask = null
+                    viewModel.dismissBlockingTask()
+                }
+            }
+            dialog.show()
+        }
+    }
+
+    private fun createTaskDetails(job: JobInfo, inspectBlocker: Boolean = false): BottomSheetDialog {
         val dialog = BottomSheetDialog(this)
         val view = LayoutInflater.from(this).inflate(R.layout.view_job_details, null)
         val details = ViewJobDetailsBinding.bind(view)
@@ -673,8 +705,15 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             ConversationTimelineBuilder.formatWorked(job.durationMs) ?: "—"
         details.textStatus.text = ConversationTimelineBuilder.statusLabel(job.resolvedStatus())
         details.textPrompt.text = job.prompt
+        if (inspectBlocker) {
+            details.textDetailsTitle.text = "阻塞任务详情 · 只读"
+            details.textPromptLabel.text = "任务请求"
+            details.textInspectionEvidence.isVisible = true
+            details.textInspectionEvidence.text = "执行轮次：${job.turnId ?: "未提供"}\n\n错误：${job.error?.takeIf { it.isNotBlank() } ?: "服务端未提供错误详情"}\n\n" +
+                DeliveryVerificationPresentation.from(job.verification, job.resolvedStatus()).summary(job.hasApk, job.changedFiles.size)
+        }
         dialog.setContentView(view)
-        dialog.show()
+        return dialog
     }
 
     // ---------- 审批 ----------

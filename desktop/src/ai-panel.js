@@ -1657,6 +1657,12 @@
       const bindingEpoch = watcherEpoch;
       const child = await messages.child(binding, row);
       if (child && current() && bindingEpoch === watcherEpoch && state.currentJobId === jobId) await loadHistoricalJob(child.id);
+    }, openBlocker: async (binding, row) => {
+      const current = selectionGuard(), jobId = state.currentJobId, bindingEpoch = watcherEpoch;
+      const blocker = await messages.blocker(binding, row);
+      if (!blocker || !current() || bindingEpoch !== watcherEpoch || state.currentJobId !== jobId) return;
+      window.JobMessages.showBlocker(els.messageReceipts, messages, binding, row, blocker,
+        () => current() && bindingEpoch === watcherEpoch && state.currentJobId === jobId);
     } });
   }
 

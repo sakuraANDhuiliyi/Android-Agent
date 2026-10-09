@@ -361,6 +361,8 @@ class JobMessageResponse(BaseModel):
     revision: int = 0
     edited_at: float | None = None
     can_edit: bool = False
+    blocking_job_id: str | None = None
+    blocking_turn_id: str | None = None
 
 
 class JobMessageEditPayload(StrictRequest):
