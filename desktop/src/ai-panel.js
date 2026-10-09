@@ -112,7 +112,12 @@
     // Backward pagination cursor for the current conversation history.
     historyCursor: null, // { minSeq, hasMore }
   };
-  const messages = new window.JobMessages.Store(client, () => state, { storage: window.localStorage });
+  let draftEpoch = 0, submissionViewEpoch = 0, submissionVisible = true;
+  const submissionStorage = (() => { try { return window.localStorage; } catch (_) { return null; } })();
+  const submissions = new window.TaskSubmissions.Store(client, () => state, { storage: submissionStorage });
+  const promptValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+  Object.defineProperty(els.promptInput, "value", { get() { return promptValue.get.call(this); }, set(value) { draftEpoch++; promptValue.set.call(this, value); } });
+  const messages = new window.JobMessages.Store(client, () => state, { storage: submissionStorage });
 
   // Last selection persisted before shutdown; applied once on the first
   // successful connect after launch so a restart restores the conversation.
@@ -131,6 +136,28 @@
       && project === state.selectedProjectId && conversation === state.conversationId;
   }
 
+  function submissionGuard() {
+    const current = selectionGuard(), epoch = submissionViewEpoch, binding = watcherEpoch;
+    return () => current() && epoch === submissionViewEpoch && binding === watcherEpoch && submissionVisible;
+  }
+  function renderSubmission() {
+    const host = document.getElementById("aiTaskSubmission");
+    const scope = submissions.scope(state.selectedProjectId, state.conversationId);
+    submissions.bind("ai", submissionVisible ? scope : null, submissionGuard(), submissionViewEpoch);
+    window.TaskSubmissions.render(host, submissions, scope, { guard: submissionGuard, confirmed: adoptSubmission });
+  }
+  function adoptSubmission(result) {
+    if (!adoptJob(result.job)) return;
+    submissions.adopted(submissions.scope(state.selectedProjectId, state.conversationId), result.job.id);
+    const current = selectionGuard(), jobId = result.job.id, binding = watcherEpoch;
+    // The accepted canonical prompt can differ after redaction. Read it rather
+    // than manufacturing a local user message from the frozen private body.
+    void client.conversationEvents(state.conversationId, { beforeSeq: Number.MAX_SAFE_INTEGER, limit: HISTORY_PAGE_LIMIT }).then(data => {
+      if (!current() || state.currentJobId !== jobId || binding !== watcherEpoch) return;
+      timeline.ingestConversationEvents(data.events || []); renderTimeline();
+    }).catch(() => {});
+    void loadJobHistory(state.selectedProjectId, state.conversationId);
+  }
   function applyJob(job) {
     if (!job?.id) return;
     state.currentJobId = job.id;
@@ -142,6 +169,8 @@
   }
 
   function adoptJob(job, { preserveControl = false } = {}) {
+    const pendingScope = job && submissions.scope(job.project_id, job.conversation_id);
+    if ((!submissions.ready || submissions.pending(pendingScope)) && job?.id !== state.currentJobId) return false;
     if (!job?.id || job.project_id !== state.selectedProjectId
         || job.conversation_id !== state.conversationId) return false;
     if (!preserveControl) { controlEpoch += 1; state.controlBusy = null; }
@@ -888,7 +917,7 @@
       state.jobStatus = null;
       state.controlBusy = null;
       state.running = false;
-      state.contextChips = [];
+      draftEpoch++; state.contextChips = [];
       renderChips();
     }
     client.configure({ baseUrl, token });
@@ -1084,7 +1113,7 @@
       els.promptInput.value = "";
       renderConversationSelect();
       state.loadToken += 1;
-      state.contextChips = [];
+      draftEpoch++; state.contextChips = [];
       renderChips();
       timeline.reset();
       view?.reset();
@@ -1322,9 +1351,12 @@
   async function resumeActiveJobForConversation(conversationId) {
     if (!conversationId || !state.selectedProjectId || !state.connected) return;
     const current = selectionGuard();
+    const binding = watcherEpoch;
+    const scope = submissions.scope(state.selectedProjectId, conversationId);
+    if (!submissions.canAutoAttach(scope)) return;
     try {
       const data = await client.jobs(state.selectedProjectId, conversationId);
-      if (!current()) return;
+      if (!current() || binding !== watcherEpoch || !submissions.canAutoAttach(scope)) return;
       const jobs = data.jobs || [];
       const job = jobs.find(isJobActive) || jobs[0];
       if (!job) return;
@@ -1412,9 +1444,16 @@
       const data = await client.job(jobId);
       if (!current()) return;
       const job = data.job;
-      if (!job) {
+      if (!job || job.id !== jobId || !job.project_id || !job.conversation_id) {
         toast("任务不存在或已归档");
         return;
+      }
+      const scope = submissions.scope(job.project_id, job.conversation_id);
+      if ((!submissions.ready || submissions.pending(scope)) && job.id !== state.currentJobId) {
+        toast("请先使用原请求确认待提交任务；关联任务可从提交记录只读查看"); return;
+      }
+      if (scope && submissions.holds.has(window.TaskSubmissions.scopeKey(scope)) && !job.turn_id) {
+        toast("任务轮次身份无法确认，请刷新后重试"); return;
       }
       if (job.project_id && job.project_id !== state.selectedProjectId) {
         await selectProject(job.project_id, { navigation });
@@ -1500,7 +1539,7 @@
               ...(item.payload || {}),
             },
           ],
-          { jobId },
+          { jobId, turnId: state.currentJob?.turn_id || null },
         );
       }
       // …and approvals no longer pending server-side must not stay actionable.
@@ -1520,13 +1559,14 @@
     state.currentJobId = jobId;
     const current = selectionGuard();
     const epoch = watcherEpoch;
+    const turnId = state.currentJob?.id === jobId ? state.currentJob.turn_id || null : null;
     const live = () => current() && epoch === watcherEpoch && state.currentJobId === jobId;
     setRunning(true);
     syncPendingApprovals(jobId, { force: true });
     state.watcher = client.watchJob(jobId, async (payload) => {
       if (!live()) return;
       if (payload.kind === "event" && payload.event) {
-        timeline.ingestTaskEvents([payload.event], { jobId });
+        timeline.ingestTaskEvents([payload.event], { jobId, turnId });
         renderTimeline();
         return;
       }
@@ -1571,7 +1611,7 @@
             }
           }
           if (!settled()) return;
-          timeline.ingestTaskEvents(data.job?.events || [], { jobId });
+          timeline.ingestTaskEvents(data.job?.events || [], { jobId, turnId: data.job?.turn_id || turnId });
           renderTimeline();
           await refreshOpenFilesAfterJob(data.job);
           if (!settled()) return;
@@ -1614,7 +1654,7 @@
 
   function updateComposer() {
     const projectReady = Boolean(state.selectedProjectId);
-    const ready = state.connected && projectReady && state.conversationId;
+    const ready = state.connected && projectReady;
     // Keep typing while disconnected so a draft is never discarded.
     els.promptInput.disabled = !projectReady;
     const running = state.running;
@@ -1623,7 +1663,8 @@
     els.btnStop.hidden = !controllable;
     if (els.composerModes) els.composerModes.hidden = !running;
     const messageScope = messages.scope(state.currentJob);
-    els.btnSend.disabled = !ready || state.controlBusy === "recover" || messages.sending(messageScope);
+    els.btnSend.disabled = !ready || state.controlBusy === "recover" || messages.sending(messageScope)
+      || (!running && submissions.blocked(state.selectedProjectId, state.conversationId));
     els.btnStop.disabled = !controllable || Boolean(state.controlBusy) || state.cancelRequested;
     els.btnStop.textContent = state.cancelRequested ? "停止中…" : "停止";
     els.btnAddContext.disabled = !state.selectedProjectId;
@@ -1645,6 +1686,7 @@
     setRunInputMode(state.runInputMode);
     updateJobControls();
     renderMessageReceipts();
+    renderSubmission();
   }
 
   function renderMessageReceipts() {
@@ -1668,9 +1710,12 @@
 
   messages.subscribe(() => {
     renderMessageReceipts();
-    if (els.btnSend) els.btnSend.disabled = !state.connected || !state.selectedProjectId || !state.conversationId
-      || state.controlBusy === "recover" || messages.sending(messages.scope(state.currentJob));
+    if (els.btnSend) els.btnSend.disabled = !state.connected || !state.selectedProjectId
+      || state.controlBusy === "recover" || messages.sending(messages.scope(state.currentJob))
+      || (!state.running && submissions.blocked(state.selectedProjectId, state.conversationId));
   });
+
+  submissions.subscribe(() => updateComposer());
 
   function autosizePrompt() {
     const el = els.promptInput;
@@ -1699,7 +1744,7 @@
       remove.textContent = "×";
       remove.setAttribute("aria-label", `移除上下文 ${chip.label || ""}`);
       remove.addEventListener("click", () => {
-        state.contextChips = state.contextChips.filter((c) => c.key !== chip.key);
+        draftEpoch++; state.contextChips = state.contextChips.filter((c) => c.key !== chip.key);
         renderChips();
       });
       node.append(kind, label, remove);
@@ -1739,7 +1784,7 @@
   }
 
   function pushChip(chip) {
-    state.contextChips = [...state.contextChips.filter((c) => c.key !== chip.key), chip];
+    draftEpoch++; state.contextChips = [...state.contextChips.filter((c) => c.key !== chip.key), chip];
     renderChips();
   }
 
@@ -1759,104 +1804,33 @@
 
   async function sendAsk() {
     if (state.controlBusy === "recover") return;
-    let current = selectionGuard();
-    const projectId = state.selectedProjectId;
-    let conversationId = state.conversationId;
-    const rawDraft = els.promptInput.value;
-    const prompt = buildPrompt();
-    if (!projectId || !prompt) {
-      toast("请选择项目并输入问题");
-      return;
-    }
-    if (!state.connected) {
-      persistDraft();
-      toast("当前离线，草稿已保留。任务可能仍在电脑运行。");
-      return;
-    }
-    if (!conversationId) {
-      try {
-        const conv = await client.createConversation(projectId, "新对话");
-        if (!current()) return;
-        state.conversations = [conv, ...state.conversations];
-        state.conversationId = conv.id;
-        conversationId = conv.id;
-        current = selectionGuard();
-        renderConversationSelect();
-      } catch (err) {
-        toast(err.message);
-        return;
-      }
-    }
-
-    const body = {
-      prompt,
-      auto_fallback: els.autoFallback.checked,
-      run_mode: state.runMode,
-    };
-    const provider = els.modelSelect.value;
-    if (provider) body.provider = provider;
-
-    timeline.addLocalUserMessage(prompt, {});
-    els.promptInput.value = "";
-    persistDraft();
-    autosizePrompt();
-    setRunInputMode("steer"); // every new task starts in steer mode
-    state.pauseRequested = false;
-    state.cancelRequested = false;
-    state.controlBusy = null;
-    setRunning(true);
-    renderTimeline();
-
+    const prompt = buildPrompt(), projectId = state.selectedProjectId;
+    if (!projectId || !prompt) return toast("请选择项目并输入问题");
+    let current = submissionGuard();
+    const generation = draftEpoch;
+    const body = { prompt, auto_fallback: els.autoFallback.checked, run_mode: state.runMode };
+    if (els.modelSelect.value) body.provider = els.modelSelect.value;
     try {
-      const data = await client.askConversation(conversationId, body);
-      if (!current()) return;
-      const job = data.job;
-      state.currentJobId = job.id;
-      state.jobStatus = resolveJobStatus(job);
-      state.pauseRequested = Boolean(job.pause_requested);
-      state.cancelRequested = resolveJobStatus(job) === "cancel_requested";
-      if (data.conversation_id) state.conversationId = data.conversation_id;
-      applyJob(job);
-      watchJob(job.id);
-      await loadJobHistory(projectId, state.conversationId);
-      return job;
-    } catch (err) {
-      if (!current()) return;
-      setRunning(false);
-      els.promptInput.value = rawDraft;
-      persistDraft();
-      autosizePrompt();
-      toast(err.message);
-      renderTimeline();
-      return null;
-    }
+      const result = await submissions.submitInitial({ projectId, conversationId: state.conversationId, body }, {
+        isCurrent: () => current(), onConversationResolved: conversation => {
+          state.conversations = [conversation, ...state.conversations]; state.conversationId = conversation.id;
+          current = submissionGuard(); renderConversationSelect();
+        },
+      });
+      if (!result || !current()) return null;
+      if (draftEpoch === generation) { els.promptInput.value = ""; persistDraft(); autosizePrompt(); }
+      setRunInputMode("steer"); adoptSubmission(result);
+      return result.job;
+    } catch (error) { if (current()) toast(error.message); return null; }
   }
 
+  // Callers own their draft and selection; this compatibility entry never reads
+  // or changes the editor composer or its context chips.
   async function startAgentFromWindow(prompt, projectId, options = {}) {
-    const text = String(prompt || "").trim();
-    if (!text || !projectId) throw new Error("请选择项目并输入问题");
-    if (!state.connected) throw new Error("Agent 服务未连接");
-    if (projectId !== state.selectedProjectId) await selectProject(projectId);
-    if (options.conversationId && options.conversationId !== state.conversationId) {
-      await selectConversation(options.conversationId, { loadHistory: true });
-    } else if (options.newConversation !== false || !state.conversationId) {
-      const conversation = await createNewConversation();
-      if (!conversation) throw new Error("无法创建 Agent 对话");
-    }
-    if (["read_only", "workspace", "ask"].includes(options.runMode)) {
-      state.runMode = options.runMode;
-      if (els.runModeSelect) els.runModeSelect.value = options.runMode;
-      savePrefs();
-    }
-    if (options.provider !== undefined && els.modelSelect) {
-      const provider = String(options.provider || "");
-      if (Array.from(els.modelSelect.options).some((option) => option.value === provider)) {
-        els.modelSelect.value = provider;
-      }
-    }
-    els.promptInput.value = text;
-    autosizePrompt();
-    return sendAsk();
+    const body = { prompt: String(prompt || ""), auto_fallback: options.autoFallback ?? els.autoFallback.checked,
+      run_mode: options.runMode || "workspace", provider: options.provider || "" };
+    const result = await submissions.submitInitial({ projectId, conversationId: options.conversationId || null, body }, options);
+    return result?.job || null;
   }
 
   async function createConversationFromWindow(projectId) {
@@ -2102,7 +2076,7 @@
     if (els.runModeSelect) {
       els.runModeSelect.value = state.runMode;
       els.runModeSelect.addEventListener("change", () => {
-        state.runMode = els.runModeSelect.value;
+        draftEpoch++; state.runMode = els.runModeSelect.value;
         savePrefs();
       });
     }
@@ -2166,7 +2140,8 @@
     els.btnStop.addEventListener("click", () => stopJob());
     els.btnSteer?.addEventListener("click", () => setRunInputMode("steer"));
     els.btnFollowUp?.addEventListener("click", () => setRunInputMode("follow_up"));
-    els.autoFallback.addEventListener("change", savePrefs);
+    els.autoFallback.addEventListener("change", () => { draftEpoch++; savePrefs(); });
+    els.modelSelect.addEventListener("change", () => { draftEpoch++; });
 
     els.btnAddContext?.addEventListener("click", () => toggleMenu(els.contextMenu));
     els.contextMenu?.addEventListener("click", (ev) => {
@@ -2177,6 +2152,7 @@
     });
 
     els.promptInput.addEventListener("input", () => {
+      draftEpoch++;
       autosizePrompt();
       persistDraft();
     });
@@ -2363,6 +2339,13 @@
     refreshProjects,
     client,
     messages,
+    submissions,
+    submissionDefaults: () => ({ auto_fallback: els.autoFallback.checked }),
+    setSubmissionVisible(visible) {
+      if (submissionVisible !== Boolean(visible)) { submissionViewEpoch++; submissionVisible = Boolean(visible); }
+      if (!submissionVisible) window.TaskSubmissions.closeCandidate(document.getElementById("aiTaskSubmission"));
+      renderSubmission();
+    },
     getState: () => state,
     dispatch: (action) => {
       if (typeof action === "object" && action) {

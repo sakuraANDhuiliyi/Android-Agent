@@ -27,6 +27,8 @@ const SMOKE_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "agent-smoke-data-"));
 const SMOKE_PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "agent-smoke-prof-"));
 
 let svcLog = "";
+let diagnosticPage = null;
+const ARTIFACT_DIR = process.env.AGENT_SMOKE_ARTIFACT_DIR || path.join(repoRoot, ".artifacts", "electron-smoke-failure", `${Date.now()}-${process.pid}`);
 
 const children = [];
 function track(child) {
@@ -218,6 +220,7 @@ async function main() {
   let app = await launchApp();
   track(app.process());
   let page = await app.firstWindow();
+  diagnosticPage = page;
   const pageErrors = [];
   let closing = false;
   const wireErrors = (p) => {
@@ -468,6 +471,7 @@ async function main() {
   app = await launchApp();
   track(app.process());
   page = await app.firstWindow();
+  diagnosticPage = page;
   wireErrors(page);
   await page.waitForSelector("#promptInput", { timeout: 20000 });
   await page.waitForFunction(() => window.AiPanel?.getState, null, { timeout: 20000 });
@@ -545,18 +549,6 @@ async function main() {
   await page.screenshot({ path: path.join(__dirname, "smoke-5-switch.png") });
 
   // 12b) command approval: card shows human-readable command, approve -> runs
-  const lastApproval = () =>
-    page.evaluate(() => {
-      const cards = [...document.querySelectorAll(".tl-approval")];
-      const last = cards[cards.length - 1];
-      if (!last) return null;
-      return {
-        pending: last.classList.contains("is-pending"),
-        approved: last.classList.contains("is-approved"),
-        title: last.querySelector(".tl-approval-name")?.textContent || "",
-        body: last.textContent || "",
-      };
-    });
   const approvePending = async (titleText, bodyText, shotName) => {
     const card = page.locator(".tl-approval.is-pending").last();
     await card.waitFor({ state: "visible", timeout: 30000 });
@@ -566,14 +558,21 @@ async function main() {
     }));
     assert.ok(info.title.includes(titleText), `approval title ${titleText}: ${info.title}`);
     assert.ok(info.body.includes(bodyText), `approval body includes ${bodyText}`);
+    const approvalId = await card.getAttribute("data-approval-id");
+    const jobId = await page.evaluate(() => window.AiPanel.getState().currentJobId);
+    assert.ok(approvalId && jobId, "approval is bound to a real job and request");
     await page.screenshot({ path: path.join(__dirname, shotName) });
     await card.locator("button", { hasText: "允许一次" }).click();
-    await waitUntil(async () => (await lastApproval())?.approved, 30000, "approval resolved");
-    const stamp = await page.evaluate(() => {
-      const cards = [...document.querySelectorAll(".tl-approval")];
-      const last = cards[cards.length - 1];
-      return last?.querySelector(".tl-approval-stamp")?.textContent || "";
-    });
+    // Completion may collapse the work section between browser samples. Verify
+    // the stable server decision, then reveal this exact approval's work section.
+    await waitUntil(() => page.evaluate(async ({ jobId, approvalId }) => {
+      const { job } = await window.AiPanel.client.job(jobId);
+      return job.events.some(event => event.type === "approval_resolved" && event.approval_id === approvalId && event.decision === "approved");
+    }, { jobId, approvalId }), 30000, "approval resolved on the server");
+    await page.evaluate(id => window.AiPanel.debug.getView().focusApproval(id), approvalId);
+    const resolved = page.locator(`[data-approval-id="${approvalId}"].is-approved`);
+    await resolved.waitFor({ state: "visible", timeout: 10000 });
+    const stamp = await resolved.locator(".tl-approval-stamp").textContent();
     assert.ok(stamp.includes("已允许"), `approved stamp: ${stamp}`);
   };
 
@@ -596,6 +595,7 @@ async function main() {
     "command turn final answer",
   );
   const commandResult = await latestToolResult(page, "run_command");
+  assert.strictEqual(await page.locator("#aiMessages .tl-turn").count(), 2, "live status events remain in their two real conversation turns");
   assert.strictEqual(commandResult?.ok, true, `command actually succeeded: ${JSON.stringify(commandResult)}`);
   assert.ok(JSON.stringify(commandResult).includes("smoke-command-ok-9"), "actual tool output contains expected marker");
   console.log("ok - command approval card -> approve -> tool executed");
@@ -633,9 +633,30 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error("electron-smoke FAILED:", err && err.message ? err.message : err);
+main().catch(async (err) => {
+  fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(ARTIFACT_DIR, "service.log"), svcLog);
+  fs.writeFileSync(path.join(ARTIFACT_DIR, "failure.txt"), String(err?.stack || err));
+  fs.writeFileSync(path.join(ARTIFACT_DIR, "isolated-paths.json"), JSON.stringify({ data: SMOKE_DATA, profile: SMOKE_PROFILE }, null, 2));
+  if (diagnosticPage && !diagnosticPage.isClosed()) {
+    try {
+      const snapshot = await diagnosticPage.evaluate(() => {
+        const state = window.AiPanel?.getState();
+        return {
+          state: state && Object.fromEntries(["connected", "selectedProjectId", "conversationId", "currentJobId", "jobStatus", "running", "loadToken", "controlBusy"].map(key => [key, state[key]])),
+          timeline: document.getElementById("aiMessages")?.innerText,
+          approvals: [...document.querySelectorAll(".tl-approval")].map(card => ({ className: card.className, text: card.textContent })),
+          items: window.AiPanel?.debug.timeline.items(),
+        };
+      });
+      fs.writeFileSync(path.join(ARTIFACT_DIR, "ui-state.json"), JSON.stringify(snapshot, null, 2));
+      await diagnosticPage.screenshot({ path: path.join(ARTIFACT_DIR, "failure.png") });
+    } catch (captureError) { console.error("failure capture:", captureError.message); }
+  }
   if (svcLog) console.error("service log tail:\n" + svcLog.slice(-3000));
+  // Keep the actual exception last: release runners may retain only stderr's tail.
+  console.error("electron-smoke FAILED:", err?.stack || err);
+  console.error("failure evidence:", ARTIFACT_DIR);
   // Children keep the event loop alive, so the "exit" handler would never
   // fire. Kill them here and exit explicitly or this process leaks forever.
   cleanup();

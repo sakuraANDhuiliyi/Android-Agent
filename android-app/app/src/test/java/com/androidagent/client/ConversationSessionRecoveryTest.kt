@@ -122,6 +122,7 @@ class ConversationSessionRecoveryTest {
             allowlist = ApprovalAllowlist(mutableSetOf()),
             persistAllowlist = {},
             trackNewJob = {},
+            readSubmission = { _, _ -> SubmissionRecord() },
             scheduleTaskSync = {},
             watcherFactory = { _, _, _, _, onDone, _ ->
                 watcher.onDone.set(onDone)

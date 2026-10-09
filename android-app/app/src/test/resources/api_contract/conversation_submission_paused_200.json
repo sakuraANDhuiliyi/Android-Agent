@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "submission": {
+    "schema_version": 1,
+    "request_key": "request-submission-001",
+    "project_id": "submissions",
+    "conversation_id": "conv-submission",
+    "job_id": "job-sub-001",
+    "turn_id": "turn-sub-001",
+    "created_at": 1700000000.0
+  },
+  "job": {
+    "id": "job-sub-001",
+    "user_id": "local",
+    "project_id": "submissions",
+    "conversation_id": "conv-submission",
+    "prompt": "为主页添加欢迎文字",
+    "status": "paused",
+    "provider": "openai",
+    "model": "fake",
+    "created_at": 1700000000.0,
+    "started_at": null,
+    "finished_at": null,
+    "final_message": null,
+    "error_message": null,
+    "changed_files": [],
+    "diff": null,
+    "cancel_requested": false,
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "recovery_of_task_id": null,
+    "recovery_attempt": 0,
+    "pause_requested": 0,
+    "attempt": 0,
+    "parent_task_id": null,
+    "role": null,
+    "context": {
+      "write_lock_key": "main:local:submissions",
+      "run_mode": "workspace",
+      "permission_profile": "standard",
+      "attachments": [],
+      "model_selection": {
+        "model_candidates": [
+          "fake"
+        ],
+        "fallback_providers": [],
+        "limits": {
+          "max_turns": 2,
+          "max_auto_continuations": 0,
+          "max_gradle_retries": 1,
+          "max_output_tokens": 1024
+        },
+        "auto_build_after_edit": false
+      },
+      "feedback_requested": false,
+      "feedback_options": {
+        "build_after_changes": false,
+        "run_tests": false,
+        "fix_failures": false
+      }
+    },
+    "events": [],
+    "result": null,
+    "error": null,
+    "run_mode": "workspace",
+    "permission_profile": "standard",
+    "turn_id": "turn-sub-001",
+    "can_recover": false,
+    "recovery_job_id": null,
+    "has_apk": false,
+    "verification": {
+      "schema_version": 1,
+      "job_id": "job-sub-001",
+      "scope": "job",
+      "build": {
+        "state": "not_run",
+        "task": "assembleDebug",
+        "run_id": null,
+        "evidence_time": null,
+        "duration_ms": null,
+        "source_match": "unknown",
+        "reason": "not_run"
+      },
+      "unit_tests": {
+        "state": "not_run",
+        "task": "testDebugUnitTest",
+        "run_id": null,
+        "evidence_time": null,
+        "duration_ms": null,
+        "source_match": "unknown",
+        "reason": "not_run",
+        "counts": null
+      },
+      "installation": {
+        "state": "unknown",
+        "evidence_time": null,
+        "source_match": "unknown",
+        "reason": "no_device_receipt"
+      }
+    },
+    "has_build_log": false,
+    "apk_url": null,
+    "build_log_url": null,
+    "display_status": "paused",
+    "status_label": "已暂停"
+  },
+  "conversation_id": "conv-submission",
+  "guest_remaining": null
+}

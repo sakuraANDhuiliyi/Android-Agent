@@ -86,12 +86,17 @@
   let watcherEpoch = 0;
   let dataEpoch = 0;
   let accountVersion = null;
-  let messageSubscription = null;
+  let messageSubscription = null, submissionSubscription = null;
+  let draftEpoch = 0, submissionViewEpoch = 0, pickerRequest = 0, voiceRequest = 0;
+  const attachedJobs = new Set();
+  const attachmentKey = job => `${window.AiPanel?.client?.baseUrl}:${window.AiPanel?.getState?.().userId}:${window.AiPanel?.client?.sessionVersion}:${job?.id}`;
   // Every selection change invalidates responses, including A → B → A.
   for (const key of ["selectedId", "selectedProjectId", "selectedConversationId"]) {
     let value = state[key];
     Object.defineProperty(state, key, { enumerable: true, get: () => value, set(next) {
-      if (next !== value) { selectionEpoch += 1; state.controlBusy = null; }
+      if (next !== value) { selectionEpoch += 1; state.controlBusy = null;
+        if (key !== "selectedId") attachedJobs.clear();
+      }
       value = next;
     } });
   }
@@ -102,6 +107,26 @@
     return () => version === window.AiPanel?.client?.sessionVersion && epoch === selectionEpoch;
   }
 
+  function submissionGuard() {
+    const current = selectionGuard(), epoch = submissionViewEpoch;
+    return () => current() && epoch === submissionViewEpoch && state.visible;
+  }
+  function submissionScope() { return window.AiPanel?.submissions?.scope(state.selectedProjectId, state.selectedConversationId); }
+  function adoptSubmission(result) {
+    const job = result.job;
+    if (job.project_id !== state.selectedProjectId || job.conversation_id !== state.selectedConversationId) return;
+    attachedJobs.add(attachmentKey(job)); mergeJob(job); state.selectedId = job.id;
+    window.AiPanel.submissions.adopted(submissionScope(), job.id);
+    renderAgents(); updateSendButton();
+  }
+  function renderSubmission() {
+    const store = window.AiPanel?.submissions;
+    if (!store || !state.initialized) return;
+    if (!submissionSubscription) submissionSubscription = store.subscribe(() => { renderSubmission(); updateSendButton(); });
+    const scope = submissionScope();
+    store.bind("cx", state.visible ? scope : null, submissionGuard(), submissionViewEpoch);
+    window.TaskSubmissions.render(document.getElementById("cxTaskSubmission"), store, scope, { guard: submissionGuard, confirmed: adoptSubmission });
+  }
   function syncAccount() {
     const version = window.AiPanel?.client?.sessionVersion;
     if (accountVersion !== null && version !== accountVersion) {
@@ -464,10 +489,27 @@
     renderRecent();
   }
 
-  function selectJobFromSidebar(job) {
+  async function selectJobFromSidebar(job) {
+    const store = window.AiPanel?.submissions;
+    const scope = store?.scope(job.project_id, job.conversation_id);
+    if ((!store?.ready || store.pending(scope)) && !attachedJobs.has(attachmentKey(job))) {
+      toast("请先使用原请求确认待提交任务；关联任务可从提交记录只读查看"); return;
+    }
+    if (scope && store.holds.has(window.TaskSubmissions.scopeKey(scope))) {
+      const current = submissionGuard();
+      try {
+        const data = await window.AiPanel.client.job(job.id);
+        if (!current() || !store.current(scope) || !store.ready || store.pending(scope)) return;
+        const found = data?.job;
+        if (found?.id !== job.id || found.project_id !== scope.project || found.conversation_id !== scope.conversation
+            || !found.turn_id || (job.turn_id && found.turn_id !== job.turn_id)) throw new Error("任务归属或轮次无法确认");
+        job = found; mergeJob(job);
+      } catch (error) { if (current()) toast(error.message); return; }
+    }
     state.selectedProjectId = String(job.project_id || state.selectedProjectId || "");
     state.selectedConversationId = String(job.conversation_id || "") || null;
     state.selectedId = String(job.id);
+    attachedJobs.add(attachmentKey(job));
     state.insightsVisible = false;
     persistState();
     renderProjects();
@@ -672,11 +714,7 @@
     }
     card.addEventListener("click", () => {
       if (state.selectedId !== job.id) {
-        state.selectedId = job.id;
-        state.selectedConversationId = job.conversation_id || state.selectedConversationId;
-        persistState();
-        renderAgents();
-        if (state.activePanel === "review") loadReview();
+        void selectJobFromSidebar(job);
       }
     });
     card.addEventListener("dblclick", () => {
@@ -699,7 +737,11 @@
       const conversationJobs = jobs.filter((job) => String(job.conversation_id || "") === state.selectedConversationId);
       if (conversationJobs.length || !state.selectedId) jobs = conversationJobs;
     }
-    if (!state.selectedId || !jobs.some((job) => job.id === state.selectedId)) state.selectedId = jobs[0]?.id || null;
+    const store = window.AiPanel?.submissions;
+    const permitted = job => attachedJobs.has(attachmentKey(job)) || store?.canAutoAttach(store.scope(job.project_id, job.conversation_id));
+    const selected = jobs.find(job => job.id === state.selectedId);
+    if (selected && !permitted(selected)) state.selectedId = null;
+    if (!state.selectedId || !jobs.some((job) => job.id === state.selectedId)) state.selectedId = jobs.find(permitted)?.id || null;
     persistState();
     updateHeader();
     els.scene.dataset.layout = state.layout;
@@ -730,18 +772,14 @@
       for (const job of jobs) {
         const tab = button(`cx-thread-tab${job.id === state.selectedId ? " active" : ""}`, titleFor(job));
         tab.addEventListener("click", () => {
-          state.selectedId = job.id;
-          state.selectedConversationId = job.conversation_id || state.selectedConversationId;
-          persistState();
-          renderAgents();
-          if (state.activePanel === "review") loadReview();
+          void selectJobFromSidebar(job);
         });
         tabs.appendChild(tab);
       }
       els.scene.appendChild(tabs);
     }
 
-    const visible = state.layout === "solo" ? jobs.filter((job) => job.id === state.selectedId) : jobs;
+    const visible = (state.layout === "solo" ? jobs.filter((job) => job.id === state.selectedId) : jobs).filter(permitted);
     if (!visible.length) {
       const card = document.createElement("article");
       card.className = "cx-thread-card";
@@ -774,6 +812,11 @@
 
   function syncJobWatcher() {
     const job = selectedJob();
+    const store = window.AiPanel?.submissions;
+    if (job && !attachedJobs.has(attachmentKey(job)) && !store?.canAutoAttach(store.scope(job.project_id, job.conversation_id))) {
+      closeJobWatcher(); return;
+    }
+    if (job) attachedJobs.add(attachmentKey(job));
     if (!job || !ACTIVE_STATUSES.has(job.displayStatus) || !window.AiPanel?.client?.watchJob) {
       closeJobWatcher();
       return;
@@ -910,6 +953,7 @@
   }
 
   function cycleRunMode() {
+    draftEpoch++;
     const modes = ["workspace", "ask", "read_only"];
     state.runMode = modes[(modes.indexOf(state.runMode) + 1) % modes.length];
     renderRunMode();
@@ -1387,10 +1431,12 @@
     const job = selectedJob();
     const messages = window.AiPanel?.messages;
     els.send.disabled = !els.prompt.value.trim() || !state.selectedProjectId || state.busy || state.controlBusy === "recover"
-      || Boolean(messages?.sending(messages.scope(job)));
+      || Boolean(messages?.sending(messages.scope(job)))
+      || (!(job && ACTIVE_STATUSES.has(job.displayStatus)) && Boolean(window.AiPanel?.submissions?.blocked(state.selectedProjectId, state.selectedConversationId)));
   }
 
   function renderMessageReceipts() {
+    renderSubmission();
     const messages = window.AiPanel?.messages;
     if (!messages) return;
     if (!messageSubscription) messageSubscription = messages.subscribe(() => { renderMessageReceipts(); updateSendButton(); });
@@ -1438,32 +1484,23 @@
       } catch (error) { toast(error.message); }
       return;
     }
-    state.busy = true;
-    updateSendButton();
+    const store = window.AiPanel?.submissions;
+    let current = submissionGuard();
+    const generation = draftEpoch;
+    const body = { prompt, auto_fallback: window.AiPanel.submissionDefaults().auto_fallback,
+      run_mode: state.runMode, provider: els.modelSelect?.value || "" };
     try {
-      const job = await window.AiPanel?.startAgent?.(prompt, state.selectedProjectId, {
-        conversationId: state.selectedConversationId,
-        newConversation: !state.selectedConversationId,
-        runMode: state.runMode,
-        provider: els.modelSelect?.value || "",
+      const result = await store.submitInitial({ projectId: state.selectedProjectId, conversationId: state.selectedConversationId, body }, {
+        isCurrent: () => current(), onConversationResolved: conversation => {
+          state.selectedConversationId = conversation.id; state.selectedId = null;
+          current = submissionGuard(); persistState();
+        },
       });
-      els.prompt.value = "";
-      state.contextFiles = [];
-      els.attach.textContent = "＋";
-      if (job?.id) {
-        state.selectedId = String(job.id);
-        state.selectedConversationId = String(job.conversation_id || window.AiPanel?.getState?.().conversationId || state.selectedConversationId || "") || null;
-        state.jobs = [job, ...state.jobs.filter((item) => String(item.id) !== String(job.id))];
-      }
-      renderAgents();
-    } catch (error) {
-      window.EditorApp?.toast?.(error.message || String(error));
-    } finally {
-      state.busy = false;
-      renderAgents();
-      updateSendButton();
-      els.prompt.focus();
-    }
+      if (!result || !current()) return;
+      if (generation === draftEpoch) { els.prompt.value = ""; state.contextFiles = []; els.attach.textContent = "＋"; }
+      adoptSubmission(result);
+    } catch (error) { if (current()) toast(error.message || String(error)); }
+    finally { if (current()) { updateSendButton(); renderSubmission(); } }
   }
 
   function setLayout(layout) {
@@ -1474,9 +1511,11 @@
   }
 
   async function attachFile() {
+    const request = ++pickerRequest, current = selectionGuard(); draftEpoch++;
     try {
       const path = await window.agentDesktop?.openFileDialog?.();
-      if (!path) return;
+      if (!path || request !== pickerRequest || !current()) return;
+      draftEpoch++;
       if (!state.contextFiles.includes(path)) state.contextFiles.push(path);
       els.attach.textContent = `＋ ${state.contextFiles.length}`;
       els.attach.title = state.contextFiles.join("\n");
@@ -1497,6 +1536,7 @@
   }
 
   function attachCurrentFile() {
+    draftEpoch++;
     const path = window.EditorApp?.getActiveTab?.()?.path;
     if (!path) return toast("当前编辑器没有打开文件");
     if (!state.contextFiles.includes(path)) state.contextFiles.push(path);
@@ -1509,7 +1549,7 @@
   function editGoal() {
     const next = window.prompt("设置 Agent 持续追求的目标", state.goal || "");
     if (next === null) return;
-    state.goal = next.trim();
+    draftEpoch++; state.goal = next.trim();
     document.getElementById("cxAddGoal")?.classList.toggle("active", Boolean(state.goal));
     persistState();
     closeAddMenu();
@@ -1517,6 +1557,7 @@
   }
 
   function togglePlanMode() {
+    draftEpoch++;
     state.planMode = !state.planMode;
     document.getElementById("cxPlanMode")?.classList.toggle("active", state.planMode);
     persistState();
@@ -1525,6 +1566,7 @@
   }
 
   function startVoiceInput() {
+    const request = ++voiceRequest, current = submissionGuard(); draftEpoch++;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return toast("Voice dictation is not available in this Electron runtime");
     const recognition = new SpeechRecognition();
@@ -1532,6 +1574,7 @@
     recognition.interimResults = false;
     els.mic.classList.add("active");
     recognition.onresult = (event) => {
+      if (!current() || request !== voiceRequest) return;
       const text = event.results?.[0]?.[0]?.transcript || "";
       els.prompt.value = `${els.prompt.value}${els.prompt.value ? " " : ""}${text}`;
       updateSendButton();
@@ -1646,7 +1689,8 @@
       const mode = event.target.closest("[data-message-mode]")?.dataset.messageMode;
       if (mode) { state.messageMode = mode === "follow_up" ? mode : "steer"; renderMessageReceipts(); }
     });
-    els.prompt.addEventListener("input", updateSendButton);
+    els.prompt.addEventListener("input", () => { draftEpoch++; updateSendButton(); });
+    els.modelSelect.addEventListener("change", () => { draftEpoch++; });
     els.prompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); startAgent(); }
     });
@@ -1700,6 +1744,8 @@
     els.taskSearch = document.getElementById("cxTaskSearch");
     els.scene = document.getElementById("cxAgentCards");
     els.prompt = document.getElementById("cxAgentPrompt");
+    const promptValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    Object.defineProperty(els.prompt, "value", { get() { return promptValue.get.call(this); }, set(value) { draftEpoch++; promptValue.set.call(this, value); } });
     els.send = document.getElementById("cxSendAgent");
     els.messageReceipts = document.getElementById("cxMessageReceipts");
     els.messageModes = document.getElementById("cxMessageModes");
@@ -1775,7 +1821,9 @@
 
   function setVisible(visible) {
     if (!state.initialized) init();
+    if (state.visible !== Boolean(visible)) submissionViewEpoch++;
     state.visible = Boolean(visible);
+    if (!state.visible) window.TaskSubmissions.closeCandidate(document.getElementById("cxTaskSubmission"));
     if (!els.root) return;
     els.root.hidden = !state.visible;
     syncEmotionPlayback();

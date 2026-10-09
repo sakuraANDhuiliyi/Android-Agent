@@ -662,6 +662,32 @@ class AgentApi(
         return parseJob(json.getJSONObject("job"))
     }
 
+    fun submitConversation(pending: PendingConversationSubmission): ConversationSubmissionAck {
+        PendingConversationSubmission.parse(pending.toJson())
+        return parseConversationSubmission(postJson("/api/conversations/${pending.conversationId}/ask", pending.requestBody()), pending, lookup = false)
+    }
+
+    fun lookupConversationSubmission(pending: PendingConversationSubmission): ConversationSubmissionAck {
+        PendingConversationSubmission.parse(pending.toJson())
+        return parseConversationSubmission(getJson("/api/conversations/${pending.conversationId}/submissions/${pending.key}"), pending, lookup = true)
+    }
+
+    private fun parseConversationSubmission(json: JSONObject, pending: PendingConversationSubmission, lookup: Boolean): ConversationSubmissionAck {
+        require(json.opt("schema_version") == 1) { "服务端缺少可靠的提交回执" }
+        val ack = json.getJSONObject("submission")
+        require(ack.opt("schema_version") == 1 && ack.opt("request_key") == pending.key &&
+            ack.opt("project_id") == pending.projectId && ack.opt("conversation_id") == pending.conversationId) { "提交回执不属于原请求" }
+        fun id(name: String) = (ack.opt(name) as? String)?.takeIf { it.isNotBlank() } ?: error("提交身份无效")
+        val jobId = id("job_id"); val turnId = id("turn_id")
+        val time = (ack.opt("created_at") as? Number)?.toDouble() ?: error("提交时间无效")
+        require(time.isFinite() && time > 0)
+        val raw = json.getJSONObject("job")
+        require(raw.opt("id") == jobId && raw.opt("project_id") == pending.projectId &&
+            raw.opt("conversation_id") == pending.conversationId && raw.opt("turn_id") == turnId) { "任务与提交回执不一致" }
+        if (!lookup || json.has("conversation_id")) require(json.opt("conversation_id") == pending.conversationId)
+        return ConversationSubmissionAck(pending.key, pending.projectId, pending.conversationId, jobId, turnId, time, parseJob(raw))
+    }
+
     fun contextSuggestions(projectId: String, query: String = ""): List<ContextSuggestion> {
         val encoded = java.net.URLEncoder.encode(query, "UTF-8")
         val json = getJson("/api/projects/$projectId/context/suggestions?q=$encoded&limit=30")

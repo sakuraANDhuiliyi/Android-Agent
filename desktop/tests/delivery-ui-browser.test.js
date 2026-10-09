@@ -27,7 +27,7 @@ async function fixture(page, value = job) {
     api.listApprovals = async () => ({ approvals: [] }); api.conversationEvents = async () => ({ events: [], has_more: false });
     api.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: [] });
     api.watchJob = (id, callback) => { watchers.push({ id, callback }); return { close() {} }; };
-    AiPanel.debug.setState({ connected: true, selectedProjectId: 'project', conversationId: 'conversation', currentJobId: null, currentJob: null, running: false, jobStatus: null });
+    AiPanel.debug.setState({ connected: true, userId: 'delivery-fixture', selectedProjectId: 'project', conversationId: 'conversation', currentJobId: null, currentJob: null, running: false, jobStatus: null });
     AiPanel.adoptJob(value);
     const state = CodexiaAgentView._internal.getState();
     state.selectedProjectId = 'project'; state.selectedConversationId = 'conversation'; state.selectedId = value.id;

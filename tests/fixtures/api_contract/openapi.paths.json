@@ -42,6 +42,7 @@
     "GET /api/conversations/{conversation_id}/context",
     "GET /api/conversations/{conversation_id}/events",
     "POST /api/conversations/{conversation_id}/restore",
+    "GET /api/conversations/{conversation_id}/submissions/{request_key}",
     "GET /api/conversations/{conversation_id}/turns",
     "GET /api/conversations/{conversation_id}/turns/{turn_id}/trace",
     "GET /api/conversations/{conversation_id}/usage",

@@ -1168,13 +1168,15 @@ async function run() {
         window.ThemeManager.setMode(theme);
         document.body.dataset.focusMode = "agent-windows";
         window.CodexiaAgentView.init();
+        window.AiPanel.client.configure({ baseUrl: location.origin, token: "layout-fixture" });
+        window.AiPanel.debug.setState({ connected: true, userId: "layout-fixture" });
         Object.assign(window.CodexiaAgentView._internal.getState(), {
-          selectedProjectId: "ui-demo", selectedConversationId: null,
+          selectedProjectId: "ui-demo", selectedConversationId: "ui-conv",
           selectedId: "ui-task", activeOnly: false, pinnedOnly: false, searchQuery: "",
         });
         window.CodexiaAgentView._internal.setDebugData({
           projects: [{ id: "ui-demo", name: "Android Workspace", workspace: "/workspace/android-app" }],
-          jobs: [{ id: "ui-task", project_id: "ui-demo", prompt: "完善登录页面与深色模式 · Review changes", status: "succeeded", result: "已完成界面调整。请检查改动并运行构建。", created_at: 1767225600 }],
+          jobs: [{ id: "ui-task", project_id: "ui-demo", conversation_id: "ui-conv", turn_id: "ui-turn", prompt: "完善登录页面与深色模式 · Review changes", status: "succeeded", result: "已完成界面调整。请检查改动并运行构建。", created_at: 1767225600 }],
         });
         document.getElementById("codexiaAgentView").hidden = false;
       }, theme);

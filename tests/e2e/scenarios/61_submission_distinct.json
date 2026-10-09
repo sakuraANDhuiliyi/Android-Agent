@@ -1,0 +1,32 @@
+{
+  "id": "61_submission_distinct",
+  "title": "相同正文的两个独立提交分别执行且回执不互相覆盖",
+  "driver": "submission_distinct",
+  "prompt": "记录本次真实任务提交内容",
+  "auto_approve": false,
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import sys; p=Path(\"app/src/test/submitted-prompts.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(sys.argv[1]+\"\\n\"); print(\"SUBMISSION_RECORDED\")"
+            ]
+          },
+          "append_user_prompt_arg": true
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本次提交的实际指令已记录。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded"
+  }
+}

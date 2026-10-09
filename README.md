@@ -57,6 +57,8 @@ Project History / Revert turn 提供保留对话的代码恢复与从快照创�
 - 同一项目同时只跑一个 turn（workspace 锁）；未调用 `assembleDebug` 的追问也可成功
 - 旧版 `POST /api/projects/{id}/ask` 仍可用，内部自动挂到默认对话
 
+正式账号在 Android 主聊天页与桌面两个入口发起任务时，保存原始提交请求，支持失响应后查询、原请求人工确认和草稿保护；接口、容量及旧入口边界见 [任务提交确认](docs/TASK_SUBMISSIONS.md)。
+
 Conversation Composer 可通过 `+` 添加文件、目录、选区、Diff、构建日志、终端输出、错误、截图说明、Conversation 和 Symbol 上下文；输入 `@` 可按 Files、Symbols、Folders 分组搜索仓库索引。发送时显式 Context 会与自动仓库检索和项目 Memory 一起受统一预算控制，顶部 Context Inspector 可查看最近一轮实际使用的来源、估算 Token 和仓库 Symbol 数量。
 
 ## Conversation Event 模型

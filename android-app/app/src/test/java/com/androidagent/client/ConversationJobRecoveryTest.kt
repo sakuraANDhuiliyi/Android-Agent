@@ -93,6 +93,7 @@ class ConversationJobRecoveryTest {
         val currentAccount: AtomicBoolean = AtomicBoolean(true),
         val respond: (Request) -> Reply? = { null },
     ) {
+        var savedSubmission: PendingConversationSubmission? = null
         val session = Session()
         val watchers = CopyOnWriteArrayList<Watcher>()
         val tracked = CopyOnWriteArrayList<String>()
@@ -107,6 +108,7 @@ class ConversationJobRecoveryTest {
                 "/api/jobs" -> Reply(JSONObject().put("jobs", JSONArray().put(original)))
                 "/api/jobs/old" -> envelope(original)
                 "/api/jobs/new" -> envelope(newJob())
+                "/api/jobs/old/messages", "/api/jobs/new/messages" -> Reply(JSONObject().put("schema_version", 1).put("job_id", req.url.pathSegments[2]).put("messages", JSONArray()))
                 "/api/jobs/old/approvals", "/api/jobs/new/approvals" -> Reply(JSONObject().put("approvals", JSONArray()))
                 else -> throw AssertionError("Unexpected request ${req.method} ${req.url}")
             }
@@ -118,7 +120,9 @@ class ConversationJobRecoveryTest {
         val vm = ConversationViewModel(api, repository, session, ApprovalAllowlist(mutableSetOf()), {},
             { tracked += it }, {}, { _, _, event, job, done, error ->
                 Watcher(event, job, done, error).also { watchers += it }
-            }, isSelectedConversation = { project, conversation -> project == "p" && conversation == "c" && selected.get() },
+            }, readSubmission = { _, _ -> SubmissionRecord(savedSubmission) },
+            saveSubmission = { savedSubmission = it }, removeSubmission = { _, _ -> savedSubmission = null },
+            isSelectedConversation = { project, conversation -> project == "p" && conversation == "c" && selected.get() },
         ).also { models += it }
         init {
             CoroutineScope(Dispatchers.Unconfined).also { scope ->
@@ -335,9 +339,13 @@ class ConversationJobRecoveryTest {
     @Test fun `sending a new task blocks recovery until its response is attached`() {
         val entered = gate(); val release = gate()
         val h = Harness { request -> if (request.url.encodedPath.endsWith("/ask")) {
-            entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)); envelope(newJob(), 201)
+            val body = JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+            entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS))
+            Reply(JSONObject().put("schema_version", 1).put("conversation_id", "c").put("job", newJob().put("turn_id", "new-turn"))
+                .put("submission", JSONObject().put("schema_version", 1).put("request_key", body.getString("request_key"))
+                    .put("project_id", "p").put("conversation_id", "c").put("job_id", "new").put("turn_id", "new-turn").put("created_at", 1700000000)), 201)
         } else null }
-        h.start(); h.vm.send("new request", false, emptyList())
+        h.start(); h.vm.setForeground(true); h.vm.send("new request", false, emptyList())
         assertTrue(entered.await(5, TimeUnit.SECONDS))
         h.vm.recoverJob()
         assertFalse(h.vm.state.value.recovering)

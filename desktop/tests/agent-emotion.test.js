@@ -193,6 +193,15 @@ async function assertFrozen(page, selector, message) {
     await page.evaluate(() => AiPanel.debug.setState({ connected: false, cancelRequested: false }));
     assert.equal(await page.locator('#aiAgentEmotion').getAttribute('data-emotion'), '06');
 
+    await page.evaluate(() => {
+      const state = CodexiaAgentView._internal.getState();
+      const fixture = { projects: state.projects, jobs: state.jobs };
+      AiPanel.client.configure({ baseUrl: location.origin, token: 'emotion-fixture' });
+      AiPanel.client.watchJob = () => ({ close() {} });
+      AiPanel.client.jobMessages = async id => ({ schema_version: 1, job_id: id, messages: [] });
+      AiPanel.debug.setState({ connected: true, userId: 'emotion-fixture' });
+      CodexiaAgentView._internal.setDebugData(fixture);
+    });
     await page.locator('[data-mode="agent-windows"]').click();
     await page.waitForSelector('#cxAgentEmotion svg');
     await assertFrozen(page, '#aiAgentEmotion', 'hidden AI panel must stop frames');

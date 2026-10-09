@@ -295,6 +295,20 @@ class TaskStore:
                     task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
                     turn_id TEXT NOT NULL UNIQUE REFERENCES conversation_turns(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS task_submissions (
+                    user_id TEXT NOT NULL,
+                    request_key TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE RESTRICT,
+                    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE RESTRICT,
+                    turn_id TEXT NOT NULL UNIQUE REFERENCES conversation_turns(id) ON DELETE RESTRICT,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, request_key)
+                );
+                CREATE TRIGGER IF NOT EXISTS immutable_task_submission
+                BEFORE UPDATE ON task_submissions
+                BEGIN SELECT RAISE(ABORT, 'immutable_task_submission'); END;
                 CREATE TABLE IF NOT EXISTS task_message_withdrawals (
                     message_id INTEGER PRIMARY KEY REFERENCES task_messages(id) ON DELETE CASCADE,
                     user_id TEXT NOT NULL,
@@ -517,6 +531,8 @@ class TaskStore:
                        (SELECT id FROM tasks WHERE user_id=?)""",
                     (user_id, user_id),
                 )
+            if "task_submissions" in tables:
+                conn.execute("DELETE FROM task_submissions WHERE user_id=?", (user_id,))
             if "conversations" in tables:
                 conn.execute("DELETE FROM conversations WHERE user_id=?", (user_id,))
             if "tasks" in tables:
@@ -1802,13 +1818,13 @@ class TaskStore:
         item["payload"] = json.loads(item.get("payload") or "{}")
         return item
 
-    def get_task(self, task_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+    def get_task(self, task_id: str, user_id: str | None = None, *, _conn=None) -> dict[str, Any] | None:
         query = "SELECT * FROM tasks WHERE id=?"
         params: tuple[Any, ...] = (task_id,)
         if user_id is not None:
             query += " AND user_id=?"
             params += (user_id,)
-        with self._connect() as conn:
+        with nullcontext(_conn) if _conn is not None else self._connect() as conn:
             row = conn.execute(query, params).fetchone()
             if not row:
                 return None

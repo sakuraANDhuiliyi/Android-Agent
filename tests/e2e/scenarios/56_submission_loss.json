@@ -1,0 +1,32 @@
+{
+  "id": "56_submission_loss",
+  "title": "提交响应丢失后原请求确认、重启及终态重试只执行一次",
+  "driver": "submission_loss",
+  "prompt": "记录本次真实任务提交内容",
+  "auto_approve": false,
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import sys; p=Path(\"app/src/test/submitted-prompts.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(sys.argv[1]+\"\\n\"); print(\"SUBMISSION_RECORDED\")"
+            ]
+          },
+          "append_user_prompt_arg": true
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本次提交的实际指令已记录。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded"
+  }
+}

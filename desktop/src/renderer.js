@@ -1129,6 +1129,7 @@
         document.body.dataset.focusMode = mode;
         const agentWindows = mode === "agent-windows";
         window.CodexiaAgentView?.setVisible?.(agentWindows);
+        window.AiPanel?.setSubmissionVisible?.(!agentWindows);
         // Agent Windows overlays the editor, so IntersectionObserver alone
         // cannot detect that the original AI panel is covered.
         const emotionHost = document.getElementById("aiAgentEmotion");

@@ -307,6 +307,248 @@ class E2ERunner:
         context.job = context.client.wait_job(str(job["id"]))
         self.wait_terminal_events(context)
 
+    def prepare_submission(self, context: ScenarioContext) -> tuple[str, dict]:
+        response = context.client.http.post(f"/api/projects/{context.project_id}/conversations",
+                                            json={"title": "E2E task submission"})
+        context.check(response.status_code == 201, "could not create explicit submission conversation")
+        context.conversation_id = response.json()["id"]
+        self.conversations[context.scenario["id"]] = context.conversation_id
+        body = {"request_key": f"submission-{context.scenario['id']}",
+                "prompt": f"[[{context.scenario['id']}]] {context.scenario['prompt']}"}
+        return f"/api/conversations/{context.conversation_id}/ask", body
+
+    def submission_data(self, context: ScenarioContext, response, body: dict, status: int) -> dict:
+        context.check(response.status_code == status,
+                      f"submission response status {response.status_code}, expected {status}")
+        data = response.json()
+        ack, job = data.get("submission") or {}, data.get("job") or {}
+        context.check(type(data.get("schema_version")) is int and data["schema_version"] == 1
+                      and type(ack.get("schema_version")) is int and ack["schema_version"] == 1
+                      and ack.get("request_key") == body["request_key"]
+                      and ack.get("project_id") == context.project_id
+                      and ack.get("conversation_id") == context.conversation_id
+                      and isinstance(ack.get("job_id"), str) and bool(ack["job_id"])
+                      and isinstance(ack.get("turn_id"), str) and bool(ack["turn_id"])
+                      and type(ack.get("created_at")) in (int, float) and ack["created_at"] > 0,
+                      "submission acknowledgement has incomplete identity")
+        context.check(job.get("id") == ack["job_id"] and job.get("turn_id") == ack["turn_id"]
+                      and job.get("project_id") == context.project_id
+                      and job.get("conversation_id") == context.conversation_id,
+                      "submission and current job have inconsistent identity")
+        if response.request.method == "POST":
+            context.check(data.get("conversation_id") == context.conversation_id
+                          and "guest_remaining" in data and data["guest_remaining"] is None,
+                          "keyed formal submission changed legacy response fields")
+        return data
+
+    def locate_submission(self, context: ScenarioContext, body: dict) -> dict:
+        response = context.client.http.get(
+            f"/api/conversations/{context.conversation_id}/submissions/{body['request_key']}")
+        return self.submission_data(context, response, body, 200)
+
+    def confirm_submission(self, context: ScenarioContext, body: dict, status: int = 200) -> dict:
+        response = context.client.http.post(f"/api/conversations/{context.conversation_id}/ask", json=body)
+        return self.submission_data(context, response, body, status)
+
+    def assert_submission_history(self, context: ScenarioContext, accepted: list[dict],
+                                  expected_effects: list[str]) -> None:
+        from agent.redaction import redact_sensitive_text
+
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        ids = {item["submission"]["job_id"] for item in accepted}
+        context.check({job["id"] for job in listing.json()["jobs"]} == ids,
+                      "submission lookup/retry/conflict created an extra task")
+        events = context.client.conversation_events(context.conversation_id)
+        users = [event for event in events if event.get("event_type") == "user_message"]
+        context.check(len(users) == len(accepted), "submission created duplicate canonical user messages")
+        for item in accepted:
+            ack, job = item["submission"], item["job"]
+            rows = [event for event in users if event.get("turn_id") == ack["turn_id"]]
+            context.check(len(rows) == 1 and rows[0].get("task_id") == ack["job_id"]
+                          and rows[0].get("payload", {}).get("content") == [{"type": "text", "text": job["prompt"]}],
+                          "canonical user message is not bound to the accepted task and prompt")
+        effects = context.workspace_file("app/src/test/submitted-prompts.txt").splitlines()
+        context.check(effects == [redact_sensitive_text(value) for value in expected_effects],
+                      "actual tool effects are missing, duplicated or use the wrong accepted prompt")
+
+    def finish_submission(self, context: ScenarioContext, accepted: dict) -> None:
+        from tests.e2e.e2e_harness import WsCollector
+
+        job_id = accepted["submission"]["job_id"]
+        watcher = WsCollector(context.client, job_id).start()
+        try:
+            self.pump.watch(job_id)
+            context.job = context.client.wait_job(job_id)
+            context.extra["event_turn_id"] = accepted["submission"]["turn_id"]
+            self.wait_terminal_events(context)
+            deadline = time.monotonic() + 10
+            while watcher.done is None and not watcher.errors and time.monotonic() < deadline:
+                time.sleep(0.05)
+            context.check(watcher.done is not None and not watcher.errors,
+                          "confirmed task did not complete its real WebSocket stream")
+        finally:
+            watcher.stop()
+
+    def driver_submission_loss(self, context: ScenarioContext) -> None:
+        url, body = self.prepare_submission(context)
+        # The server has committed before sending headers. Discard the body,
+        # just as a disconnected client that never receives the receipt would.
+        with context.client.http.stream("POST", url, json=body) as lost:
+            context.check(lost.status_code == 201, "initial submission was not accepted")
+        candidate = self.locate_submission(context, body)
+        approval = context.client.wait_approval(candidate["job"]["id"])
+        confirmed = self.confirm_submission(context, body)
+        context.check(confirmed["submission"] == candidate["submission"], "original retry changed accepted identity")
+        context.check(approval["id"] in {row["id"] for row in context.client.pending_approvals(candidate["job"]["id"])},
+                      "lookup or acknowledgement implicitly approved the task")
+        self.finish_submission(context, confirmed)
+        self.stack.restart_idle_agent()
+        reopened = self.locate_submission(context, body)
+        repeated = self.confirm_submission(context, body)
+        context.check(reopened["submission"] == repeated["submission"] == confirmed["submission"]
+                      and repeated["job"]["status"] == "succeeded", "restart/terminal replay lost the immutable receipt")
+        self.assert_submission_history(context, [confirmed], [body["prompt"]])
+
+    def driver_submission_concurrent(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        url, body = self.prepare_submission(context)
+        barrier = threading.Barrier(2)
+
+        def send():
+            client = E2EClient(self.stack)
+            client.token, client.user_id = context.client.token, context.client.user_id
+            client.http.headers["Authorization"] = f"Bearer {client.token}"
+            try:
+                barrier.wait(timeout=10)
+                return client.http.post(url, json=body)
+            finally:
+                client.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: send(), range(2)))
+        context.check(sorted(response.status_code for response in responses) == [200, 201],
+                      "concurrent same-key submissions were not one create and one replay")
+        accepted = [self.submission_data(context, response, body, response.status_code) for response in responses]
+        context.check(accepted[0]["submission"] == accepted[1]["submission"], "concurrent replies refer to different tasks")
+        context.client.wait_approval(accepted[0]["job"]["id"])
+        context.check(not context.workspace_file("app/src/test/submitted-prompts.txt"), "receipt path approved a command")
+        self.finish_submission(context, accepted[0])
+        self.assert_submission_history(context, [accepted[0]], [body["prompt"]])
+
+    def driver_submission_conflicts(self, context: ScenarioContext) -> None:
+        url, body = self.prepare_submission(context)
+        accepted = self.confirm_submission(context, body, 201)
+        changes = [{"prompt": body["prompt"] + " changed"}, {"provider": "missing-provider"},
+                   {"auto_fallback": True}, {"run_mode": "read_only"}, {"feedback_requested": True},
+                   {"contexts": [{"kind": "selection", "label": "other context", "text": "other body"}]}]
+        for change in changes:
+            response = context.client.http.post(url, json={**body, **change})
+            context.check(response.status_code == 409, "same key accepted a changed semantic request")
+        other = context.client.http.post(f"/api/projects/{context.project_id}/conversations", json={"title": "other scope"})
+        other.raise_for_status()
+        response = context.client.http.post(f"/api/conversations/{other.json()['id']}/ask", json=body)
+        context.check(response.status_code == 409, "same user reused a submission key in another conversation")
+        for key in ("", "has space", ".bad", "bad:colon", "中文", "x" * 201):
+            response = context.client.http.post(url, json={**body, "request_key": key})
+            context.check(response.status_code == 422, "invalid submission key reached task creation")
+        stranger = self.foreign_client()
+        try:
+            lookup = f"/api/conversations/{context.conversation_id}/submissions/{body['request_key']}"
+            context.check(stranger.http.get(lookup).status_code == 404
+                          and stranger.http.post(url, json=body).status_code == 404,
+                          "submission key disclosed or changed another account's task")
+        finally:
+            stranger.close()
+        missing = context.client.http.get(f"/api/conversations/{context.conversation_id}/submissions/unknown-key")
+        context.check(missing.status_code == 404, "unknown submission lookup was not empty")
+        explicit_defaults = {**body, "provider": None, "auto_fallback": False, "run_mode": None,
+                             "feedback_requested": False, "contexts": []}
+        replay = self.confirm_submission(context, explicit_defaults)
+        context.check(replay["submission"] == accepted["submission"], "explicit parsed defaults changed request identity")
+        self.finish_submission(context, accepted)
+        self.assert_submission_history(context, [accepted], [body["prompt"]])
+
+    def driver_submission_canceled(self, context: ScenarioContext) -> None:
+        _, body = self.prepare_submission(context)
+        accepted = self.confirm_submission(context, body, 201)
+        job_id = accepted["job"]["id"]
+        context.client.wait_approval(job_id)
+        context.client.cancel_job(job_id)
+        context.job = context.client.wait_job(job_id, until={"canceled"})
+        context.extra["event_turn_id"] = accepted["submission"]["turn_id"]
+        self.wait_terminal_events(context)
+        for response in (self.locate_submission(context, body), self.confirm_submission(context, body)):
+            context.check(response["submission"] == accepted["submission"] and response["job"]["status"] == "canceled",
+                          "submission acknowledgement restarted a canceled task")
+        self.assert_submission_history(context, [accepted], [])
+
+    def driver_submission_redaction(self, context: ScenarioContext) -> None:
+        from agent.redaction import redact_sensitive_text
+
+        url, body = self.prepare_submission(context)
+        # Synthetic values assembled in memory avoid storing credentials in
+        # fixtures while exercising collisions in the public redacted view.
+        first = "sk-" + "a" * 28
+        second = "sk-" + "b" * 28
+        body["prompt"] += " " + first
+        accepted = self.confirm_submission(context, body, 201)
+        changed = {**body, "prompt": body["prompt"].replace(first, second)}
+        context.check(redact_sensitive_text(body["prompt"]) == redact_sensitive_text(changed["prompt"]),
+                      "redaction fixture does not exercise a real projection collision")
+        context.check(first not in json.dumps(accepted) and accepted["job"]["prompt"] == redact_sensitive_text(body["prompt"]),
+                      "public submission reply leaked the unredacted prompt")
+        context.check(context.client.http.post(url, json=changed).status_code == 409,
+                      "same redacted view allowed a different original request")
+        context.check(self.confirm_submission(context, body)["submission"] == accepted["submission"],
+                      "original raw request could not confirm its redacted receipt")
+        self.finish_submission(context, accepted)
+        self.assert_submission_history(context, [accepted], [body["prompt"]])
+
+    def driver_submission_distinct(self, context: ScenarioContext) -> None:
+        _, body = self.prepare_submission(context)
+        first = self.confirm_submission(context, body, 201)
+        self.finish_submission(context, first)
+        second_body = {**body, "request_key": body["request_key"] + "-next"}
+        second = self.confirm_submission(context, second_body, 201)
+        context.check(first["submission"]["job_id"] != second["submission"]["job_id"]
+                      and first["submission"]["turn_id"] != second["submission"]["turn_id"],
+                      "distinct confirmed submissions collapsed into one task")
+        self.finish_submission(context, second)
+        for request, accepted in ((body, first), (second_body, second)):
+            context.check(self.confirm_submission(context, request)["submission"] == accepted["submission"],
+                          "original receipt was replaced by a later same-text submission")
+        self.assert_submission_history(context, [first, second], [body["prompt"], body["prompt"]])
+
+    def driver_submission_paused_restart(self, context: ScenarioContext) -> None:
+        url, body = self.prepare_submission(context)
+        with context.client.http.stream("POST", url, json=body) as lost:
+            context.check(lost.status_code == 201, "initial submission was not accepted")
+        candidate = self.locate_submission(context, body)
+        job_id = candidate["job"]["id"]
+        approval = context.client.wait_approval(job_id)
+        context.client.decide_approval(job_id, approval["id"], approved=True)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not context.workspace_file("app/src/test/submitted-prompts.txt"):
+            time.sleep(0.05)
+        context.check(bool(context.workspace_file("app/src/test/submitted-prompts.txt")), "explicitly approved tool never ran")
+        context.client.pause_job(job_id)
+        context.client.wait_job(job_id, until={"paused"})
+        # Pause at the supported post-tool boundary, then restart. Receipt
+        # reads/confirmation must not resume or repeat the completed command.
+        self.stack.restart_idle_agent()
+        reopened = self.locate_submission(context, body)
+        confirmed = self.confirm_submission(context, body)
+        context.check(reopened["submission"] == confirmed["submission"] == candidate["submission"]
+                      and reopened["job"]["status"] == confirmed["job"]["status"] == "paused",
+                      "lookup or original retry resumed the paused task after restart")
+        self.assert_submission_history(context, [confirmed], [body["prompt"]])
+        context.client.resume_job(job_id)
+        self.finish_submission(context, confirmed)
+        self.assert_submission_history(context, [confirmed], [body["prompt"]])
+
     def driver_validation_then_edit(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         context.client.wait_event(context.conversation_id, lambda event:

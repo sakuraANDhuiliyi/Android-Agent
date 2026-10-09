@@ -20,7 +20,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agent.api_contract import (
     public_job_ws_done,
@@ -43,6 +43,8 @@ from agent.history import history, restore_preview, restore_snapshot, branch_sna
 from agent.workspace import WorkspaceRepository
 from agent.project_lifecycle import project_operation
 import hashlib
+from agent.submissions import (SubmissionConflict, SubmissionNotFound, SubmissionQuotaExceeded,
+                               lookup_submission, submission_hash, validate_request_key)
 from agent.database import TaskStore
 from agent.jobs import (
     add_job_message,
@@ -72,6 +74,7 @@ from agent.jobs import (
     resolve_job_approval,
     resume_job,
     start_ask_job,
+    start_conversation_submission,
     stop_worker,
     update_conversation,
     workspace_diff,
@@ -270,6 +273,14 @@ class UpdateConversationRequest(StrictRequest):
 
 
 class ConversationAskRequest(StrictRequest):
+    request_key: Optional[str] = Field(default=None, strict=True, min_length=1, max_length=200,
+                                       pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$")
+
+    @field_validator("request_key")
+    @classmethod
+    def valid_request_key(cls, value):
+        return validate_request_key(value) if value is not None else None
+
     feedback_requested: bool = False
     prompt: str = Field(..., min_length=1, max_length=100_000)
     provider: Optional[str] = None
@@ -864,7 +875,7 @@ def create_app(
         except QuotaExceededError as exc:
             raise HTTPException(status_code=507, detail=str(exc)) from exc
 
-    def ensure_prompt_budget(prompt: str, user_id: str) -> None:
+    def ensure_prompt_budget(prompt: str, user_id: str, *, check_active: bool = True) -> None:
         if len(prompt) > settings.max_prompt_chars:
             raise HTTPException(
                 status_code=413,
@@ -876,7 +887,7 @@ def create_app(
             if task.get("status")
             in {"queued", "running", "awaiting_approval", "paused"}
         ]
-        if len(active) >= settings.max_active_tasks_per_user:
+        if check_active and len(active) >= settings.max_active_tasks_per_user:
             raise HTTPException(
                 status_code=429,
                 detail=(
@@ -1669,54 +1680,94 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
         return conv
 
+    @app.get("/api/conversations/{conversation_id}/submissions/{request_key}")
+    def get_conversation_submission(
+        conversation_id: str, request_key: str, user_id: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            validate_request_key(request_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if app.state.user_store.is_guest(user_id):
+            raise HTTPException(status_code=403, detail="访客不支持稳定任务提交")
+        try:
+            result = lookup_submission(app.state.task_store, user_id, conversation_id, request_key)
+        except SubmissionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="提交记录不存在")
+        return result
+
     @app.post("/api/conversations/{conversation_id}/ask")
     def ask_conversation(
         conversation_id: str,
         body: ConversationAskRequest,
+        response: Response,
         user_id: str = Depends(current_user),
     ) -> dict[str, Any]:
-        ensure_prompt_budget(body.prompt, user_id)
-        conv = get_conversation(conversation_id, user_id)
+        keyed = body.request_key is not None
+        if keyed and app.state.user_store.is_guest(user_id):
+            raise HTTPException(status_code=403, detail="访客不支持稳定任务提交")
+        if keyed:
+            with app.state.task_store._connect() as conn:
+                row = conn.execute("SELECT id,project_id FROM conversations WHERE id=? AND user_id=?",
+                                   (conversation_id, user_id)).fetchone()
+                conv = dict(row) if row else None
+        else:
+            conv = get_conversation(conversation_id, user_id)
         if not conv:
             raise HTTPException(status_code=404, detail=f"对话不存在: {conversation_id}")
+        digest = None
+        if keyed:
+            digest = submission_hash(user_id, conv["project_id"], conversation_id,
+                body.model_dump(mode="json", exclude={"request_key"}, exclude_unset=False,
+                                exclude_defaults=False, exclude_none=False))
+            try:
+                existing = lookup_submission(app.state.task_store, user_id, conversation_id,
+                                             body.request_key, expected_hash=digest)
+            except SubmissionConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except SubmissionNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if existing is not None:
+                return {**existing, "conversation_id": conversation_id, "guest_remaining": None}
+        ensure_prompt_budget(body.prompt, user_id, check_active=not keyed)
         try:
             job_settings = resolve_job_settings(
-                settings,
-                body.provider,
-                auto_fallback=body.auto_fallback
-                or (body.provider in {None, "", "auto"}),
+                settings, body.provider,
+                auto_fallback=body.auto_fallback or (body.provider in {None, "", "auto"}),
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not job_settings.api_key:
             raise HTTPException(status_code=503, detail="未配置 LLM API Key")
-        guest_remaining = reserve_guest_turn(user_id)
+        guest_remaining = None if keyed else reserve_guest_turn(user_id)
         if guest_remaining is not None:
             body.run_mode = "read_only"
             body.feedback_requested = False
             job_settings = replace(job_settings, max_auto_continuations=0, auto_build_after_edit=False, max_turns=min(job_settings.max_turns, 3))
         try:
-            job = start_ask_job(
-                user_id,
-                conv["project_id"],
-                body.prompt,
-                job_settings,
-                conversation_id=conversation_id,
-                continue_session=True,
-                reset_session=False,
-                run_mode=body.run_mode,
+            options = dict(run_mode=body.run_mode,
                 contexts=[item.model_dump(exclude_none=True) for item in body.contexts],
-                feedback_requested=body.feedback_requested,
-            )
+                feedback_requested=body.feedback_requested)
+            if keyed:
+                result, created = start_conversation_submission(user_id, conv["project_id"], conversation_id,
+                    body.prompt, job_settings, request_key=body.request_key, request_hash=digest, **options)
+                response.status_code = 201 if created else 200
+                return {**result, "conversation_id": conversation_id, "guest_remaining": None}
+            job = start_ask_job(user_id, conv["project_id"], body.prompt, job_settings,
+                conversation_id=conversation_id, continue_session=True, reset_session=False, **options)
+        except SubmissionQuotaExceeded as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        except (SubmissionNotFound, FileNotFoundError) as exc:
+            if guest_remaining is not None:
+                app.state.user_store.refund_guest_message(user_id)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as e:
             if guest_remaining is not None:
                 app.state.user_store.refund_guest_message(user_id)
             raise HTTPException(status_code=409, detail=str(e)) from e
-        return {
-            "job": job_to_dict(job),
-            "conversation_id": conversation_id,
-            "guest_remaining": guest_remaining,
-        }
+        return {"job": job_to_dict(job), "conversation_id": conversation_id, "guest_remaining": guest_remaining}
 
     @app.get("/api/conversations/{conversation_id}/context")
     def get_conversation_context(

@@ -1,0 +1,32 @@
+{
+  "id": "62_submission_paused_restart",
+  "title": "失响应任务暂停重启后仅查询与确认不隐式继续",
+  "driver": "submission_paused_restart",
+  "prompt": "记录本次真实任务提交内容",
+  "auto_approve": false,
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import sys,time; p=Path(\"app/src/test/submitted-prompts.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(sys.argv[1]+\"\\n\"); time.sleep(2); print(\"SUBMISSION_RECORDED\")"
+            ]
+          },
+          "append_user_prompt_arg": true
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本次提交的实际指令已记录。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded"
+  }
+}

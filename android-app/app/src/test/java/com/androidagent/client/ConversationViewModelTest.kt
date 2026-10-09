@@ -110,6 +110,7 @@ class ConversationViewModelTest {
             allowlist = allowlist,
             persistAllowlist = { },
             trackNewJob = { trackedJobs += it },
+            readSubmission = { _, _ -> SubmissionRecord() },
             scheduleTaskSync = { syncCount.incrementAndGet() },
             watcherFactory = { _, _, _, _, _, _ -> watcher },
         )
@@ -240,7 +241,8 @@ class ConversationViewModelTest {
     }
 
     @Test
-    fun `sendAsk creates job tracks it and resets composer`() {
+    fun `legacy guest sendAsk creates job tracks it and resets composer`() {
+        session.guestMode = true
         startWithEmptyServer()
 
         server.enqueue(jobBody("job-9", "running"))

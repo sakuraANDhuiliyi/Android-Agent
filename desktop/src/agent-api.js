@@ -147,6 +147,10 @@
       });
     }
 
+    lookupTaskSubmission(conversationId, requestKey) {
+      return this.request(`/api/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(requestKey)}`);
+    }
+
     clearSession(projectId) {
       return this.request(`/api/projects/${encodeURIComponent(projectId)}/session`, {
         method: "DELETE",

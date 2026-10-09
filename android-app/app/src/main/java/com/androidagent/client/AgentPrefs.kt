@@ -197,6 +197,27 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
         check(edit.commit()) { "无法保存待确认排序，请重试" }
     }
 
+    // Deliberately retained by clearAuth: the same account can confirm after token rotation.
+    private fun submissionStore() = ConversationSubmissionStore(
+        readRaw = { prefs.getString("conversation_submissions_v1", null) },
+        commitRaw = { value ->
+            val previous = prefs.getString("conversation_submissions_v1", null)
+            val committed = prefs.edit().putString("conversation_submissions_v1", value).commit()
+            if (!committed) prefs.edit().putString("conversation_submissions_v1", previous).commit()
+            committed
+        },
+    )
+    private fun submissionScope(session: CacheSession, project: String, conversation: String): String {
+        check(session.isCurrent(this)) { "账号已变化，请重新打开会话" }
+        return submissionScope(session.serverUrl, session.userId, project, conversation)
+    }
+    fun submissionRecord(session: CacheSession, project: String, conversation: String): SubmissionRecord =
+        submissionStore().load(submissionScope(session, project, conversation))
+    fun saveSubmission(session: CacheSession, pending: PendingConversationSubmission) =
+        submissionStore().save(submissionScope(session, pending.projectId, pending.conversationId), pending)
+    fun removeSubmission(session: CacheSession, pending: PendingConversationSubmission, confirmed: Boolean) =
+        submissionStore().remove(submissionScope(session, pending.projectId, pending.conversationId), pending.key, confirmed)
+
     fun approvalAllowlist(): MutableSet<String> =
         prefs.getStringSet(KEY_APPROVAL_ALLOW, emptySet())?.toMutableSet() ?: mutableSetOf()
 

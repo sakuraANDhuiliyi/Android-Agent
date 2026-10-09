@@ -324,6 +324,15 @@
     if (name.includes("blocked")) { assert.strictEqual(queue.can_reorder, false); assert.strictEqual(queue.reason, "parent_canceled"); }
   }
 
+  const submissionParser = require("../src/task-submissions");
+  for (const name of ["conversation_submission_201.json", "conversation_submission_200.json", "conversation_submission_lookup_200.json", "conversation_submission_paused_200.json"]) {
+    const fixture = loadJson(name);
+    const parsed = submissionParser.normalize(fixture, { project: "submissions", conversation: "conv-submission" }, "request-submission-001", { lookup: name.includes("lookup") });
+    assert.ok(parsed, name); assert.strictEqual(parsed.submission.job_id, parsed.job.id);
+    assert.strictEqual(parsed.submission.turn_id, parsed.job.turn_id);
+    if (name.includes("paused")) assert.strictEqual(parsed.job.status, "paused");
+  }
+
   const deprecation = loadJson("deprecation.json");
   assert.ok(Array.isArray(deprecation.deprecated_fields));
 

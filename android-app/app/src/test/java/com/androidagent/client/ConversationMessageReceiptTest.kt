@@ -127,6 +127,7 @@ class ConversationMessageReceiptTest {
         val vm = ConversationViewModel(api, repository, session, ApprovalAllowlist(mutableSetOf()), {}, {}, {},
             { _, _, _, onJob, done, _ -> Watcher(onJob, done).also { watches += it } },
             isSelectedConversation = { _, _ -> selected.get() },
+            readSubmission = { _, _ -> SubmissionRecord() },
             readPendingMessage = { PendingJobMessage.parse(storage[it]) },
             writePendingMessage = { key, value -> if (value == null) storage.remove(key) else storage[key] = value.toJson().toString() },
             receiptPollIntervalMs = 20,

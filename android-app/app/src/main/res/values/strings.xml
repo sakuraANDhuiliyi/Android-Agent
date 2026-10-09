@@ -766,4 +766,5 @@
     <string name="menu_recovering">正在恢复…</string>
     <string name="menu_view_recovery">查看恢复任务</string>
     <string name="menu_opening_recovery">正在打开恢复任务…</string>
+    <string name="task_submission_receipt">任务提交确认</string>
 </resources>

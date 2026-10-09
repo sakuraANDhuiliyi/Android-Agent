@@ -301,6 +301,15 @@
             </com.androidagent.client.ContextChipScrollView>
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSubmission"
+                style="@style/Widget.AndroidAgent.Button.Text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="@dimen/touch_target"
+                android:text="@string/task_submission_receipt"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnMessageReceipts"
                 style="@style/Widget.AndroidAgent.Button.Text"
                 android:layout_width="match_parent"

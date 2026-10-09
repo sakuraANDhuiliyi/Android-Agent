@@ -23,6 +23,31 @@ class ApiContractTest {
         return JSONObject(text)
     }
 
+    @Test fun conversationSubmissionFixturesUseActualPostAndLookupParser() {
+        val cases = mapOf("conversation_submission_201.json" to "queued", "conversation_submission_200.json" to "succeeded",
+            "conversation_submission_lookup_200.json" to "queued", "conversation_submission_paused_200.json" to "paused")
+        for ((name, status) in cases) {
+            val fixture = loadFixture(name); val immutable = fixture.getJSONObject("submission")
+            val frozen = PendingConversationSubmission.freeze(immutable.getString("project_id"), immutable.getString("conversation_id"),
+                "original request", null, listOf(ContextAttachment("file", "a", text = "original context")))
+            val pending = frozen.copy(key = immutable.getString("request_key"), body = frozen.requestBody()
+                .put("request_key", immutable.getString("request_key")).toString())
+            val lookup = name.contains("lookup")
+            val api = AgentApi("https://contract.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
+                assertEquals(if (lookup) "GET" else "POST", chain.request().method)
+                assertEquals("/api/conversations/${pending.conversationId}/" + if (lookup) "submissions/${pending.key}" else "ask", chain.request().url.encodedPath)
+                if (!lookup) assertEquals(pending.body, okio.Buffer().also { chain.request().body!!.writeTo(it) }.readUtf8())
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(if (name.endsWith("_201.json")) 201 else 200).message("Fixture")
+                    .body(fixture.toString().toResponseBody("application/json".toMediaType())).build()
+            }.build())
+            val result = if (lookup) api.lookupConversationSubmission(pending) else api.submitConversation(pending)
+            assertEquals(pending.key, result.key); assertEquals(pending.projectId, result.job.projectId)
+            assertEquals(pending.conversationId, result.job.conversationId); assertEquals(result.jobId, result.job.id)
+            assertEquals(result.turnId, result.job.turnId); assertEquals(1700000000.0, result.createdAt, 0.0)
+            assertEquals(status, result.job.status)
+        }
+    }
+
     @Test
     fun healthFixtureHasRequiredFields() {
         val payload = loadFixture("health_200.json")

@@ -87,6 +87,23 @@ async function run() {
   });
   for (const [name, val] of Object.entries(focusChecks)) ok(val, `focus: ${name}`);
 
+  const lifecycleChecks = await page.evaluate(() => {
+    const results = {};
+    for (const [eventType, expected] of [["completed", "succeeded"], ["failed", "failed"], ["canceled", "canceled"], ["turn_interrupted", "interrupted"]]) {
+      const store = window.Timeline.createStore();
+      store.ingestTaskEvents([{ id: 1, type: eventType, ts: 200 }], { jobId: "job", turnId: "turn" });
+      store.ingestConversationEvents([{ seq: 1, task_id: "job", turn_id: "turn", event_type: "turn_started", payload: {}, created_at: 100 }]);
+      const turn = window.AgentTimeline.buildTurns(store.items())[0];
+      results[`${expected} survives late history`] = turn.status === expected && turn.lifecycle.timestamp === 200;
+    }
+    const store = window.Timeline.createStore();
+    store.ingestTaskEvents([{ id: 1, type: "failed", ts: 200 }, { id: 2, type: "canceled", ts: 100 }], { jobId: "job", turnId: "turn" });
+    const latest = window.AgentTimeline.buildTurns(store.items())[0];
+    results["older terminal snapshot cannot supersede newer fact"] = latest.status === "failed" && latest.finishedAt === 200000;
+    return results;
+  });
+  for (const [name, val] of Object.entries(lifecycleChecks)) ok(val, `lifecycle: ${name}`);
+
   // —————————————————— Markdown ——————————————————
 
   const mdChecks = await page.evaluate(() => {

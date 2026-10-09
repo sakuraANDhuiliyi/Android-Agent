@@ -508,7 +508,9 @@
           }) && this.list(scope).filter(row => row.type === "follow_up" && row.id && row.phase === "received")
             .every(row => next.message_ids.includes(row.id));
           queue.valid = Boolean(consistent && (!queue.snapshot || next.order_revision >= queue.snapshot.order_revision));
-          if (queue.valid) { queue.snapshot = next; queue.visibleVersion = visibleVersion; }
+          if (queue.valid) { queue.snapshot = next; queue.visibleVersion = visibleVersion;
+            if (queue.error === "该次排序已保存，正在核对当前队列") queue.error = "该次排序已保存";
+          }
         }
         this.emit(); return true;
       }).catch(() => false).finally(() => this.loads.delete(id));

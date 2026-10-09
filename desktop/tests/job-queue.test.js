@@ -67,6 +67,7 @@ async function load(f, data = snapshot()) { const p = f.store.reconcile(f.scope)
   assert.deepEqual(reloaded.store.queue(reloaded.scope).snapshot.message_ids, [3, 1, 2], 'old ACK cannot sort');
   reloaded.reads.at(-1).resolve(snapshot([3, 1, 2], 2)); await tick();
   assert.equal(reloaded.store.queueReady(reloaded.scope), true);
+  assert.equal(reloaded.store.queue(reloaded.scope).error, "该次排序已保存", "fresh snapshot ends checking notice");
   const proper = ack(reloaded.posts[0]).reorder;
   for (const patch of [{ task_id: 'other' }, { reorder_key: 'different' }, { expected_version: 'q1:other' }, { message_ids: [1, 2, 3] }, { order_revision: 0 }, { created_at: NaN }]) {
     assert.equal(normalizeReorder({ ...proper, ...patch }, reloaded.scope, reloaded.posts[0].body), null);

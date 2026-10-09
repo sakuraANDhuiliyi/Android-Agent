@@ -271,6 +271,38 @@
       "path": "/api/jobs/{job_id}/messages/reorders",
       "fixture": "job_message_reorder_blocked_200.json",
       "status": 200
+    },
+    {
+      "id": "conversation_submission_201",
+      "method": "POST",
+      "path": "/api/conversations/{conversation_id}/ask",
+      "fixture": "conversation_submission_201.json",
+      "status": 201,
+      "requires_auth": true
+    },
+    {
+      "id": "conversation_submission_200",
+      "method": "POST",
+      "path": "/api/conversations/{conversation_id}/ask",
+      "fixture": "conversation_submission_200.json",
+      "status": 200,
+      "requires_auth": true
+    },
+    {
+      "id": "conversation_submission_paused_200",
+      "method": "POST",
+      "path": "/api/conversations/{conversation_id}/ask",
+      "fixture": "conversation_submission_paused_200.json",
+      "status": 200,
+      "requires_auth": true
+    },
+    {
+      "id": "conversation_submission_lookup_200",
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/submissions/{request_key}",
+      "fixture": "conversation_submission_lookup_200.json",
+      "status": 200,
+      "requires_auth": true
     }
   ],
   "client_tests": [

@@ -169,7 +169,7 @@ data class PendingJobMessage(
 }
 
 /** An acknowledgement must not erase text or attachments edited since submission. */
-data class SubmittedComposer(val text: String, val contextSignature: String) {
+data class SubmittedComposer(val text: String, val contextSignature: String, val generation: String? = null) {
     fun matches(currentText: String, contexts: List<ContextAttachment>): Boolean =
         currentText.trim() == text && contextSignature == signature(contexts)
     companion object {

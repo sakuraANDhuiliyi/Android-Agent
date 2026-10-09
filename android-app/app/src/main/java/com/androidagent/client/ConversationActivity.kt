@@ -74,6 +74,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private var autoFollow = true
     private var pendingNewCount = 0
 
+    private val composerGeneration = ComposerGeneration()
+    private var submissionDialog: BottomSheetDialog? = null
+    private var submissionContent: LinearLayout? = null
+    private var submissionRenderKey: List<Any?>? = null
+    private var submissionDetails: BottomSheetDialog? = null
     private val contextAttachments = mutableListOf<ContextAttachment>()
     private var mentionPickerOpen = false
     private var lastMentionTrigger = ""
@@ -186,6 +191,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         binding.textDeliveryStatus.isFocusable = true
         binding.btnStop.setOnClickListener { viewModel.controlJob("cancel") }
         binding.btnMessageReceipts.setOnClickListener { showMessageReceipts() }
+        binding.btnSubmission.setOnClickListener { showSubmission() }
         binding.btnDisconnectDetails.setOnClickListener { ConnectionSettingsActivity.start(this) }
         binding.btnClearDraft.setOnClickListener {
             binding.editPrompt.setText("")
@@ -196,6 +202,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         binding.chipSuggest2.setOnClickListener { fillSuggestion(getString(R.string.suggest_biometric)) }
         binding.chipSuggest3.setOnClickListener { fillSuggestion(getString(R.string.suggest_perf)) }
         binding.editPrompt.doAfterTextChanged { text ->
+            composerGeneration.changed()
             val value = text?.toString().orEmpty()
             prefs.setComposerDraft(conversationId, value)
             binding.rowDraft.isVisible = value.isNotBlank()
@@ -242,8 +249,17 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && !st.editingMessage && !st.reordering && st.pendingReorder == null && st.pendingMessage == null
+                binding.btnSend.isEnabled = st.pendingSubmission == null && !st.submissionStorageError && !st.selectingTask && !st.sending && !st.recovering && !st.withdrawing && !st.editingMessage && !st.reordering && st.pendingReorder == null && st.pendingMessage == null
                 binding.btnStop.isEnabled = !st.recovering
+                binding.btnSubmission.isVisible = !prefs.guestMode && (st.pendingSubmission != null || st.manualAttachmentHold || st.submissionStorageError || st.submissionNotice != null)
+                binding.btnSubmission.text = when {
+                    st.submittingTask -> "正在确认任务提交…"
+                    st.checkingSubmission -> "正在查询关联任务…"
+                    st.pendingSubmission != null -> "任务提交待确认 · 查看"
+                    st.manualAttachmentHold -> "手动选择任务 · 查看"
+                    else -> "任务提交信息 · 查看"
+                }
+                renderSubmission()
                 binding.btnMessageReceipts.isVisible = st.jobId != null && !prefs.guestMode
                 binding.btnMessageReceipts.text = when {
                     st.reordering -> "正在保存追问排序…"
@@ -287,7 +303,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             is ConversationSignal.ToastRes -> toast(getString(signal.resId))
             ConversationSignal.GuestQuotaExhausted -> showGuestQuotaDialog()
             is ConversationSignal.ComposerAcknowledged -> {
-                if (signal.submitted.matches(binding.editPrompt.text?.toString().orEmpty(), contextAttachments)) {
+                if ((signal.submitted.generation == null || composerGeneration.matches(signal.submitted.generation)) &&
+                    signal.submitted.matches(binding.editPrompt.text?.toString().orEmpty(), contextAttachments)) {
                     binding.editPrompt.setText("")
                     contextAttachments.clear()
                     renderContextChips()
@@ -348,6 +365,8 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     override fun onStop() {
+        submissionDetails?.dismiss(); submissionDetails = null
+        submissionDialog?.dismiss()
         AppForeground.onActivityStopped()
         // 只落盘游标，不停止 watcher：任务在后台完成时要能触发本地通知
         // （MVP §21）。回到前台时 refresh 会重新接管并复用游标去重。
@@ -387,7 +406,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun onSend() {
         val prompt = binding.editPrompt.text?.toString()?.trim().orEmpty()
         if (prompt.isBlank()) return
-        viewModel.send(prompt, binding.chipModeSteer.isChecked, contextAttachments.toList())
+        viewModel.send(prompt, binding.chipModeSteer.isChecked, contextAttachments.toList(), composerGeneration.token())
     }
 
     // ---------- 任务渲染 ----------
@@ -460,6 +479,74 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             dialog.show()
         }
         viewModel.refreshMessageReceipts()
+    }
+
+    private fun showSubmission() {
+        if (!cacheSession.isCurrent(prefs)) return
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt(); setPadding(pad, pad, pad, pad)
+        }
+        submissionDialog = BottomSheetDialog(this).also { dialog ->
+            submissionContent = content; submissionRenderKey = null
+            dialog.setContentView(android.widget.ScrollView(this).apply { addView(content) })
+            dialog.setOnDismissListener { submissionContent = null; submissionDialog = null; submissionRenderKey = null }
+            renderSubmission(); dialog.show()
+        }
+    }
+
+    private fun renderSubmission() {
+        val content = submissionContent ?: return
+        val st = viewModel.state.value
+        val key = listOf(st.pendingSubmission, st.manualAttachmentHold, st.submissionStorageError, st.submittingTask,
+            st.checkingSubmission, st.submissionNotice, st.submissionCandidate, st.taskSelection, st.selectingTask)
+        if (key == submissionRenderKey) return
+        submissionRenderKey = key; content.removeAllViews()
+        fun text(value: String) { content.addView(TextView(this).apply {
+            text = value; textSize = 15f; val pad = (8 * resources.displayMetrics.density).toInt(); setPadding(0, pad, 0, pad)
+        }) }
+        fun action(label: String, enabled: Boolean = true, block: () -> Unit) {
+            content.addView(com.google.android.material.button.MaterialButton(this).apply {
+                text = label; isEnabled = enabled
+                setOnClickListener { if (cacheSession.isCurrent(prefs)) block() }
+            })
+        }
+        text("任务提交确认")
+        st.submissionNotice?.let(::text)
+        st.pendingSubmission?.let { pending ->
+            text("原提交正文\n${pending.prompt}")
+            val body = pending.requestBody()
+            text("原模型选择：${if (body.isNull("provider")) "自动" else body.optString("provider")} · 附件 ${body.getJSONArray("contexts").length()} 项")
+            text("查询只定位关联任务；手动确认将使用已保存的原正文与附件，不采用输入框的新修改。")
+            action("查询关联任务", !st.submittingTask && !st.checkingSubmission) { viewModel.refreshSubmission() }
+            action("确认并重试原提交", !st.submittingTask && !st.checkingSubmission && !st.submissionStorageError) { viewModel.retrySubmission() }
+            st.submissionCandidate?.let { candidate ->
+                text("关联任务：${ConversationTimelineBuilder.statusLabel(candidate.job.resolvedStatus())} · 原提交待确认")
+                action("查看关联任务（只读）") {
+                    submissionDetails = createTaskDetails(candidate.job, inspectBlocker = true).also { dialog ->
+                        dialog.findViewById<TextView>(R.id.textDetailsTitle)?.text = "关联任务详情 · 只读"
+                        dialog.show()
+                    }
+                }
+            }
+            action("仅移除本机记录", !st.submittingTask) {
+                AlertDialog.Builder(this).setTitle("仅移除本机记录？")
+                    .setMessage("这不会取消服务端任务，它可能仍在运行。再次发送会创建新任务，可能重复执行。输入框草稿会保留。")
+                    .setNegativeButton("保留记录", null)
+                    .setPositiveButton("仅移除本机记录") { _, _ -> viewModel.removeLocalSubmission() }.show()
+            }
+        }
+        if (st.submissionStorageError) action("重新读取提交记录") { viewModel.refreshSubmission() }
+        if (st.manualAttachmentHold && st.pendingSubmission == null && !st.submissionStorageError) {
+            text("本次打开不会自动连接任务；手动选择只连接当前页面，重新打开仍需选择。")
+            action("选择已有任务", !st.selectingTask) { viewModel.listTasksForManualSelection() }
+            st.taskSelection.forEach { job ->
+                action("连接任务：${job.prompt.take(60).ifBlank { job.id }} · ${ConversationTimelineBuilder.statusLabel(job.resolvedStatus())}", !st.selectingTask) {
+                    viewModel.selectTaskManually(job.id)
+                }
+            }
+        }
+        if (st.pendingSubmission == null && !st.manualAttachmentHold && !st.submissionStorageError) text("没有待确认的任务提交")
     }
 
     private fun renderMessageReceipts() {
@@ -1049,6 +1136,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             toast(getString(R.string.context_limit))
             return
         }
+        composerGeneration.changed()
         contextAttachments += item
         renderContextChips()
     }
@@ -1070,6 +1158,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                 }
                 isCloseIconVisible = true
                 setOnCloseIconClickListener {
+                    composerGeneration.changed()
                     contextAttachments.remove(item)
                     renderContextChips()
                 }

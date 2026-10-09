@@ -4,6 +4,9 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.androidagent.client.PendingConversationSubmission
+import com.androidagent.client.ConversationSubmissionAck
+import com.androidagent.client.SubmissionRecord
 import com.androidagent.client.AgentApi
 import com.androidagent.client.MessageEditDraft
 import com.androidagent.client.PendingMessageEdit
@@ -54,6 +57,15 @@ sealed interface ConversationSignal {
 }
 
 data class ConversationUiState(
+    val pendingSubmission: PendingConversationSubmission? = null,
+    val manualAttachmentHold: Boolean = false,
+    val submissionStorageError: Boolean = false,
+    val submittingTask: Boolean = false,
+    val checkingSubmission: Boolean = false,
+    val submissionNotice: String? = null,
+    val submissionCandidate: ConversationSubmissionAck? = null,
+    val taskSelection: List<JobInfo> = emptyList(),
+    val selectingTask: Boolean = false,
     val timelineVersion: Int = 0,
     val job: JobInfo? = null,
     val jobId: String? = null,
@@ -105,6 +117,9 @@ class ConversationViewModel(
     private val writePendingWithdrawal: (String, PendingMessageWithdrawal?) -> Unit = { _, _ -> },
     private val readMessageEdit: (String) -> SavedMessageEdit? = { null },
     private val writeMessageEdit: (String, SavedMessageEdit?) -> Unit = { _, _ -> },
+    private val readSubmission: (String, String) -> SubmissionRecord = { _, _ -> error("未配置提交存储") },
+    private val saveSubmission: (PendingConversationSubmission) -> Unit = { error("未配置提交存储") },
+    private val removeSubmission: (PendingConversationSubmission, Boolean) -> Unit = { _, _ -> error("未配置提交存储") },
     private val readPendingReorder: (String) -> PendingMessageReorder? = { null },
     private val writePendingReorder: (String, PendingMessageReorder?) -> Unit = { _, _ -> },
 ) : ViewModel() {
@@ -131,6 +146,9 @@ class ConversationViewModel(
     private var watcher: JobEventWatcher? = null
     private var bindingGeneration = 0L
     private var recoveryRequest = 0L
+    private var submissionRequest = 0L
+    private var submissionJob: Job? = null
+    private var submissionDraft: SubmittedComposer? = null
     private var foreground = false
     private var messageRequest = 0L
     private var messageSubmissionJob: Job? = null
@@ -160,6 +178,7 @@ class ConversationViewModel(
         started = true
         this.projectId = projectId
         this.conversationId = conversationId
+        restoreSubmission()
         val token = ++loadToken
 
         viewModelScope.launch {
@@ -182,6 +201,7 @@ class ConversationViewModel(
         earlierJob?.cancel()
         earlierJob = null
         updateState { it.copy(loadingEarlier = false) }
+        refreshSubmission()
         viewModelScope.launch { syncFromServer(token) }
     }
 
@@ -219,7 +239,7 @@ class ConversationViewModel(
         }
 
         // 任务绑定：缓存里若有活跃任务先接管（工具栏立即正确），服务端列表随后校正
-        if (watcher == null) {
+        if (watcher == null && !blocksAutomaticAttachment()) {
             try {
                 val cachedJobs = repository.cachedJobs(conversationId)
                 val selected = session.selectedJobId
@@ -227,7 +247,7 @@ class ConversationViewModel(
                 // before the authoritative list can expose its recovery link.
                 cachedJobs.firstOrNull { it.status in ACTIVE_STATUSES &&
                     (selected.isNullOrBlank() || it.id == selected) }?.let { cachedActive ->
-                    if (watcher == null && token == loadToken) attachJob(cachedActive.id, resume = true)
+                    if (watcher == null && token == loadToken && !blocksAutomaticAttachment()) attachJob(cachedActive.id, resume = true)
                 }
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
@@ -241,6 +261,10 @@ class ConversationViewModel(
             val jobs = withContext(Dispatchers.IO) { api.listJobs(projectId, conversationId) }
             repository.saveJobs(jobs)
             if (token != loadToken) return
+            if (blocksAutomaticAttachment()) {
+                if (watcher != null) jobs.firstOrNull { it.id == _state.value.jobId && belongsToConversation(it) }?.let(::applyJob)
+                return
+            }
             val preferred = _state.value.jobId ?: session.selectedJobId
             val active = jobs.firstOrNull { it.id == preferred &&
                 (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null ||
@@ -319,6 +343,7 @@ class ConversationViewModel(
         if (!hasCurrentSession()) return
         flushPendingTaskEvents()
         val generation = ++bindingGeneration
+        ++submissionRequest
         ++messageRequest
         ++editRequest
         ++withdrawalRequest
@@ -336,7 +361,7 @@ class ConversationViewModel(
         } }
         val reorder = readPendingReorder(jobId)?.takeIf { it.jobId == jobId && it.projectId == projectId && it.conversationId == conversationId }
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
-        updateState { it.copy(jobId = jobId, job = initialJob, sending = false, messageReceipts = emptyList(),
+        updateState { it.copy(jobId = jobId, job = initialJob, sending = false, submittingTask = false, checkingSubmission = false, selectingTask = false, messageReceipts = emptyList(),
             pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false,
             pendingWithdrawal = withdrawal, withdrawing = false, withdrawalNotice = withdrawal?.let { "上次撤回结果待确认，请核对后重试" },
             messageEdit = savedEdit, editingMessage = false, editNotice = savedEdit?.pending?.let { "上次编辑结果待确认，可核对并重试原编辑" },
@@ -566,11 +591,18 @@ class ConversationViewModel(
     fun setForeground(value: Boolean) {
         foreground = value
         if (value) {
+            if (started && submissionJob?.isActive != true) restoreSubmission()
+            refreshSubmission()
             if (messageSubmissionJob?.isActive != true && _state.value.pendingMessage != null) updateState { it.copy(sending = false) }
             if (editJob?.isActive != true && _state.value.messageEdit?.pending != null) updateState { it.copy(editingMessage = false) }
             if (withdrawalJob?.isActive != true && _state.value.pendingWithdrawal != null) updateState { it.copy(withdrawing = false) }
             refreshMessageReceipts()
         } else {
+            ++submissionRequest
+            submissionJob?.cancel()
+            submissionJob = null
+            updateState { it.copy(sending = if (it.submittingTask) false else it.sending,
+                submittingTask = false, checkingSubmission = false, submissionCandidate = null, taskSelection = emptyList(), selectingTask = false) }
             dismissBlockingTask()
             ++reorderRequest
             reorderJob?.cancel()
@@ -603,7 +635,8 @@ class ConversationViewModel(
                 if (!foreground || request != receiptRequest || !isBoundJob(jobId, generation) ||
                     !isSelectedConversation(projectId, conversationId)) return@launch
                 applyMessagePage(page)
-                updateState { it.copy(messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新") }
+                updateState { it.copy(messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新",
+                    reorderNotice = if (page.queue != null && it.reorderNotice == "该次排序已保存；正在核对当前队列") "该次排序已保存；当前队列已更新" else it.reorderNotice) }
                 reconcileWithdrawal(page.messages)
                 val pending = _state.value.pendingMessage
                 if (pending != null && page.messages.any(pending::matches)) acknowledgeMessage(pending)
@@ -1030,9 +1063,12 @@ class ConversationViewModel(
 
     // ---------- 发送 ----------
 
-    fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
+    fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>, composerGeneration: String? = null) {
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
             _state.value.sending || _state.value.recovering || _state.value.withdrawing || _state.value.editingMessage || _state.value.reordering || _state.value.pendingReorder != null) return
+        if (_state.value.pendingSubmission != null || _state.value.submissionStorageError) {
+            emitSignal(ConversationSignal.ToastText("请先核对待确认的任务提交")); return
+        }
         val text = prompt.trim()
         if (text.isBlank()) return
         if (_state.value.pendingMessage != null) {
@@ -1047,7 +1083,185 @@ class ConversationViewModel(
         if (job != null && job.resolvedStatus() in ACTIVE_STATUSES) {
             sendMidTask(text, steer, contexts)
         } else {
-            sendAsk(text, contexts)
+            if (session.guestMode) sendAsk(text, contexts)
+            else beginSubmission(text, contexts, composerGeneration)
+        }
+    }
+
+    private fun blocksAutomaticAttachment(): Boolean = _state.value.let {
+        it.pendingSubmission != null || it.manualAttachmentHold || it.submissionStorageError
+    }
+
+    private fun restoreSubmission() {
+        if (session.guestMode) return
+        try {
+            val record = readSubmission(projectId, conversationId)
+            require(record.pending == null || (record.pending.projectId == projectId && record.pending.conversationId == conversationId))
+            updateState { it.copy(pendingSubmission = record.pending, manualAttachmentHold = record.manualHold,
+                submissionStorageError = false, submissionNotice = when {
+                    record.pending?.rejectedCode != null -> "原提交未被接收（${record.pending.rejectedCode}），请检查后核对原请求"
+                    record.pending != null -> "任务提交结果待确认；重新打开只会查询，不会自动发送"
+                    record.manualHold -> "已移除本机记录；请手动选择任务，或提交新的任务"
+                    else -> null
+                }) }
+        } catch (_: Exception) {
+            updateState { it.copy(submissionStorageError = true, submissionNotice = "本机提交记录无法读取；已暂停新任务发送和自动连接，请检查存储后重新读取") }
+        }
+    }
+
+    private fun beginSubmission(prompt: String, contexts: List<ContextAttachment>, composerGeneration: String?) {
+        if (!foreground || _state.value.selectingTask) return
+        // Freeze controls before the first await and commit before any network request.
+        val generation = bindingGeneration
+        val selectedJob = session.selectedJobId
+        val pending = PendingConversationSubmission.freeze(projectId, conversationId, prompt,
+            session.selectedProviderId.takeUnless { it == "auto" }, contexts)
+        try {
+            saveSubmission(pending)
+        } catch (_: Exception) {
+            updateState { it.copy(submissionNotice = "无法保存完整提交记录；尚未发送，请检查存储或待确认记录容量") }
+            return
+        }
+        submissionDraft = SubmittedComposer(prompt, SubmittedComposer.signature(contexts), composerGeneration)
+        updateState { it.copy(pendingSubmission = pending, submissionCandidate = null) }
+        if (!foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            generation != bindingGeneration || session.selectedJobId != selectedJob) return
+        submitOriginal(pending)
+    }
+
+    fun retrySubmission() {
+        if (!foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            _state.value.submittingTask || _state.value.checkingSubmission || _state.value.submissionStorageError || session.guestMode) return
+        _state.value.pendingSubmission?.let(::submitOriginal)
+    }
+
+    private fun currentSubmission(pending: PendingConversationSubmission, request: Long, generation: Long, selectedJob: String?): Boolean =
+        foreground && hasCurrentSession() && request == submissionRequest && generation == bindingGeneration &&
+            isSelectedConversation(projectId, conversationId) && session.selectedJobId == selectedJob && _state.value.pendingSubmission?.key == pending.key
+
+    private fun submitOriginal(pending: PendingConversationSubmission) {
+        val request = ++submissionRequest; val generation = bindingGeneration; val selectedJob = session.selectedJobId
+        updateState { it.copy(submittingTask = true, sending = true, submissionNotice = "正在确认原任务提交…") }
+        submissionJob = viewModelScope.launch {
+            try {
+                val ack = withContext(Dispatchers.IO) {
+                    repository.requireCurrentSession()
+                    if (!currentSubmission(pending, request, generation, selectedJob)) throw CancellationException("Submission view changed before dispatch")
+                    api.submitConversation(pending)
+                }
+                if (!currentSubmission(pending, request, generation, selectedJob)) return@launch
+                repository.saveJob(ack.job)
+                if (!currentSubmission(pending, request, generation, selectedJob)) return@launch
+                removeSubmission(pending, true)
+                updateState { it.copy(pendingSubmission = null, manualAttachmentHold = false, submissionCandidate = null,
+                    submissionNotice = null, submittingTask = false, sending = false) }
+                submissionDraft?.let { emitSignal(ConversationSignal.ComposerAcknowledged(it)) }
+                submissionDraft = null
+                ++loadToken
+                attachJob(ack.jobId, resume = true, initialJob = ack.job)
+            } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+            } catch (e: Exception) {
+                if (currentSubmission(pending, request, generation, selectedJob)) {
+                    val code = (e as? ApiException)?.code
+                    if (code in setOf(400, 403, 404, 409, 413, 422)) {
+                        val rejected = pending.copy(rejectedCode = code)
+                        try { saveSubmission(rejected); updateState { it.copy(pendingSubmission = rejected) } } catch (_: Exception) { /* original request remains durable */ }
+                    }
+                    updateState { it.copy(submissionNotice = when {
+                        code == 401 -> "登录已失效；原提交已保留，请重新登录后核对"
+                        code in setOf(400, 403, 404, 409, 413, 422) -> "原提交未被接收（$code）；原正文已保留，不会自动换请求重发"
+                        else -> "提交结果待确认；原请求已保留，可查询关联任务或手动确认原提交"
+                    }) }
+                }
+            } finally {
+                if (request == submissionRequest && hasCurrentSession()) {
+                    submissionJob = null
+                    updateState { it.copy(submittingTask = false, sending = false) }
+                }
+            }
+        }
+    }
+
+    fun refreshSubmission() {
+        if (!started || !foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            session.guestMode || _state.value.submittingTask || _state.value.checkingSubmission) return
+        if (_state.value.submissionStorageError) restoreSubmission()
+        if (_state.value.submissionStorageError) return
+        val pending = _state.value.pendingSubmission ?: return
+        val request = ++submissionRequest; val generation = bindingGeneration; val selectedJob = session.selectedJobId
+        updateState { it.copy(checkingSubmission = true, submissionCandidate = null) }
+        submissionJob = viewModelScope.launch {
+            try {
+                val candidate = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.lookupConversationSubmission(pending) }
+                if (currentSubmission(pending, request, generation, selectedJob)) updateState {
+                    it.copy(submissionCandidate = candidate, submissionNotice = "已找到关联任务，原提交待确认")
+                }
+            } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+            } catch (e: Exception) {
+                if (currentSubmission(pending, request, generation, selectedJob)) updateState { it.copy(submissionNotice = when ((e as? ApiException)?.code) {
+                    401 -> "登录已失效；原提交已保留，请重新登录后核对"
+                    404 -> "尚未找到关联任务；原请求仍保留，不会自动重新提交"
+                    else -> "暂时无法核对关联任务；原请求仍保留"
+                }) }
+            } finally {
+                if (request == submissionRequest && hasCurrentSession()) {
+                    submissionJob = null; updateState { it.copy(checkingSubmission = false) }
+                }
+            }
+        }
+    }
+
+    /** Called only after the local-only confirmation dialog; no server request or refresh. */
+    fun removeLocalSubmission() {
+        if (!foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) || _state.value.submittingTask) return
+        val pending = _state.value.pendingSubmission ?: return
+        try {
+            removeSubmission(pending, false)
+            ++submissionRequest; submissionJob?.cancel(); submissionJob = null; submissionDraft = null
+            updateState { it.copy(pendingSubmission = null, manualAttachmentHold = true, submissionCandidate = null,
+                checkingSubmission = false, submissionNotice = "已移除本机记录；服务端任务可能仍在运行。请选择任务，或提交新的任务") }
+        } catch (_: Exception) {
+            updateState { it.copy(submissionNotice = "无法移除本机记录；原提交仍保留") }
+        }
+    }
+
+    /** Explicit foreground task selection can connect this view, but never clears the durable hold. */
+    fun listTasksForManualSelection() {
+        if (!foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
+            _state.value.pendingSubmission != null || _state.value.submissionStorageError || _state.value.selectingTask || _state.value.submittingTask) return
+        val request = ++submissionRequest
+        updateState { it.copy(selectingTask = true) }
+        submissionJob = viewModelScope.launch {
+            try {
+                val jobs = withContext(Dispatchers.IO) { api.listJobs(projectId, conversationId) }
+                if (foreground && request == submissionRequest && hasCurrentSession() && isSelectedConversation(projectId, conversationId))
+                    updateState { it.copy(taskSelection = jobs.filter { job -> belongsToConversation(job) && !job.turnId.isNullOrBlank() }) }
+            } catch (_: Exception) {
+                if (request == submissionRequest) emitSignal(ConversationSignal.ToastText("暂时无法读取任务列表"))
+            } finally {
+                if (request == submissionRequest) updateState { it.copy(selectingTask = false) }
+            }
+        }
+    }
+
+    fun dismissTaskSelection() { updateState { it.copy(taskSelection = emptyList()) } }
+
+    fun selectTaskManually(jobId: String) {
+        if (!foreground || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId) || _state.value.pendingSubmission != null || _state.value.submittingTask) return
+        val expected = _state.value.taskSelection.firstOrNull { it.id == jobId } ?: return
+        val request = ++submissionRequest; val generation = bindingGeneration
+        updateState { it.copy(taskSelection = emptyList(), selectingTask = true) }
+        submissionJob = viewModelScope.launch {
+            try {
+                val job = withContext(Dispatchers.IO) { api.getJob(jobId) }
+                if (!foreground || request != submissionRequest || generation != bindingGeneration || !hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return@launch
+                check(job.id == expected.id && job.turnId == expected.turnId && belongsToConversation(job))
+                ++loadToken; attachJob(job.id, resume = true, initialJob = job)
+            } catch (_: Exception) {
+                if (request == submissionRequest) emitSignal(ConversationSignal.ToastText("任务身份尚未核实，请重新选择"))
+            } finally {
+                if (request == submissionRequest) updateState { it.copy(selectingTask = false) }
+            }
         }
     }
 
@@ -1079,6 +1293,7 @@ class ConversationViewModel(
                 hasCurrentSession()
                 throw cancelled
             } catch (e: Exception) {
+                if (!hasCurrentSession() || generation != bindingGeneration) return@launch
                 store.removeItem(optimisticKey)
                 if (isGuestQuota(e)) {
                     session.guestRemaining = 0
@@ -1087,8 +1302,9 @@ class ConversationViewModel(
                     emitSignal(ConversationSignal.ToastRes(R.string.send_failed_retry))
                 }
             } finally {
-                updateState { it.copy(sending = false) }
-                bumpTimeline()
+                if (hasCurrentSession() && generation == bindingGeneration) {
+                    updateState { it.copy(sending = false) }; bumpTimeline()
+                }
             }
         }
     }
@@ -1271,6 +1487,10 @@ class ConversationViewModel(
     // ---------- 内部 ----------
 
     private fun clearConversationState() {
+        submissionRequest++
+        submissionJob?.cancel()
+        submissionJob = null
+        submissionDraft = null
         blockingRequest++
         reorderRequest++
         reorderJob?.cancel()
@@ -1376,6 +1596,9 @@ class ConversationViewModel(
                 isSelectedConversation = { project, conversation ->
                     prefs.selectedProjectId == project && prefs.selectedConversationId == conversation
                 },
+                readSubmission = { project, conversation -> prefs.submissionRecord(receiptSession, project, conversation) },
+                saveSubmission = { prefs.saveSubmission(receiptSession, it) },
+                removeSubmission = { pending, confirmed -> prefs.removeSubmission(receiptSession, pending, confirmed) },
                 readPendingMessage = { prefs.pendingJobMessage(receiptSession, it) },
                 writePendingMessage = { job, pending -> prefs.setPendingJobMessage(receiptSession, job, pending) },
                 readPendingWithdrawal = { prefs.pendingMessageWithdrawal(receiptSession, it) },

@@ -8,6 +8,7 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from typing import Any
 from pathlib import Path
 
@@ -147,12 +148,12 @@ def list_jobs(
     return _store.list_tasks(user_id, project_id, conversation_id)
 
 
-def _turn_id_for_task(task_id: str) -> str | None:
+def _turn_id_for_task(task_id: str, *, _conn=None) -> str | None:
     """Resolve the conversation turn that owns a task (job)."""
     if not task_id:
         return None
     try:
-        with _store._connect() as conn:
+        with nullcontext(_conn) if _conn is not None else _store._connect() as conn:
             row = conn.execute(
                 "SELECT id FROM conversation_turns WHERE task_id=?",
                 (task_id,),
@@ -162,7 +163,7 @@ def _turn_id_for_task(task_id: str) -> str | None:
         return None
 
 
-def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
+def job_to_dict(job: dict[str, Any], *, _conn=None) -> dict[str, Any]:
     from agent.task_status import enrich_job_dict
     from agent.verification import verification_for_job
 
@@ -193,10 +194,10 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     task_id = result.get("id")
     # The desktop needs the turn identity to locate the Turn in the timeline
     # and to request the checkpoint-based diff review.
-    result["turn_id"] = _turn_id_for_task(task_id)
+    result["turn_id"] = _turn_id_for_task(task_id, _conn=_conn)
     result.update(can_recover=False, recovery_job_id=None)
     try:
-        result.update(_store.recovery_state(task_id, str(job.get("user_id") or "")))
+        result.update(_store.recovery_state(task_id, str(job.get("user_id") or ""), _conn=_conn))
     except sqlite3.Error:
         # A detached DTO (or an unavailable store) must not advertise an
         # unverified recovery action. The mutation always rechecks the DB.
@@ -573,11 +574,54 @@ def start_ask_job(
         )
 
 
+def start_conversation_submission(
+    user_id: str, project_id: str, conversation_id: str, prompt: str,
+    settings: Settings, *, request_key: str, request_hash: str,
+    run_mode: str | None = None, contexts: list[dict[str, Any]] | None = None,
+    feedback_requested: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    from agent.submissions import lookup_submission
+
+    with project_operation(user_id, project_id):
+        existing = lookup_submission(_store, user_id, conversation_id, request_key, expected_hash=request_hash)
+        if existing is not None:
+            return existing, False
+        task, created = _initialize_ask_job_unlocked(
+            user_id, project_id, prompt, settings, conversation_id=conversation_id,
+            run_mode=run_mode, contexts=contexts, feedback_requested=feedback_requested,
+            submission=(request_key, request_hash),
+        )
+        if created:
+            _start_accepted_worker(settings, task["id"])
+        result = lookup_submission(_store, user_id, conversation_id, request_key, expected_hash=request_hash)
+        if result is None:  # A committed ledger must never be treated as a new request.
+            raise RuntimeError("已提交任务的回执暂不可用")
+        return result, created
+
+
+def _start_accepted_worker(settings: Settings, task_id: str) -> None:
+    try:
+        start_worker(settings)
+    except Exception:
+        # Initialization is committed. A failed wakeup cannot revoke acceptance;
+        # a normal worker startup will find the fully initialized queued task.
+        logger.exception("Worker startup failed after accepting task %s", task_id)
+
+
 def _start_ask_job_unlocked(
+    user_id: str, project_id: str, prompt: str, settings: Settings | None = None, **options: Any,
+) -> dict[str, Any]:
+    settings = settings or load_settings()
+    task, _ = _initialize_ask_job_unlocked(user_id, project_id, prompt, settings, **options)
+    _start_accepted_worker(settings, task["id"])
+    return _store.get_task(task["id"], user_id) or task
+
+
+def _initialize_ask_job_unlocked(
     user_id: str,
     project_id: str,
     prompt: str,
-    settings: Settings | None = None,
+    settings: Settings,
     *,
     conversation_id: str | None = None,
     continue_session: bool = True,
@@ -586,9 +630,11 @@ def _start_ask_job_unlocked(
     contexts: list[dict[str, Any]] | None = None,
     feedback_requested: bool = False,
     execution_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    submission: tuple[str, str] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    from agent.submissions import lookup_submission, SubmissionNotFound, SubmissionQuotaExceeded
+
     load_project_meta(user_id, project_id)
-    settings = settings or load_settings()
     inherited = inherited_execution_context(execution_context or {})
     if execution_context is None:
         run_mode, permission_profile = _resolve_permission(user_id, project_id, run_mode)
@@ -599,119 +645,73 @@ def _start_ask_job_unlocked(
         if permission_profile is not None and permission_profile not in VALID_PROFILES:
             raise RuntimeError("原任务权限档位无效，拒绝创建后续任务")
 
-    task_id = uuid.uuid4().hex[:12]
-    turn_id: str | None = None
-    task_created = False
     event_store = ConversationEventStore(_store)
-    try:
-        if conversation_id:
-            conv = _store.get_conversation(conversation_id, user_id)
-            if not conv or conv["project_id"] != project_id:
-                raise RuntimeError("对话不存在或不属于该项目")
-        elif reset_session:
-            conv = _store.create_conversation(user_id, project_id, title="新对话")
-            conversation_id = conv["id"]
-        else:
-            conv = _store.get_or_create_default_conversation(user_id, project_id)
-            conversation_id = conv["id"]
+    if conversation_id:
+        conv = _store.get_conversation(conversation_id, user_id)
+        if not conv or conv["project_id"] != project_id:
+            raise SubmissionNotFound("对话不存在或不属于该项目")
+    elif reset_session:
+        conv = _store.create_conversation(user_id, project_id, title="新对话")
+        conversation_id = conv["id"]
+    else:
+        conv = _store.get_or_create_default_conversation(user_id, project_id)
+        conversation_id = conv["id"]
 
-        if continue_session and not reset_session:
-            create_semantic_checkpoint(
-                event_store,
-                conversation_id,
-                user_id,
-            )
+    # These operations use their own connections. They precede the atomic task
+    # initialization and are not part of its durability guarantee.
+    feedback_options = inherited.get("feedback_options") or FeedbackStore(_store.db_path).settings(
+        user_id, project_id, bool(getattr(settings, "auto_build_after_edit", False)))
+    if continue_session and not reset_session:
+        create_semantic_checkpoint(event_store, conversation_id, user_id)
 
-        created_at = time.time()
-        write_lock_key = f"main:{user_id}:{project_id}"
+    task_id = uuid.uuid4().hex[:12]
+    created_at = time.time()
+    write_lock_key = f"main:{user_id}:{project_id}"
+    with _store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conv = conn.execute("SELECT * FROM conversations WHERE id=? AND user_id=? AND project_id=?",
+                            (conversation_id, user_id, project_id)).fetchone()
+        if conv is None:
+            raise SubmissionNotFound("对话不存在或不属于该项目")
+        if submission is not None:
+            key, digest = submission
+            existing = lookup_submission(_store, user_id, conversation_id, key, expected_hash=digest, _conn=conn)
+            if existing is not None:
+                return _store.get_task(existing["submission"]["job_id"], user_id, _conn=conn), False
+            active = conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND status IN "
+                                  "('queued','running','awaiting_approval','paused')", (user_id,)).fetchone()[0]
+            if active >= settings.max_active_tasks_per_user:
+                raise SubmissionQuotaExceeded(f"用户活动任务达到上限 ({settings.max_active_tasks_per_user})")
         _store.create_task({
-            "id": task_id,
-            "user_id": user_id,
-            "project_id": project_id,
-            "conversation_id": conversation_id,
-            "prompt": prompt,
-            "status": "queued",
-            "provider": settings.provider,
-            "model": settings.model,
-            "created_at": created_at,
+            "id": task_id, "user_id": user_id, "project_id": project_id,
+            "conversation_id": conversation_id, "prompt": prompt, "status": "queued",
+            "provider": settings.provider, "model": settings.model, "created_at": created_at,
             "write_lock_key": write_lock_key,
-            "context": {
-                **inherited,
-                "write_lock_key": write_lock_key,
-                "run_mode": run_mode,
+            "context": {**inherited, "write_lock_key": write_lock_key, "run_mode": run_mode,
                 "permission_profile": permission_profile,
                 "attachments": (contexts if contexts is not None else inherited.get("attachments", []))[:20],
-                "model_selection": model_selection(settings),
-                "feedback_requested": feedback_requested,
-                "feedback_options": inherited.get("feedback_options") or FeedbackStore(_store.db_path).settings(user_id, project_id, bool(getattr(settings, "auto_build_after_edit", False))),
-            },
-        })
-        task_created = True
-        turn = event_store.create_turn(
-            conversation_id,
-            user_id,
-            project_id,
-            task_id=task_id,
-            status="queued",
-            provider=settings.provider,
-            model=settings.model,
-            trace_id=uuid.uuid4().hex,
-            created_at=created_at,
-        )
+                "model_selection": model_selection(settings), "feedback_requested": feedback_requested,
+                "feedback_options": feedback_options},
+        }, _conn=conn)
+        turn = event_store.create_turn(conversation_id, user_id, project_id, task_id=task_id,
+            status="queued", provider=settings.provider, model=settings.model,
+            trace_id=uuid.uuid4().hex, created_at=created_at, _conn=conn)
         turn_id = turn["id"]
-        trace_id = turn.get("trace_id")
-        message_id = uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"android-agent:turn:{turn_id}:user_message",
-        ).hex
-        user_payload: dict[str, Any] = {
-            "message_id": message_id,
-            "content": [{"type": "text", "text": prompt}],
-            "source": "user",
-        }
-        if trace_id:
-            user_payload["trace_id"] = trace_id
-        event_store.append_event_idempotent(
-            conversation_id,
-            turn_id,
-            EventType.USER_MESSAGE,
-            f"turn:{turn_id}:user_message",
-            user_payload,
-            task_id=task_id,
-            role="user",
-            context_visible=True,
-            created_at=created_at,
-        )
-        if conv.get("title") in {"新对话", "默认对话", ""} and prompt.strip():
-            _store.update_conversation(
-                conversation_id,
-                user_id,
-                title=prompt.strip()[:40],
-            )
-    except Exception as exc:
-        if task_created:
-            _store.update_task(
-                task_id,
-                status="failed",
-                finished_at=time.time(),
-                error_message=f"任务初始化失败: {exc}",
-            )
-        if turn_id:
-            try:
-                event_store.update_turn_status(
-                    turn_id,
-                    "failed",
-                    user_id=user_id,
-                    finished_at=time.time(),
-                    error_message=str(exc),
-                )
-            except Exception as status_exc:
-                raise RuntimeError(
-                    f"任务初始化失败: {exc}; Turn 状态写入失败: {status_exc}"
-                ) from exc
-        raise
-    start_worker(settings)
-    return _store.get_task(task_id, user_id) or {}
+        event_store.append_event_idempotent(conversation_id, turn_id, EventType.USER_MESSAGE,
+            f"turn:{turn_id}:user_message", {
+                "message_id": uuid.uuid5(uuid.NAMESPACE_URL, f"android-agent:turn:{turn_id}:user_message").hex,
+                "content": [{"type": "text", "text": prompt}], "source": "user", "trace_id": turn["trace_id"],
+            }, task_id=task_id, role="user", context_visible=True, created_at=created_at, _conn=conn)
+        if submission is not None:
+            conn.execute("INSERT INTO task_submissions "
+                         "(user_id,request_key,request_hash,project_id,conversation_id,task_id,turn_id,created_at) "
+                         "VALUES (?,?,?,?,?,?,?,?)",
+                         (user_id, key, digest, project_id, conversation_id, task_id, turn_id, created_at))
+        if conv["title"] in {"新对话", "默认对话", ""} and prompt.strip():
+            conn.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=? AND user_id=?",
+                         (redact_sensitive_value(prompt.strip()[:40]), created_at, conversation_id, user_id))
+        task = _store.get_task(task_id, user_id, _conn=conn)
+    return task, True
 
 
 def _schedule_recovery_jobs(

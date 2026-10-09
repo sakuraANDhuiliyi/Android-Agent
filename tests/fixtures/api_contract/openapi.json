@@ -787,6 +787,20 @@
             ],
             "title": "Provider"
           },
+          "request_key": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Key"
+          },
           "run_mode": {
             "anyOf": [
               {
@@ -5417,6 +5431,72 @@
           }
         },
         "summary": "Restore Conversation Endpoint"
+      }
+    },
+    "/api/conversations/{conversation_id}/submissions/{request_key}": {
+      "get": {
+        "operationId": "get_conversation_submission_api_conversations__conversation_id__submissions__request_key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_key",
+            "required": true,
+            "schema": {
+              "title": "Request Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Conversation Submission Api Conversations  Conversation Id  Submissions  Request Key  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Conversation Submission"
       }
     },
     "/api/conversations/{conversation_id}/turns": {
@@ -13441,6 +13521,7 @@
     "GET /api/conversations/{conversation_id}/context",
     "GET /api/conversations/{conversation_id}/events",
     "POST /api/conversations/{conversation_id}/restore",
+    "GET /api/conversations/{conversation_id}/submissions/{request_key}",
     "GET /api/conversations/{conversation_id}/turns",
     "GET /api/conversations/{conversation_id}/turns/{turn_id}/trace",
     "GET /api/conversations/{conversation_id}/usage",

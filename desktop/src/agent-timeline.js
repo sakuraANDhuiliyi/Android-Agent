@@ -1449,10 +1449,17 @@
         if (!turn.userMessage) turn.userMessage = item;
         else turn.workItems.push(item);
       } else if (item.type === "lifecycle") {
-        turn.lifecycle = item;
-        if (item.metadata.diffStatus) turn.diffStatus = item.metadata.diffStatus;
-        if (item.metadata.diffReason) turn.diffReason = item.metadata.diffReason;
-        if (TERMINAL_TURN_STATUSES.has(item.status) && ms != null) turn.finishedAt = ms;
+        // Canonical history can arrive after live completion. Its older
+        // turn_started/queued rows must not make a completed turn look active.
+        const previous = turn.lifecycle;
+        const terminal = TERMINAL_TURN_STATUSES.has(item.status);
+        const wasTerminal = previous && TERMINAL_TURN_STATUSES.has(previous.status);
+        if (!wasTerminal || (terminal && (ms == null || toMs(previous.timestamp) == null || ms >= toMs(previous.timestamp)))) {
+          turn.lifecycle = item;
+          if (item.metadata.diffStatus) turn.diffStatus = item.metadata.diffStatus;
+          if (item.metadata.diffReason) turn.diffReason = item.metadata.diffReason;
+          if (terminal && ms != null) turn.finishedAt = ms;
+        }
       } else if (item.type === "changes") {
         turn.changes = item;
         if (item.metadata.diffStatus) turn.diffStatus = item.metadata.diffStatus;
