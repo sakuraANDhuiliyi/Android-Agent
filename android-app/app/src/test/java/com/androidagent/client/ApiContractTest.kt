@@ -34,6 +34,10 @@ class ApiContractTest {
         assertEquals("运行中", job.getString("status_label"))
         assertFalse(job.getBoolean("cancel_requested"))
         assertTrue(job.has("apk_url"))
+        val verification = DeliveryVerification.parse(job.getJSONObject("verification"), job.getString("id"))
+        assertEquals(VerificationState.NOT_RUN, verification.build.state)
+        assertEquals(VerificationState.NOT_RUN, verification.tests.state)
+        assertEquals(VerificationInputs.UNKNOWN, verification.build.inputs)
     }
 
     @Test

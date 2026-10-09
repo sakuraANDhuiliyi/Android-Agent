@@ -207,6 +207,7 @@ data class JobInfo(
     val buildStatus: String? = null,
     val canRecover: Boolean = false,
     val recoveryJobId: String? = null,
+    val verification: DeliveryVerification = DeliveryVerification(),
 ) {
     fun resolvedStatus(): String {
         if (displayStatus.isNotBlank()) return displayStatus
@@ -955,8 +956,15 @@ class AgentApi(
         } to json.optBoolean("truncated")
     }
 
-    fun feedback(projectId: String, jobId: String? = null): JSONObject =
-        getJson("/api/projects/$projectId/feedback" + (jobId?.let { "?job_id=$it" } ?: ""))
+    fun feedback(projectId: String, jobId: String? = null): JSONObject {
+        val result = getJson("/api/projects/$projectId/feedback" + (jobId?.let { "?job_id=$it" } ?: ""))
+        check(result.opt("project_id") == projectId && (jobId == null || result.opt("job_id") == jobId)) {
+            "验证报告不属于当前任务或项目"
+        }
+        val artifact = result.optJSONObject("artifact")
+        if (artifact != null && artifact.opt("job_id") != result.opt("job_id")) result.remove("artifact")
+        return result
+    }
 
     fun saveFeedbackSettings(projectId: String, options: JSONObject) {
         putJson("/api/projects/$projectId/feedback/settings", options)
@@ -1507,6 +1515,7 @@ class AgentApi(
             buildStatus = build?.optString("status")?.takeIf { it.isNotBlank() && it != "null" },
             canRecover = json.optBoolean("can_recover", false),
             recoveryJobId = json.optString("recovery_job_id").takeIf { it.isNotBlank() && it != "null" },
+            verification = DeliveryVerification.parse(json.optJSONObject("verification"), json.optString("id")),
         )
     }
 

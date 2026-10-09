@@ -14,6 +14,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.androidagent.client.databinding.ActivityFeedbackBinding
+import com.androidagent.client.core.database.CacheSession
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -25,6 +27,7 @@ class FeedbackActivity : AppCompatActivity() {
     private lateinit var binding: ActivityFeedbackBinding
     private lateinit var api: AgentApi
     private lateinit var prefs: AgentPrefs
+    private lateinit var session: CacheSession
     private var projectId = ""
     private var jobId: String? = null
     private var report = JSONObject()
@@ -37,7 +40,8 @@ class FeedbackActivity : AppCompatActivity() {
         binding = ActivityFeedbackBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = AgentPrefs(this)
-        api = AgentApi(prefs.serverUrl, prefs.apiToken)
+        session = CacheSession.capture(prefs)
+        api = AgentApi(session.serverUrl, session.apiToken)
         projectId = intent.getStringExtra("project_id").orEmpty()
         jobId = intent.getStringExtra("job_id")
         binding.toolbar.setNavigationOnClickListener { finish() }
@@ -46,18 +50,25 @@ class FeedbackActivity : AppCompatActivity() {
         binding.btnRunBuild.setOnClickListener { saveOptions(true) }
         binding.btnFixAll.setOnClickListener { fixProblems(null) }
         binding.btnRuntime.setOnClickListener { addRuntimeLog() }
-        binding.btnRawLog.setOnClickListener { report.optString("job_id").takeIf { it.isNotBlank() && it != "null" }?.let { BuildLogActivity.startRaw(this, it) } }
-        binding.btnArtifact.setOnClickListener { report.optJSONObject("artifact")?.let { ApkActivity.start(this, projectId, it.getString("job_id"), true) } }
+        binding.btnRawLog.setOnClickListener {
+            if (session.isCurrent(prefs)) report.optString("job_id").takeIf { it.isNotBlank() && it != "null" }
+                ?.let { BuildLogActivity.startRaw(this, it) }
+        }
+        binding.btnArtifact.setOnClickListener {
+            if (session.isCurrent(prefs)) report.optJSONObject("artifact")?.let { ApkActivity.start(this, projectId, it.getString("job_id"), true) }
+        }
         setActions(false)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {
                     try {
                         val data = withContext(Dispatchers.IO) {
+                            requireCurrentSession()
                             if (projectId.isBlank()) projectId = jobId?.let { api.getJob(it).projectId }.orEmpty()
                             require(projectId.isNotBlank()) { "缺少项目" }
-                            api.feedback(projectId, jobId)
+                            api.feedback(projectId, jobId).also { requireCurrentSession() }
                         }
+                        requireCurrentSession()
                         report = data
                         render()
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -68,26 +79,30 @@ class FeedbackActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (!session.isCurrent(prefs)) {
+            binding.root.visibility = android.view.View.INVISIBLE
+            finish()
+        }
+    }
+
+    private fun requireCurrentSession() {
+        if (!session.isCurrent(prefs)) throw CancellationException("账号已切换，请重新打开验证详情")
+    }
+
     private fun render() {
-        val build = report.optJSONObject("build")
         val artifact = report.optJSONObject("artifact")
         val issues = report.optJSONArray("problems") ?: JSONArray()
-        binding.textStatus.text = "assembleDebug · " + when (build?.optString("status")) {
-            "success" -> "✓ SUCCESS"
-            "failed" -> "✕ FAILED"
-            "running" -> "构建中"
-            "queued" -> "等待构建"
-            else -> getString(R.string.feedback_not_run)
-        }
         val summary = FeedbackPresentation.from(report)
+        binding.textStatus.text = "${summary.verification.title}\n${summary.verification.build}\n安装未验证"
         binding.textSummary.text = summary.duration
         binding.textTaskMetrics.text = summary.tasks
         binding.textWarningMetrics.text = summary.warnings
         binding.textTestMetrics.text = summary.tests
         binding.textArtifactMetrics.text = summary.artifact
-        binding.textStatus.setTextColor(getColor(when (build?.optString("status")) {
-            "success" -> R.color.status_success
-            "failed" -> R.color.status_failed
+        binding.textStatus.setTextColor(getColor(when {
+            summary.verification.buildFailed -> R.color.status_failed
             else -> R.color.signal_on_surface
         }))
         binding.btnArtifact.isVisible = artifact != null
@@ -138,6 +153,7 @@ class FeedbackActivity : AppCompatActivity() {
     }
 
     private fun problemActions(issue: JSONObject) {
+        if (!session.isCurrent(prefs)) { finish(); return }
         val path = issue.optString("path").takeIf { it.isNotBlank() && it != "null" }
         val actions = mutableListOf(getString(R.string.feedback_fix_one), getString(R.string.copy))
         if (path != null) actions.add(0, getString(R.string.feedback_open_file))
@@ -153,41 +169,51 @@ class FeedbackActivity : AppCompatActivity() {
 
     private fun saveOptions(run: Boolean) {
         if (busy || !optionsLoaded) return
+        if (!session.isCurrent(prefs)) { finish(); return }
         busy = true; setActions(false)
         val options = JSONObject().put("build_after_changes", binding.switchBuild.isChecked)
             .put("run_tests", binding.switchTests.isChecked).put("fix_failures", binding.switchFix.isChecked)
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) { api.saveFeedbackSettings(projectId, options) }
+                withContext(Dispatchers.IO) { requireCurrentSession(); api.saveFeedbackSettings(projectId, options) }
+                requireCurrentSession()
                 if (run) {
                     val (conversation, job) = withContext(Dispatchers.IO) {
+                        requireCurrentSession()
                         val conv = api.createConversation(projectId, getString(R.string.feedback_title))
+                        requireCurrentSession()
                         conv to api.askConversation(conv.id, "运行项目构建与已启用的测试，并按项目设置修复失败。", feedbackRequested = true)
                     }
+                    requireCurrentSession()
                     ConversationActivity.start(this@FeedbackActivity, projectId, conversation.id, conversation.title, job.id)
                 } else toast(getString(R.string.saved))
-            } catch (e: Exception) { toast(e.message.orEmpty()) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { toast(e.message.orEmpty()) }
             finally { busy = false; setActions(true) }
         }
     }
 
     private fun addRuntimeLog() {
+        if (!session.isCurrent(prefs)) { finish(); return }
         val input = android.widget.EditText(this).apply { minLines = 4; maxLines = 10; hint = getString(R.string.feedback_add_runtime); filters = arrayOf(android.text.InputFilter.LengthFilter(24_000)) }
         AlertDialog.Builder(this).setTitle(R.string.feedback_add_runtime).setView(input)
             .setPositiveButton(R.string.add) { _, _ ->
                 val text = input.text.toString().trim()
                 if (text.isNotEmpty()) lifecycleScope.launch {
                     try {
-                        withContext(Dispatchers.IO) { api.addRuntimeDiagnostic(projectId, text) }
-                        report = withContext(Dispatchers.IO) { api.feedback(projectId, jobId) }
+                        withContext(Dispatchers.IO) { requireCurrentSession(); api.addRuntimeDiagnostic(projectId, text) }
+                        report = withContext(Dispatchers.IO) { requireCurrentSession(); api.feedback(projectId, jobId) }
+                        requireCurrentSession()
                         render()
-                    } catch (e: Exception) { toast(e.message.orEmpty()) }
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { toast(e.message.orEmpty()) }
                 }
             }.setNegativeButton(R.string.cancel, null).show()
     }
 
     private fun fixProblems(issue: JSONObject?) {
         if (busy) return
+        if (!session.isCurrent(prefs)) { finish(); return }
         val issues = issue?.let { listOf(it) } ?: (report.optJSONArray("problems") ?: JSONArray()).let { array -> (0 until array.length()).map { array.getJSONObject(it) } }
         if (issues.isEmpty()) return
         val diagnostics = issues.joinToString("\n\n") { "${it.optString("source")} ${it.optString("path", "")}:${it.optString("line", "")}\n${it.optString("message")}" }.take(24_000)
@@ -197,11 +223,15 @@ class FeedbackActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val (conversation, job) = withContext(Dispatchers.IO) {
+                    requireCurrentSession()
                     val conv = api.createConversation(projectId, getString(R.string.feedback_fix_all))
+                    requireCurrentSession()
                     conv to api.askConversation(conv.id, "修复项目 $projectId 的以下问题。结合当前 Diff、构建错误和测试失败定位原因，保留无关修改，修复后重新构建并验证测试。", contexts = contexts)
                 }
+                requireCurrentSession()
                 ConversationActivity.start(this@FeedbackActivity, projectId, conversation.id, conversation.title, job.id)
-            } catch (e: Exception) { toast(e.message.orEmpty()) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { toast(e.message.orEmpty()) }
             finally { busy = false; setActions(true) }
         }
     }

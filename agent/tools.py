@@ -975,6 +975,11 @@ def run_gradle(
     if task == "testDebugUnitTest":
         # Fresh reports distinguish this attempt from previous failed test runs.
         cmd.append("--rerun-tasks")
+    from agent.workspace_inputs import capture_workspace_inputs
+    from agent.feedback import snapshot_test_reports, fresh_test_reports
+
+    inputs_before = capture_workspace_inputs(workspace)
+    reports_before = snapshot_test_reports(workspace, task) if task == "testDebugUnitTest" else None
     started = time.monotonic()
     stop_event = threading.Event()
     token = _cancel_token_from_check(cancel_check, stop_event)
@@ -992,7 +997,34 @@ def run_gradle(
         )
     finally:
         stop_event.set()
+    if not result.ok and cancel_check is not None:
+        # The HTTP cancel path can kill the process before the 200 ms token
+        # watcher observes the durable cancel flag. Recheck before classifying
+        # a negative exit as a compiler/test failure.
+        try:
+            cancel_check()
+        except Exception as exc:
+            if exc.__class__.__name__ == "CancellationRequested":
+                result.error_type = "CancellationRequested"
+            else:
+                raise
     duration_ms = round((time.monotonic() - started) * 1000)
+    receipt = {
+        "schema_version": 1, "run_id": build_id, "task": task,
+        "evidence_time": time.time(), "duration_ms": duration_ms,
+        "state": "passed" if result.ok else "canceled" if result.error_type == "CancellationRequested" else "interrupted" if result.error_type == "Timeout" else "failed",
+        "inputs_before": inputs_before, "inputs_after": capture_workspace_inputs(workspace),
+    }
+    if reports_before is not None:
+        report, issues = fresh_test_reports(workspace, reports_before, task)
+        receipt.update(report, test_problems=issues)
+
+    def gradle_summary(log_body: str, apk_path: Path | None = None) -> dict:
+        summary = parse_gradle_summary(task, log_body, success=result.ok,
+            exit_code=result.returncode, duration_ms=duration_ms, build_id=build_id,
+            log_path=log_file, apk_path=apk_path)
+        summary["verification_receipt"] = receipt
+        return summary
 
     apk_out: Path | None = None
     if result.ok and task == "assembleDebug":
@@ -1017,15 +1049,7 @@ def run_gradle(
             False,
             f"Gradle 失败 (exit {result.returncode})\n日志: {log_file}\n\n--- 关键日志摘要 ---\n{tail}",
             error_type=result.error_type,
-            summary=parse_gradle_summary(
-                task,
-                log_body,
-                success=False,
-                exit_code=result.returncode,
-                duration_ms=duration_ms,
-                build_id=build_id,
-                log_path=log_file,
-            ),
+            summary=gradle_summary(log_body),
         )
 
     msg = f"Gradle {task} 成功\n日志: {log_file}"
@@ -1037,16 +1061,7 @@ def run_gradle(
     return ToolResult(
         True,
         msg,
-        summary=parse_gradle_summary(
-            task,
-            log_file.read_text(encoding="utf-8") if log_file.is_file() else "",
-            success=True,
-            exit_code=result.returncode,
-            duration_ms=duration_ms,
-            build_id=build_id,
-            log_path=log_file,
-            apk_path=apk_out,
-        ),
+        summary=gradle_summary(log_file.read_text(encoding="utf-8") if log_file.is_file() else "", apk_out),
     )
 
 

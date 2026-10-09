@@ -259,9 +259,9 @@ button svg { flex-shrink: 0; }
 .delivery-card header strong { font-size: 13px; }
 .delivery-card .delivery-id { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .delivery-checks { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin: 12px 0; }
-.delivery-check { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 7px; background: var(--bg-panel); font-size: 12px; }
-.delivery-check[data-state="available"] { color: var(--accent); }
-.delivery-check[data-state="unknown"] { color: var(--muted); }
+.delivery-check { min-width: 0; padding: 8px 10px; border-radius: 7px; background: var(--bg-panel); font-size: 12px; }
+.delivery-check[data-available="true"] { color: var(--accent); }
+.delivery-check[data-state="unknown"], .delivery-check[data-state="passed"][data-available="false"] { color: var(--muted); }
 .delivery-check b { font-weight: 500; flex: 1; }
 .delivery-check small { font-size: 10px; }
 .delivery-card p { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
@@ -270,3 +270,17 @@ button svg { flex-shrink: 0; }
 @media(max-width:1050px) { .cx-scene { padding-inline: 18px; } .cx-agent-composer { margin-inline: 16px; } .cx-launcher { padding: 18px; } }
 @media(max-width:720px) { .cx-scene { padding: 16px 12px; } .cx-agent-composer { margin: 8px 12px 12px; } .delivery-card { padding: 12px; } .delivery-checks { grid-template-columns: 1fr; } }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+.delivery-check-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; }
+.delivery-check-status small { overflow-wrap: anywhere; }
+.delivery-check[data-state="failed"] { color: var(--danger, #c94747); }
+.delivery-check[data-state="canceled"], .delivery-check[data-state="interrupted"], .delivery-check[data-state="no_tests"], .delivery-check[data-state="skipped"] { color: var(--muted); }
+.delivery-check .delivery-source { font-size: 11px; color: var(--muted); }
+.delivery-check[data-source-match="changed"] .delivery-source { color: var(--warning, #ad6b19); }
+.delivery-check .delivery-evidence-time { font-size: 10px; color: var(--muted); }
+.delivery-card .delivery-time { margin-bottom: 0; }
+.ai-delivery { flex: 0 1 auto; min-height: 0; max-height: 40vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.ai-delivery > summary { padding: 9px 12px; cursor: pointer; color: var(--muted); font-size: 12px; }
+.ai-delivery > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ai-delivery .delivery-card { margin: 0 8px 8px; padding: 12px; }
+.ai-delivery .delivery-checks { grid-template-columns: 1fr; }

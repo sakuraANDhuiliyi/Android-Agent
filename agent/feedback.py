@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import shutil
@@ -13,8 +14,9 @@ from typing import Any, Callable
 
 from agent.diagnostics import get_diagnostic_store
 from agent.paths import user_builds_dir, workspace_path, latest_apk_path
-from agent.redaction import redact_sensitive_text
-from agent.safe_paths import resolve_workspace_path
+from agent.redaction import redact_sensitive_text, redact_sensitive_value
+from agent.safe_paths import open_workspace_file, resolve_workspace_path
+from agent.verification import verification_for_job
 
 
 class FeedbackStore:
@@ -85,18 +87,93 @@ def parse_log(log: str, workspace: Path, task: str = "assembleDebug", ok: bool |
     return {"task": task, "status": status, "duration_ms": duration_ms, "tasks": counts, "warnings": sum(p["severity"] == "warning" for p in issues), "problems": issues, "tests": None}
 
 
-def read_test_reports(workspace: Path, since: float) -> tuple[dict, list[dict]]:
+def snapshot_test_reports(workspace: Path, task: str = "testDebugUnitTest") -> dict:
+    """Inventory exact-variant XML before/after one invocation, without deleting it."""
+    files = {}
+    try:
+        for path in workspace.glob(f"**/build/test-results/{task}/TEST-*.xml"):
+            if len(files) >= 2000:
+                return {"status": "unknown", "files": {}}
+            relative = path.relative_to(workspace).as_posix()
+            with open_workspace_file(workspace, relative) as handle:
+                stat = os.fstat(handle.fileno())
+                if stat.st_size > 5_000_000:
+                    return {"status": "unknown", "files": {}}
+                body = handle.read(5_000_001)
+                end_stat = os.fstat(handle.fileno())
+            identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+            if len(body) > 5_000_000 or identity(end_stat) != identity(stat) or identity(path.stat()) != identity(stat):
+                return {"status": "unknown", "files": {}}
+            files[relative] = (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, hashlib.sha256(body).hexdigest())
+    except (OSError, PermissionError, ValueError):
+        return {"status": "unknown", "files": {}}
+    return {"status": "complete", "files": files}
+
+
+def fresh_test_reports(workspace: Path, baseline: dict, task: str = "testDebugUnitTest") -> tuple[dict, list[dict]]:
+    after = snapshot_test_reports(workspace, task)
+    if baseline.get("status") != "complete" or after["status"] != "complete":
+        return {"report_state": "invalid", "counts": None}, []
+    fresh = [workspace / name for name, identity in after["files"].items() if baseline["files"].get(name) != identity]
+    if not fresh:
+        return {"report_state": "missing", "counts": None}, []
+    totals, issues = read_test_reports(workspace, 0, paths=fresh, strict=True)
+    # Reject a concurrent report replacement while parsing, including newly
+    # appearing reports that would make a partial test suite appear complete.
+    if totals.pop("invalid", False) or snapshot_test_reports(workspace, task) != after:
+        return {"report_state": "invalid", "counts": None}, issues
+    totals.pop("reported", None)
+    return {"report_state": "complete", "counts": totals}, issues
+
+
+def _valid_junit(root: ET.Element) -> bool:
+    """Validate declared totals instead of mistaking partial XML for a pass."""
+    suites = [root] if root.tag == "testsuite" else list(root) if root.tag == "testsuites" else []
+    if any(suite.tag != "testsuite" for suite in suites):
+        return False
+
+    def declared_matches(node: ET.Element, cases: list[ET.Element]) -> bool:
+        expected = {"tests": len(cases), "failures": sum(c.find("failure") is not None for c in cases),
+                    "errors": sum(c.find("error") is not None for c in cases),
+                    "skipped": sum(c.find("skipped") is not None for c in cases)}
+        for name, count in expected.items():
+            raw = node.get(name)
+            if raw is not None and (not re.fullmatch(r"[0-9]+", raw) or int(raw) != count):
+                return False
+        return True
+
+    for suite in suites:
+        cases = list(suite.findall("testcase"))
+        if len(list(suite.iter("testcase"))) != len(cases) or suite.find("testsuite") is not None:
+            return False
+        if any(sum(len(case.findall(kind)) for kind in ("failure", "error", "skipped")) > 1 for case in cases):
+            return False
+        if not declared_matches(suite, cases):
+            return False
+    return root.tag == "testsuite" or declared_matches(root, list(root.iter("testcase")))
+
+
+def read_test_reports(workspace: Path, since: float, *, paths: list[Path] | None = None, strict: bool = False) -> tuple[dict, list[dict]]:
     totals = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "reported": False}
     issues = []
-    for path in workspace.glob("**/build/test-results/**/TEST-*.xml"):
+    for path in paths if paths is not None else workspace.glob("**/build/test-results/testDebugUnitTest/TEST-*.xml"):
         try:
             safe = resolve_workspace_path(workspace, path.relative_to(workspace).as_posix())
             if safe.stat().st_mtime < since or safe.stat().st_size > 5_000_000:
+                if strict:
+                    totals["invalid"] = True
                 continue
-            body = safe.read_text(encoding="utf-8")
+            with open_workspace_file(workspace, path.relative_to(workspace).as_posix()) as handle:
+                body = handle.read(5_000_001).decode("utf-8")
             if "<!DOCTYPE" in body or "<!ENTITY" in body:
+                if strict:
+                    totals["invalid"] = True
                 continue
             root = ET.fromstring(body)
+            if root.tag not in {"testsuite", "testsuites"} or (strict and not _valid_junit(root)):
+                if strict:
+                    totals["invalid"] = True
+                continue
             totals["reported"] = True
             for case in root.iter("testcase"):
                 totals["total"] += 1
@@ -127,11 +204,60 @@ def read_test_reports(workspace: Path, since: float) -> tuple[dict, list[dict]]:
                 else:
                     totals["passed"] += 1
         except (OSError, PermissionError, ET.ParseError, ValueError):
+            if strict:
+                totals["invalid"] = True
             continue
     return totals, issues
 
 
+def _save_feedback_report(store: Any, user_id: str, task_id: str, report: dict, *, enrich: bool = False) -> dict:
+    """One durable run per tool call; enrichment cannot create another run."""
+    with store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT context_json FROM tasks WHERE id=? AND user_id=?", (task_id, user_id)).fetchone()
+        if row is None:
+            raise ValueError("verification task not found")
+        context = json.loads(row["context_json"] or "{}")
+        runs = list(context.get("feedback_runs") or [])
+        call_id = report.get("tool_call_id")
+        index = next((i for i, run in enumerate(runs) if call_id and (run.get("tool_call_id") or (run.get("verification_receipt") or {}).get("tool_call_id")) == call_id), None)
+        if index is not None:
+            if not enrich:
+                return runs[index]
+            runs[index] = {**runs[index], **report, "created_at": runs[index].get("created_at", report["created_at"])}
+            saved = runs[index]
+        else:
+            runs.append(report)
+            runs.sort(key=lambda run: run.get("created_at") or 0)
+            saved = report
+        context["feedback_runs"] = redact_sensitive_value(runs[-30:])
+        conn.execute("UPDATE tasks SET context_json=? WHERE id=? AND user_id=?",
+                     (json.dumps(context, ensure_ascii=False), task_id, user_id))
+        return saved
+
+
+def persist_gradle_receipt(store: Any, user_id: str, task_id: str, payload: dict, *, created_at: float | None = None) -> dict:
+    """Persist result evidence before its canonical event, without filesystem IO."""
+    task = str((payload.get("input") or {}).get("task") or "assembleDebug")
+    stamp = created_at or time.time()
+    summary = payload.get("summary") or {}
+    receipt = summary.get("verification_receipt") if isinstance(summary, dict) else None
+    if isinstance(receipt, dict) and receipt.get("task") == task and receipt.get("schema_version") == 1:
+        receipt = {**receipt, "job_id": task_id, "tool_call_id": payload.get("tool_call_id")}
+    else:
+        error = payload.get("error_type") or ""
+        state = "unknown" if payload.get("ok") else "canceled" if error in {"CancellationRequested", "ApprovalCanceled"} else "interrupted" if payload.get("interrupted") or error == "Timeout" else "failed"
+        receipt = {"schema_version": 1, "job_id": task_id, "task": task,
+                   "run_id": payload.get("tool_call_id"), "tool_call_id": payload.get("tool_call_id"),
+                   "evidence_time": stamp, "duration_ms": payload.get("duration_ms"), "state": state}
+    report = {"task": task, "tool_call_id": payload.get("tool_call_id"), "created_at": stamp,
+              "status": "success" if payload.get("ok") else "failed", "problems": [], "tests": None,
+              "verification_receipt": receipt}
+    return _save_feedback_report(store, user_id, task_id, report)
+
+
 def capture_gradle_result(store: Any, user_id: str, project_id: str, task_id: str, payload: dict, since: float) -> None:
+    base = persist_gradle_receipt(store, user_id, task_id, payload)
     task = str((payload.get("input") or {}).get("task") or "assembleDebug")
     output = str(payload.get("model_output") or payload.get("preview") or "")
     match = re.search(r"日志:\s*(.+)", output)
@@ -148,10 +274,8 @@ def capture_gradle_result(store: Any, user_id: str, project_id: str, task_id: st
         except (OSError, ValueError):
             pass
     report = parse_log(log, workspace_path(user_id, project_id), task, bool(payload.get("ok")), payload.get("duration_ms"))
-    report.update({"created_at": time.time(), "log_path": log_path})
-    if task == "assembleDebug" and payload.get("ok"):
-        from agent.workspace import workspace_fingerprint
-        report["source_fingerprint"] = workspace_fingerprint(workspace_path(user_id, project_id), user_id)
+    receipt = base["verification_receipt"]
+    report.update({"created_at": base["created_at"], "tool_call_id": base["tool_call_id"], "log_path": log_path, "verification_receipt": receipt})
 
     if task == "lintDebug":
         for path in workspace_path(user_id, project_id).glob("**/build/reports/lint-results*.xml"):
@@ -171,16 +295,14 @@ def capture_gradle_result(store: Any, user_id: str, project_id: str, task_id: st
             except (OSError, PermissionError, ValueError, ET.ParseError):
                 continue
     if task == "testDebugUnitTest":
-        report_since = time.time() - payload["duration_ms"] / 1000 - 1 if payload.get("duration_ms") else since
-        report["tests"], test_issues = read_test_reports(workspace_path(user_id, project_id), report_since)
-        report["problems"].extend(test_issues)
+        counts = receipt.get("counts") if isinstance(receipt, dict) else None
+        report["tests"] = {**counts, "reported": True} if counts and receipt.get("report_state") == "complete" else {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "reported": False}
+        report["problems"].extend(receipt.get("test_problems") or [] if isinstance(receipt, dict) else [])
         if report["tests"]["failed"]:
             report["status"] = "failed"
-    job = store.get_task(task_id, user_id) or {}
-    context = job.get("context") or {}
-    runs = list(context.get("feedback_runs") or [])
-    runs.append(report)
-    store.update_task(task_id, context={**context, "feedback_runs": runs[-30:]}, **({"build_log_path": log_path} if log_path else {}))
+    _save_feedback_report(store, user_id, task_id, report, enrich=True)
+    if log_path:
+        store.update_task(task_id, build_log_path=log_path)
     # Keep valid artifacts installable even when subsequent tests fail.
     if task == "assembleDebug":
         store.update_task(task_id, apk_path=None)
@@ -198,7 +320,7 @@ def feedback_summary(store: Any, user_id: str, project_id: str, job_id: str | No
     if job_id:
         jobs = [job for job in jobs if job["id"] == job_id]
     jobs.sort(key=lambda j: j.get("created_at") or 0, reverse=True)
-    job = next((j for j in jobs if (j.get("context") or {}).get("feedback_runs") or j.get("build_log_path")), None)
+    job = jobs[0] if job_id and jobs else next((j for j in jobs if (j.get("context") or {}).get("feedback_runs") or j.get("build_log_path")), None)
     runs = list((job.get("context") or {}).get("feedback_runs") or []) if job else []
     if job and not runs and job.get("build_log_path"):
         try:
@@ -233,7 +355,7 @@ def feedback_summary(store: Any, user_id: str, project_id: str, job_id: str | No
             pass
     public_build = {k: v for k, v in build.items() if k != "log_path"} if build else None
     public_tests = {k: v for k, v in tests.items() if k != "log_path"} if tests else None
-    return {"project_id": project_id, "job_id": job["id"] if job else None, "build": public_build, "tests": public_tests, "problems": issues, "artifact": artifact, "max_fix_attempts": 2}
+    return {"project_id": project_id, "job_id": job["id"] if job else None, "job_status": job.get("status") if job else None, "build": public_build, "tests": public_tests, "problems": issues, "artifact": artifact, "max_fix_attempts": 2, "verification": verification_for_job(job or {"id": None})}
 
 
 def run_feedback_cycle(options: dict, run_gradle: Callable[[str], bool], fix: Callable[[int, str], None], check: Callable[[], None]) -> None:

@@ -285,13 +285,18 @@ print(json.dumps({"id":r["id"],"created":created}))
             with self.subTest(changed=changed):
                 task, turn = self.task(task_id=f'build-{changed}', status='queued', turn_status='queued')
                 def build(*args, **kwargs):
+                    from agent.workspace_inputs import capture_workspace_inputs
+                    inputs = capture_workspace_inputs(self.workspace)
                     apk = latest_apk_path('local', self.project)
                     apk.parent.mkdir(parents=True, exist_ok=True)
                     apk.write_bytes(b'our build')
                     log = user_builds_dir('local') / self.project / f"{task['id']}.log"
                     log.write_text('BUILD SUCCESSFUL')
                     kwargs['on_event'](E.TOOL_RESULT, {'tool_call_id': task['id'] + '-build', 'name': 'run_gradle', 'ok': True,
-                        'input': {'task': 'assembleDebug'}, 'model_output': f'BUILD SUCCESSFUL\n日志: {log}'})
+                        'input': {'task': 'assembleDebug'}, 'model_output': f'BUILD SUCCESSFUL\n日志: {log}',
+                        'summary': {'verification_receipt': {'schema_version': 1, 'task': 'assembleDebug',
+                            'run_id': task['id'] + '-run', 'state': 'passed', 'evidence_time': time.time(),
+                            'inputs_before': inputs, 'inputs_after': inputs}}})
                     raise PauseRequested('pause after build')
                 with self.assertRaises(PauseRequested):
                     self.run_job(task, turn, build)
@@ -313,3 +318,53 @@ print(json.dumps({"id":r["id"],"created":created}))
                     self.assertEqual(Path(result['apk_path']).read_bytes(), b'our build')
                     self.assertIn('BUILD SUCCESSFUL', Path(result['build_log_path']).read_text())
                     self.assertNotIn('OTHER TASK', Path(result['build_log_path']).read_text())
+
+    def test_latest_receipt_survives_optional_capture_error(self):
+        from agent.verification import verification_for_job
+        from agent.workspace_inputs import capture_workspace_inputs
+        for next_ok, expected in ((False, 'failed'), (True, 'unknown')):
+            with self.subTest(expected=expected):
+                task, turn = self.task(task_id=f'capture-{expected}', status='queued', turn_status='queued')
+                inputs = capture_workspace_inputs(self.workspace)
+                def agent(*args, **kwargs):
+                    kwargs['on_event'](E.TOOL_RESULT, {'tool_call_id': task['id'] + '-first', 'name': 'run_gradle',
+                        'ok': True, 'input': {'task': 'assembleDebug'}, 'summary': {'verification_receipt': {
+                            'schema_version': 1, 'task': 'assembleDebug', 'run_id': 'old-pass', 'state': 'passed',
+                            'evidence_time': time.time(), 'inputs_before': inputs, 'inputs_after': inputs}}})
+                    # The next attempt has no receipt-rich summary. It must
+                    # still replace the old successful validation fact.
+                    kwargs['on_event'](E.TOOL_RESULT, {'tool_call_id': task['id'] + '-next', 'name': 'run_gradle',
+                        'ok': next_ok, 'input': {'task': 'assembleDebug'}, 'error_type': None if next_ok else 'NonZeroExitCode'})
+                    return 'finished'
+                with patch.object(jobs, 'capture_gradle_result', side_effect=OSError('report volume unavailable')):
+                    self.run_job(task, turn, agent)
+                result = self.store.get_task(task['id'])
+                runs = result['context']['feedback_runs']
+                self.assertEqual(len(runs), 2)
+                step = verification_for_job(result)['build']
+                self.assertEqual(step['state'], expected)
+                self.assertEqual(step['run_id'], task['id'] + '-next')
+
+    def test_evicted_receipt_replay_cannot_replace_latest_execution(self):
+        from agent.verification import verification_for_job
+        from agent.workspace_inputs import capture_workspace_inputs
+        task, turn = self.task(task_id='receipt-replay', status='queued', turn_status='queued')
+        inputs = capture_workspace_inputs(self.workspace)
+        def agent(*args, **kwargs):
+            first = None
+            for index in range(31):
+                payload = {'tool_call_id': f'call-{index}', 'name': 'run_gradle', 'ok': index > 0,
+                    'input': {'task': 'assembleDebug'}, 'summary': {'verification_receipt': {
+                        'schema_version': 1, 'task': 'assembleDebug', 'run_id': f'run-{index}',
+                        'state': 'passed' if index > 0 else 'failed', 'evidence_time': time.time(),
+                        'inputs_before': inputs, 'inputs_after': inputs}}}
+                if first is None:
+                    first = payload
+                kwargs['on_event'](E.TOOL_RESULT, payload)
+            kwargs['on_event'](E.TOOL_RESULT, first)
+            return 'finished'
+        with patch.object(jobs, 'capture_gradle_result'):
+            self.run_job(task, turn, agent)
+        result = self.store.get_task(task['id'])
+        self.assertEqual(len(result['context']['feedback_runs']), 30)
+        self.assertEqual(verification_for_job(result)['build']['run_id'], 'run-30')

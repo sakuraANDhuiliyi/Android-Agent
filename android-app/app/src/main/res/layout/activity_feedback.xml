@@ -7,7 +7,7 @@
             <TextView android:id="@+id/textStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/loading" android:textAppearance="?attr/textAppearanceHeadlineSmall" android:accessibilityLiveRegion="polite" />
             <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" app:cardElevation="0dp" app:strokeWidth="1dp" app:strokeColor="?attr/colorOutlineVariant">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_duration" />
+                    <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/verification_time_duration" />
                     <TextView android:id="@+id/textSummary" style="@style/Widget.AndroidAgent.MetricValue" />
                     <TextView style="@style/Widget.AndroidAgent.MetricLabel" android:text="@string/soft_tasks" android:layout_marginTop="20dp" />
                     <TextView android:id="@+id/textTaskMetrics" style="@style/Widget.AndroidAgent.MetricValue" />

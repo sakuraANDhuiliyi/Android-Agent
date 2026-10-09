@@ -635,6 +635,8 @@
     <string name="feedback_limit_hint">自动修复最多 2 轮，沿用任务审批、暂停和取消设置。更改设置后在下一次任务生效。</string>
     <string name="feedback_run">立即构建</string>
     <string name="feedback_not_run">尚未运行</string>
+    <string name="delivery_open_details">查看本任务验证详情</string>
+    <string name="verification_time_duration">构建验证时间与耗时</string>
     <string name="feedback_no_test_report">未生成本轮测试报告</string>
     <string name="feedback_fix_all">让 Agent 修复所有问题</string>
     <string name="feedback_fix_one">让 Agent 修复</string>

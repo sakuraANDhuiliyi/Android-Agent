@@ -28,14 +28,27 @@ Android 聊天标题栏和桌面两处助手入口接入离线 SVG 表情，映�
 
 已明确的验证边界：当前构建指纹复用审查路径，未覆盖根目录 Gradle 配置、所有模块或外部依赖；本轮只保证已审查源文件变化会撤销旧 APK。下一轮展示验证结果前需要补充输入范围、版本关联和未知状态，不能把这份部分指纹当作完整工作区的验证证明。
 
+## 本任务最近一次验证
+
+日期：2026-10-10。状态：实现、交叉审查和完整验收完成。以上一轮已推送的 `b4e10a0` 为基线。
+
+Android 聊天、验证详情、任务通知与桌面两个助手入口采用同一验证协议，分开展示构建、单测、APK 和安装。结果必须来自本次实际执行的记录，包含任务身份、执行身份和时间；输入关联单独显示。零测试、全跳过、取消、未知和旧记录不标成通过。单测先于构建执行时仍保留证据，不能因为命令顺序丢失事实。
+
+工作区输入摘要从原先部分审查路径扩展为根 Gradle 配置、wrapper、多模块源码和资源；排除生成目录，遇到符号链接、读取异常、并发变化及上限返回未知。摘要不证明外部依赖或实时工作区版本，详情见 [任务验证记录](VERIFICATION.md)。JUnit 只统计同一次命令新产生或变化的相同 variant 报告，并校验数量语义；任务列表读取持久化摘要，不扫描文件。
+
+首轮端到端验收发现直接取消 Gradle 时，进程负退出码可能早于取消监听线程，从而把已取消记录为普通失败；现以持久化取消请求补充确认。新增端到端场景直接停止真实测试进程验证该竞态，保留失败记录作为修复依据。
+
+交叉审查补齐结果与摘要的持久化顺序：最小验证记录先于规范工具结果写入，后续日志与问题详情只丰富同一次执行；可选详情读取失败不会让旧成功记录冒充最新执行。服务恢复会修补旧版已记录结果但缺验证摘要的窗口，并覆盖写入之间再次崩溃和重试的幂等行为。另修复 Anthropic 取消事件丢失 Gradle 任务参数的问题，保持事务写入时的敏感值脱敏。双端共享 API 示例同步加入实际解析断言。
+
+最终默认发布门禁 **22/22 全通过，无跳过项**，报告 `.artifacts/iteration-003/release.json`：后端 **625 项测试、54 项子测试**；完整 HTTP/WebSocket E2E **29/29**；Android **206 项 JVM 测试**、Debug 构建和 lint（0 错误、345 条警告）；桌面单元、真实 Chromium 双入口、六种实际进程/JUnit 结果的 Electron 验证及原有 smoke、截图、创意接口全部通过，npm audit 为 0 漏洞。Android 模拟器另完成 **11 项设备验收**，含七种展示状态、同任务详情绑定、分项时间与耗时及临时配置清理，报告 `.artifacts/iteration-003/android-results.json`。首次门禁中共享契约校验值未同步而失败的记录保留为 `release-initial.json`；修复后的完整门禁重新执行，未以专项替代。
+
 ## 下一步候选
 
 以下优先级来自官方资料与本仓库代码缺口的比较，属于本项目的实施选择，不表示复制其他产品的内部实现。每轮开始时重新核实资料和当前代码。
 
 | 顺序 | 改进 | 本项目缺口 | 主要验收 |
 | --- | --- | --- | --- |
-| 1 | 本轮验证结果卡 | 已有 feedback_runs，交付卡的测试与安装仍固定为未验证，构建输入指纹范围不完整 | 构建、单测、APK、安装分别展示；准确任务与输入关联；旧报告不得算本轮通过；零测试与取消状态明确 |
-| 2 | 引导与追问回执 | 已有消息键、消费时间和持久化引导，客户端目前主要用 Toast | 已接收、待处理、已采用分开；重试去重、服务重启恢复、顺序与账号隔离 |
+| 1 | 引导与追问回执 | 已有消息键、消费时间和持久化引导，客户端目前主要用 Toast | 已接收、待处理、已采用分开；重试去重、服务重启恢复、顺序与账号隔离 |
 
 ## 参考依据
 
@@ -43,6 +56,8 @@ Android 聊天标题栏和桌面两处助手入口接入离线 SVG 表情，映�
 - [Codex 手机工程工作流](https://developers.openai.com/blog/mastering-codex-remote-for-engineering)：移动端围绕任务结果、变更审查和继续反馈组织工作。
 - [Claude Code 会话恢复](https://code.claude.com/docs/en/common-workflows#resume-previous-conversations) 与 [checkpointing](https://code.claude.com/docs/en/checkpointing)：会话恢复及检查点为中断后继续工作提供明确入口。
 - [Claude Code 验证实践](https://code.claude.com/docs/en/best-practices#give-claude-a-way-to-verify-its-work)：测试输出、命令结果与截图是功能完成的验证依据。
+- [Cursor 的电脑操作与验证](https://cursor.com/blog/agent-computer-use)：通过实际运行应用与可查看的结果检查功能，作为本轮增加 Chromium、Electron 和 Android 设备验收的参考。
+- [Gradle JVM 测试与报告](https://docs.gradle.org/current/userguide/java_testing.html)：按测试任务产生的报告及执行结果统计用例，作为报告范围与数量校验的依据。
 - [Claude Code 消息队列](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)：运行中的输入需要可见的排队状态。
 - [Cursor 更新记录](https://prod.cursor.com/docs/release-notes)：错误恢复入口、最近一轮审查和追问恢复改进可作为交互参考。
 - [brace-expansion 递归漏洞](https://github.com/advisories/GHSA-qhr7-859c-m2p7) 与 [扩展复杂度漏洞](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr)：此次依赖升级的直接依据。

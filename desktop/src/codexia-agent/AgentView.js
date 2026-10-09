@@ -150,6 +150,7 @@
         id: String(job.id),
         can_recover: job.can_recover === true,
         recovery_job_id: job.recovery_job_id || null,
+        verification: job.verification ?? null,
         project: projectMap.get(job.project_id) || null,
         displayStatus: displayStatus(job),
         statusClass: statusClass(job),
@@ -793,7 +794,7 @@
       } else if (payload.kind === "job" && payload.job) {
         mergeJob(payload.job);
       } else if (payload.kind === "done") {
-        mergeJob(payload.job || { ...current, status: payload.status, result: payload.result, error: payload.error });
+        mergeJob(payload.job || { ...current, status: payload.status, result: payload.result, error: payload.error, verification: null });
         closeJobWatcher();
       }
       renderAgents();

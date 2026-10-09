@@ -785,6 +785,7 @@ class TaskStore:
             )
             calls: dict[str, dict[str, Any]] = {}
             completed_call_ids: set[str] = set()
+            completed_results: dict[str, dict[str, Any]] = {}
             for event in events:
                 payload = event.get("payload") or {}
                 tool_call_id = payload.get("tool_call_id")
@@ -795,6 +796,7 @@ class TaskStore:
                 elif event["event_type"] == EventType.TOOL_RESULT:
                     if tool_call_id in calls:
                         completed_call_ids.add(tool_call_id)
+                        completed_results[tool_call_id] = event
                     else:
                         logger.warning(
                             "Ignoring orphan tool_result %s while recovering turn %s",
@@ -803,9 +805,37 @@ class TaskStore:
                         )
 
             for tool_call_id, call_event in calls.items():
-                if tool_call_id in completed_call_ids:
-                    continue
                 call_payload = call_event.get("payload") or {}
+                if tool_call_id in completed_call_ids:
+                    if task_id and call_payload.get("name") == "run_gradle":
+                        from agent.feedback import persist_gradle_receipt
+                        completed = completed_results[tool_call_id]
+                        persist_gradle_receipt(self, turn["user_id"], task_id,
+                            {**(completed.get("payload") or {}), "input": call_payload.get("input") or {}},
+                            created_at=completed.get("created_at"))
+                    continue
+                # A process lost before TOOL_RESULT has no completed receipt.
+                # Preserve that latest attempt as interrupted, rather than
+                # letting an earlier successful run masquerade as the latest.
+                gradle_task = (call_payload.get("input") or {}).get("task", "assembleDebug")
+                if task_id and call_payload.get("name") == "run_gradle" and gradle_task in {"assembleDebug", "testDebugUnitTest"}:
+                    with self._connect() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        task_row = conn.execute("SELECT context_json FROM tasks WHERE id=? AND user_id=?", (task_id, turn["user_id"])).fetchone()
+                        if task_row:
+                            context = json.loads(task_row["context_json"] or "{}")
+                            runs = list(context.get("feedback_runs") or [])
+                            if not any((run.get("verification_receipt") or {}).get("tool_call_id") == tool_call_id for run in runs):
+                                state = "canceled" if turn.get("task_cancel_requested") else "interrupted"
+                                runs.append({"task": gradle_task, "status": "failed", "created_at": now, "problems": [], "tests": None,
+                                    "verification_receipt": {"schema_version": 1, "job_id": task_id, "task": gradle_task,
+                                        "run_id": tool_call_id, "tool_call_id": tool_call_id, "evidence_time": now,
+                                        "duration_ms": None, "state": state}})
+                                context["feedback_runs"] = runs[-30:]
+                                conn.execute("UPDATE tasks SET context_json=? WHERE id=? AND user_id=?",
+                                             (json.dumps(context, ensure_ascii=False), task_id, turn["user_id"]))
+
+
                 event_store.append_event_idempotent(
                     conversation_id,
                     turn_id,
@@ -824,6 +854,7 @@ class TaskStore:
                     task_id=task_id,
                     context_visible=True,
                 )
+
 
             event_store.append_event_idempotent(
                 conversation_id,

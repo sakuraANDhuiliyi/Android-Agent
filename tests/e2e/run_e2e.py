@@ -250,6 +250,17 @@ class E2ERunner:
         context.job = context.client.wait_job(str(job["id"]))
         self.wait_terminal_events(context)
 
+    def driver_validation_then_edit(self, context: ScenarioContext) -> None:
+        job = self.send_prompt(context)
+        context.client.wait_event(context.conversation_id, lambda event:
+                                  event.get("event_type") == "tool_result"
+                                  and (event.get("payload") or {}).get("name") == "run_gradle")
+        # Simulate an editor changing a root build input while the task finishes.
+        root = context.client.workspace_path(context.project_id)
+        (root / "gradle.properties").write_text("verification.input=changed\n", encoding="utf-8")
+        context.job = context.client.wait_job(str(job["id"]))
+        self.wait_terminal_events(context)
+
     def driver_approval(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])
@@ -526,6 +537,34 @@ class E2ERunner:
                 bool(job.get("has_apk")) == bool(expect["has_apk"]),
                 f"has_apk={job.get('has_apk')} != {expect['has_apk']}",
             )
+        if "verification" in expect:
+            verification = job.get("verification") or {}
+            context.check(verification.get("schema_version") == 1 and verification.get("job_id") == job["id"]
+                          and verification.get("scope") == "job", f"invalid verification binding: {verification}")
+            for step, fields in expect["verification"].items():
+                actual = verification.get(step) or {}
+                for key, value in fields.items():
+                    context.check(actual.get(key) == value,
+                                  f"verification.{step}.{key}={actual.get(key)!r} != {value!r}")
+                if actual.get("state") in {"passed", "failed", "no_tests", "skipped", "canceled"}:
+                    context.check(bool(actual.get("run_id")) and (actual.get("evidence_time") or 0) > 0,
+                                  f"verification.{step} missing execution identity/time")
+            context.check(verification.get("installation", {}).get("state") == "unknown",
+                          "build evidence claimed installation without a device receipt")
+            feedback = context.client.http.get(f"/api/projects/{context.project_id}/feedback", params={"job_id": job["id"]})
+            feedback.raise_for_status()
+            context.check(feedback.json().get("verification") == verification, "feedback disagrees with exact job evidence")
+            listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+            listing.raise_for_status()
+            listed = next(item for item in listing.json()["jobs"] if item["id"] == job["id"])
+            context.check(listed.get("verification") == verification, "job list disagrees with job evidence")
+            stranger = E2EClient(self.stack)
+            try:
+                stranger.register_account()
+                response = stranger.http.get(f"/api/projects/{context.project_id}/feedback", params={"job_id": job["id"]})
+                context.check(response.status_code == 404, "verification leaked across accounts")
+            finally:
+                stranger.close()
         if "has_build_log" in expect:
             context.check(
                 bool(job.get("has_build_log")) == bool(expect["has_build_log"]),

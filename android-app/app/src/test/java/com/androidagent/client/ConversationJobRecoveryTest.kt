@@ -176,6 +176,34 @@ class ConversationJobRecoveryTest {
         assertFalse(h.vm.store.sortedItems().any { it.content.toString().contains("stale injected text") })
     }
 
+    @Test fun `late verification from the previous job cannot mark a recovered job verified`() {
+        val original = oldJob().put("verification", verificationFixture("old"))
+        val child = newJob().put("verification", verificationFixture("new").also {
+            it.getJSONObject("build").put("state", "failed")
+            it.getJSONObject("unit_tests").put("state", "interrupted")
+        })
+        val h = Harness(original = original) {
+            when (it.url.encodedPath) {
+                "/api/jobs/old/recover" -> envelope(child, 201)
+                "/api/jobs/new" -> envelope(child)
+                else -> null
+            }
+        }
+        h.start()
+        val previous = h.vm.state.value.job!!
+        assertTrue(previous.verification.build.verified)
+        val oldWatcher = h.watchers.single()
+        h.vm.recoverJob()
+        await("child verification not loaded") {
+            h.vm.state.value.job?.id == "new" && h.vm.state.value.job?.verification?.build?.state == VerificationState.FAILED
+        }
+        oldWatcher.job(previous)
+        oldWatcher.done(previous.copy(status = "succeeded"))
+        assertEquals("new", h.vm.state.value.job!!.id)
+        assertFalse(h.vm.state.value.job!!.verification.build.verified)
+        assertEquals(VerificationState.INTERRUPTED, h.vm.state.value.job!!.verification.tests.state)
+    }
+
     @Test fun `existing paused recovery opens without POST or implicit resume`() {
         val h = Harness(original = oldJob(false, "new")) { request ->
             when (request.url.encodedPath) {

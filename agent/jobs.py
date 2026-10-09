@@ -26,7 +26,7 @@ from agent.conversation_events import (
 from agent.conversation_summary import create_semantic_checkpoint
 from agent.database import TaskStore
 from agent.honesty import sanitize_final_answer
-from agent.feedback import FeedbackStore, capture_gradle_result, run_feedback_cycle, feedback_summary
+from agent.feedback import FeedbackStore, capture_gradle_result, persist_gradle_receipt, run_feedback_cycle, feedback_summary
 from agent.governance import prune_old_files
 from agent.loop import CancellationRequested, dispatch_agent_tool, run_agent
 from agent.paths import latest_apk_path, user_builds_dir, workspace_path
@@ -35,7 +35,7 @@ from agent.project_lifecycle import project_operation
 from agent.redaction import redact_sensitive_value
 from agent.tools import ToolResult, cancel_gradle
 from agent.worker import PauseRequested, TaskLeaseLost, TaskWorker
-from agent.workspace import WorkspaceRepository, workspace_fingerprint
+from agent.workspace import WorkspaceRepository
 from agent.subagents import configure_subagent_store, run_subagent_job
 from agent.task_settings import inherited_execution_context, model_selection, resolve_task_settings
 
@@ -164,6 +164,7 @@ def _turn_id_for_task(task_id: str) -> str | None:
 
 def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
     from agent.task_status import enrich_job_dict
+    from agent.verification import verification_for_job
 
     private_fields = {
         "apk_path",
@@ -201,6 +202,7 @@ def job_to_dict(job: dict[str, Any]) -> dict[str, Any]:
         # unverified recovery action. The mutation always rechecks the DB.
         logger.debug("Recovery metadata unavailable for task %s", task_id, exc_info=True)
     result["has_apk"] = bool(job.get("apk_path"))
+    result["verification"] = verification_for_job(job)
     result["has_build_log"] = bool(job.get("build_log_path"))
     result["apk_url"] = f"/api/jobs/{task_id}/apk" if job.get("apk_path") else None
     result["build_log_url"] = (
@@ -1204,6 +1206,12 @@ def _run_job(
                 event_key=f"tool_call:{payload['tool_call_id']}",
             )
         elif event_type == EventType.TOOL_RESULT and payload.get("tool_call_id"):
+            if (payload.get("name") == "run_gradle"
+                    and f"tool_result:{payload['tool_call_id']}" not in applied_events):
+                # Never make a completed result durable while its latest
+                # verification receipt is still missing. Log/APK enrichment
+                # below is optional; this primary receipt is not.
+                persist_gradle_receipt(_store, user_id, task_id, payload)
             canonical = append_canonical(
                 event_type,
                 payload,
@@ -1383,6 +1391,9 @@ def _run_job(
         if after_checkpoint_done:
             return dict(after_checkpoint_status)
         after_checkpoint_done = True
+        from agent.workspace_inputs import capture_workspace_inputs
+        saved_context = (_store.get_task(task_id, user_id) or {}).get("context") or {}
+        _store.update_task(task_id, context={**saved_context, "verification_final_inputs": capture_workspace_inputs(workspace)})
         cp = create_checkpoint("after_turn", idempotency_key=f"after:{turn_id}:final")
         if cp and before_checkpoint:
             after_checkpoint_status.clear()
@@ -1665,6 +1676,7 @@ def _run_job(
                     "tool_call_id": tool_call_id,
                     "name": "run_gradle",
                     "ok": result.ok,
+                    "summary": result.summary,
                     "model_output": model_output,
                     "structured_output": (
                         result.output
@@ -1728,8 +1740,11 @@ def _run_job(
         build_runs = [run for run in (saved_job.get("context") or {}).get("feedback_runs", [])
                       if run.get("task") == "assembleDebug"]
         if build_state["succeeded"] and build_runs:
-            fingerprint = build_runs[-1].get("source_fingerprint")
-            if fingerprint and fingerprint != workspace_fingerprint(workspace, user_id):
+            from agent.workspace_inputs import capture_workspace_inputs, compare_workspace_inputs
+            receipt = build_runs[-1].get("verification_receipt") or {}
+            after_inputs = receipt.get("inputs_after")
+            if "changed" in (compare_workspace_inputs(receipt.get("inputs_before"), after_inputs),
+                              compare_workspace_inputs(after_inputs, capture_workspace_inputs(workspace))):
                 _store.update_task(task_id, apk_path=None)
                 raise RuntimeError("代码在最后一次成功构建后已变化，请重新构建以验证当前版本")
         # Relaxed gate: only fail if gradle was attempted and failed

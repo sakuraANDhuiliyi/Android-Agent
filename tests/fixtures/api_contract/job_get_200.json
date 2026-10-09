@@ -21,6 +21,36 @@
     "apk_url": "/api/jobs/job-001/apk",
     "build_log_url": "/api/jobs/job-001/log",
     "can_recover": false,
-    "recovery_job_id": null
+    "recovery_job_id": null,
+    "verification": {
+      "schema_version": 1,
+      "job_id": "job-001",
+      "scope": "job",
+      "build": {
+        "state": "not_run",
+        "task": "assembleDebug",
+        "run_id": null,
+        "evidence_time": null,
+        "duration_ms": null,
+        "source_match": "unknown",
+        "reason": "not_run"
+      },
+      "unit_tests": {
+        "state": "not_run",
+        "task": "testDebugUnitTest",
+        "run_id": null,
+        "evidence_time": null,
+        "duration_ms": null,
+        "source_match": "unknown",
+        "reason": "not_run",
+        "counts": null
+      },
+      "installation": {
+        "state": "unknown",
+        "evidence_time": null,
+        "source_match": "unknown",
+        "reason": "no_device_receipt"
+      }
+    }
   }
 }

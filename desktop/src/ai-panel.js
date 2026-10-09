@@ -26,6 +26,8 @@
     jobHistory: document.getElementById("jobHistory"),
     conversationSelect: document.getElementById("conversationSelect"),
     aiMessages: document.getElementById("aiMessages"),
+    delivery: document.getElementById("aiDelivery"),
+    deliveryContent: document.getElementById("aiDeliveryContent"),
     aiEmpty: document.getElementById("aiEmpty"),
     aiContext: document.getElementById("aiContext"),
     approvalDock: document.getElementById("approvalDock"),
@@ -329,7 +331,20 @@
     updateStatusDot();
   }
 
+  function renderDelivery() {
+    if (!els.delivery || !els.deliveryContent || !window.DeliveryUI) return;
+    const job = state.currentJob;
+    const current = state.connected && job?.id === state.currentJobId
+      && job.project_id === state.selectedProjectId && job.conversation_id === state.conversationId
+      && resolveJobStatus(job) === state.jobStatus;
+    const snapshot = current ? { ...job, status: state.jobStatus, display_status: state.jobStatus } : null;
+    const visible = snapshot && window.DeliveryUI.describe(snapshot).terminal;
+    els.delivery.hidden = !visible;
+    els.deliveryContent.replaceChildren(...(visible ? [window.DeliveryUI.render(snapshot)] : []));
+  }
+
   function updateStatusDot() {
+    renderDelivery();
     if (!els.aiStatusDot) return;
     const pending = timeline.pendingApprovals().length;
     const status = state.cancelRequested ? "cancel_requested" : state.jobStatus;

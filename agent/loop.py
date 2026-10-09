@@ -1580,6 +1580,7 @@ def _run_anthropic(
                         interrupted=True,
                         error_type=exc.__class__.__name__,
                     ),
+                    input=tool_input,
                     preview=str(exc),
                 )
                 raise

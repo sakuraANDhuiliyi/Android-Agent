@@ -1,0 +1,56 @@
+{
+  "id": "29_verification_invalid",
+  "title": "语义矛盾的JUnit报告不能显示通过",
+  "prompt": "执行本任务的构建与测试并保存证据",
+  "auto_approve": true,
+  "setup_files": {
+    "gradlew": {
+      "executable": true,
+      "content": "#!/bin/sh\nset -eu\ncase \"$1\" in\nassembleDebug)\n mkdir -p app/build/outputs/apk/debug\n printf E2E-APK > app/build/outputs/apk/debug/app-debug.apk\n ;;\ntestDebugUnitTest)\n mkdir -p app/build/test-results/testDebugUnitTest\n cat > app/build/test-results/testDebugUnitTest/TEST-example.xml <<'REPORT'\n<testsuite tests=\"10\" failures=\"1\"><testcase name=\"one\"/></testsuite>\nREPORT\n ;;\nesac\necho BUILD SUCCESSFUL\n"
+    },
+    "gradle.properties": {
+      "content": "verification.input=original\n"
+    }
+  },
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_gradle",
+          "arguments": {
+            "task": "assembleDebug"
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_gradle",
+          "arguments": {
+            "task": "testDebugUnitTest"
+          }
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "验证证据已收集。"
+    }
+  ],
+  "expect": {
+    "verification": {
+      "build": {
+        "state": "passed",
+        "source_match": "match"
+      },
+      "unit_tests": {
+        "state": "unknown",
+        "source_match": "match",
+        "counts": null
+      }
+    }
+  }
+}

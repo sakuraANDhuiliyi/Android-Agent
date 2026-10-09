@@ -48,8 +48,8 @@ class TaskRepository(private val context: Context) {
                 val createdAfterRegistration = (job.createdAt ?: 0.0) * 1000 > state.getLong("registered", Long.MAX_VALUE)
                 if (job.status in UiFormat.TERMINAL_STATUSES && old !in UiFormat.TERMINAL_STATUSES && (old != null || createdAfterRegistration)) {
                     JobNotifier.notifyJobFinished(context, job.id, job.status,
-                        "${job.prompt.take(100)}\n${job.changedFiles.size} files changed" +
-                            (job.buildStatus?.let { "\nBuild · $it" } ?: "") +
+                        "${job.prompt.take(100)}\n" +
+                            DeliveryVerificationPresentation.from(job.verification, job.resolvedStatus()).summary(job.hasApk, job.changedFiles.size) +
                             "\n${job.error ?: job.result.orEmpty().take(300)}",
                         job.projectId, job.conversationId.orEmpty(), job.prompt.take(80), job.turnId)
                 }

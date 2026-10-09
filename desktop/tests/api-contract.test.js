@@ -68,6 +68,10 @@
   assert.strictEqual(job.status_label, "运行中");
   assert.strictEqual(job.cancel_requested, false);
   assert.ok(job.apk_url);
+  const delivery = require("../src/delivery-ui").describe(job);
+  assert.strictEqual(delivery.checks.find(item => item.key === "build").state, "not_run");
+  assert.strictEqual(delivery.checks.find(item => item.key === "unit_tests").state, "not_run");
+  assert.strictEqual(delivery.checks.find(item => item.key === "installation").available, false);
 
   const message = assertSuccessFixture("job_message_201.json", ["job_id", "message"]).message;
   assert.strictEqual(message.message_key, "client-msg-001");
