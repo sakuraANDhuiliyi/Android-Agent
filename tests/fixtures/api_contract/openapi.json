@@ -1771,6 +1771,49 @@
         "title": "ImportRequest",
         "type": "object"
       },
+      "JobMessageEditPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "JobMessageEditPayload",
+        "type": "object"
+      },
+      "JobMessageEditRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "edit_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Edit Key",
+            "type": "string"
+          },
+          "expected_revision": {
+            "exclusiveMaximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/JobMessageEditPayload"
+          }
+        },
+        "required": [
+          "edit_key",
+          "expected_revision",
+          "payload"
+        ],
+        "title": "JobMessageEditRequest",
+        "type": "object"
+      },
       "JobMessageRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6722,6 +6765,85 @@
           }
         },
         "summary": "Post Job Message"
+      }
+    },
+    "/api/jobs/{job_id}/messages/{message_id}/edits": {
+      "post": {
+        "operationId": "edit_job_message_api_jobs__job_id__messages__message_id__edits_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobMessageEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing immutable edit acknowledgement and current message"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Edit Job Message Api Jobs  Job Id  Messages  Message Id  Edits Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Job Message"
       }
     },
     "/api/jobs/{job_id}/messages/{message_id}/withdraw": {
@@ -13238,6 +13360,7 @@
     "GET /api/jobs/{job_id}/log",
     "GET /api/jobs/{job_id}/messages",
     "POST /api/jobs/{job_id}/messages",
+    "POST /api/jobs/{job_id}/messages/{message_id}/edits",
     "POST /api/jobs/{job_id}/messages/{message_id}/withdraw",
     "POST /api/jobs/{job_id}/pause",
     "POST /api/jobs/{job_id}/recover",

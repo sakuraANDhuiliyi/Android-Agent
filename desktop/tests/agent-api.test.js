@@ -145,6 +145,12 @@ async function run() {
   assert.strictEqual(requests.at(-1).method, "POST");
   assert.strictEqual(requests.at(-1).rawBody, "", "withdrawal has no request body");
   for (const id of [0, -1, "42", 1.5, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => api.withdrawJobMessage("j1", id));
+  const edit = { edit_key: "stable-edit", expected_revision: 2, payload: { text: "updated queued body" } };
+  await api.editJobMessage("j/1", 42, edit);
+  assert.strictEqual(requests.at(-1).url, "/api/jobs/j%2F1/messages/42/edits");
+  assert.strictEqual(requests.at(-1).method, "POST");
+  assert.deepStrictEqual(requests.at(-1).body, edit);
+  assert.throws(() => api.editJobMessage("j1", "42", edit));
 
   await api.restoreCheckpoint("p1", "cp1", "app/src/Main.kt");
   const restoreReq = requests.find((r) => r.url.includes("/checkpoints/cp1/restore"));

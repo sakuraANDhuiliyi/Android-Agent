@@ -18,7 +18,7 @@ async function fixture(page) {
     window.fixtureNumber = (window.fixtureNumber || 0) + 1;
     const api = AiPanel.client;
     api.configure({ baseUrl: location.origin, token: `fixture-${fixtureNumber}` });
-    window.requests = []; window.reads = []; window.watchers = []; window.receipts = []; window.jobReads = []; window.withdrawals = []; window.controlRequests = [];
+    window.requests = []; window.reads = []; window.watchers = []; window.receipts = []; window.jobReads = []; window.withdrawals = []; window.edits = []; window.controlRequests = [];
     api.job = async id => { jobReads.push(id); return { job: id === 'child' ? { ...job, id, turn_id: 'child-turn', status: 'paused' } : job }; };
     api.jobs = async () => ({ jobs: [job] }); api.projects = async () => ({ projects: [{ id: 'project', name: 'Project' }] }); api.models = async () => ({ models: [] });
     api.listApprovals = async () => ({ approvals: [] }); api.conversationEvents = async () => ({ events: [], has_more: false });
@@ -30,6 +30,7 @@ async function fixture(page) {
     };
     api.sendJobMessage = (id, type, payload, key) => new Promise((resolve, reject) => { requests.push({ id, type, payload, key, resolve, reject }); });
     api.withdrawJobMessage = (id, messageId) => new Promise((resolve, reject) => { withdrawals.push({ id, messageId, resolve, reject }); });
+    api.editJobMessage = (id, messageId, body) => new Promise((resolve, reject) => { edits.push({ id, messageId, body, resolve, reject }); });
     api.cancelJob = api.resumeJob = async id => { controlRequests.push(id); throw new Error('unexpected task control'); };
     window.receiptFor = (index, state = 'pending', extra = {}) => {
       const request = requests[index];
@@ -37,11 +38,22 @@ async function fixture(page) {
         payload: request.payload, created_at: 100 + index, consumed_at: ['pending', 'blocked', 'withdrawn'].includes(state) ? null : 200,
         delivery_state: state, context_message_id: state === 'consumed' ? `steer:${index}` : null,
         follow_up_job_id: state === 'follow_up_created' ? 'child' : null, follow_up_turn_id: state === 'follow_up_created' ? 'child-turn' : null,
+        revision: 0, edited_at: null, can_edit: request.type === 'follow_up' && state === 'pending',
         withdrawn_at: state === 'withdrawn' ? 300 : null, can_withdraw: request.type === 'follow_up' && ['pending', 'blocked'].includes(state), reason: null, ...extra };
     };
     window.complete = (index, state = 'pending', extra = {}) => {
       const message = receiptFor(index, state, extra); receipts.push(message);
       requests[index].resolve({ schema_version: 1, job_id: requests[index].id, message });
+    };
+    window.completeEdit = (index, current = {}, saved = {}) => {
+      const request = edits[index];
+      const message = { ...receiptFor(0), revision: request.body.expected_revision + 1, edited_at: 400,
+        payload: request.body.payload, ...current };
+      receipts = [message];
+      request.resolve({ schema_version: 1, job_id: request.id, message, edit: { schema_version: 1,
+        task_id: request.id, message_id: request.messageId, edit_key: request.body.edit_key,
+        expected_revision: request.body.expected_revision, revision: request.body.expected_revision + 1,
+        created_at: 400, payload: request.body.payload, ...saved } });
     };
     AiPanel.messages.records.clear(); AiPanel.messages.save();
     AiPanel.debug.setState({ connected: true, userId: 'alice', selectedProjectId: 'project', conversationId: 'conversation', currentJobId: null, currentJob: null, running: false, jobStatus: null });
@@ -274,6 +286,95 @@ async function reconcile(page) { await page.evaluate(() => AiPanel.messages.reco
       await setup();
       await page.evaluate(() => { receipts = [receiptFor(0, 'pending', { can_withdraw: false })]; }); await reconcile(page);
       assert.equal(await page.locator(host).getByRole('button', { name: '撤回追问', exact: true }).count(), 0, 'updated capability removes action');
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+    }
+
+    // A queued editor is separate from both composers. CAS and uncertain ACKs
+    // preserve the draft and operation identity across both actual entry points.
+    for (const surface of ['ai', 'cx']) {
+      const host = surface === 'ai' ? '#aiMessageReceipts' : '#cxMessageReceipts';
+      const input = surface === 'ai' ? '#promptInput' : '#cxAgentPrompt';
+      const setup = async () => {
+        await fixture(page);
+        if (surface === 'cx') await page.locator('[data-mode="agent-windows"]').click();
+        await page.locator(surface === 'ai' ? '#btnFollowUp' : '#cxMessageModes [data-message-mode="follow_up"]').click();
+        await page.locator(input).fill('排队追问原文');
+        await page.locator(surface === 'ai' ? '#btnSend' : '#cxSendAgent').click();
+        await page.evaluate(() => complete(0));
+        await page.locator(host).getByRole('button', { name: '编辑追问', exact: true }).click();
+      };
+      const editor = page.locator(`${host} .message-edit-text`);
+      await setup(); await editor.fill('修改后保留队位');
+      await page.locator(host).getByRole('button', { name: '保存修改' }).evaluate(button => { button.click(); button.click(); });
+      assert.equal(await page.evaluate(() => edits.length), 1, 'double save keeps one edit identity');
+      await editor.fill('保存期间新写的草稿'); await page.locator(input).fill('独立主输入草稿');
+      await page.evaluate(() => completeEdit(0));
+      await page.waitForFunction(() => !AiPanel.messages.list(AiPanel.messages.scope(AiPanel.getState().currentJob))[0].editIntent);
+      assert.equal(await editor.inputValue(), '保存期间新写的草稿');
+      assert.equal(await page.locator(input).inputValue(), '独立主输入草稿');
+      assert.match(await page.locator(host).textContent(), /追问 · 修改后保留队位/);
+      await editor.focus(); await editor.evaluate(node => node.setSelectionRange(2, 5));
+      await page.evaluate(() => { receipts = [receiptFor(0, 'pending', { revision: 1, edited_at: 400, payload: { text: '修改后保留队位' }, reason: 'parent_paused' })]; });
+      await reconcile(page);
+      assert.deepEqual(await editor.evaluate(node => [document.activeElement === node, node.selectionStart, node.selectionEnd]), [true, 2, 5]);
+      await page.evaluate(() => { receipts = [receiptFor(0)]; }); await reconcile(page);
+      assert.match(await page.locator(host).textContent(), /追问 · 修改后保留队位/, 'stale GET cannot undo revision');
+      if (process.env.AGENT_MESSAGES_SCREENSHOT_DIR) {
+        fs.mkdirSync(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.AGENT_MESSAGES_SCREENSHOT_DIR, `edit-${surface}.png`), fullPage: true });
+      }
+      await page.locator(host).getByRole('button', { name: '保存修改' }).click();
+      assert.equal(await page.evaluate(() => edits[1].body.expected_revision), 1);
+      await page.evaluate(() => completeEdit(1)); await editor.waitFor({ state: 'detached' });
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      await setup(); await editor.fill('冲突仍保留的草稿');
+      await page.locator(host).getByRole('button', { name: '保存修改' }).click();
+      await page.evaluate(() => { receipts = [receiptFor(0, 'pending', { revision: 1, edited_at: 400, payload: { text: '另一窗口保存的正文' } })]; edits[0].reject(Object.assign(new Error('CAS'), { status: 409 })); });
+      await page.locator(host).getByRole('button', { name: '以最新版本继续编辑' }).waitFor();
+      assert.equal(await editor.inputValue(), '冲突仍保留的草稿');
+      assert.equal(await page.locator(host).getByRole('button', { name: '保存修改' }).isDisabled(), true);
+      await page.locator(host).getByRole('button', { name: '以最新版本继续编辑' }).click();
+      await page.locator(host).getByRole('button', { name: '保存修改' }).click();
+      assert.equal(await page.evaluate(() => edits[1].body.expected_revision), 1);
+      assert.equal(await page.evaluate(() => edits[1].body.edit_key !== edits[0].body.edit_key), true);
+      await page.evaluate(() => completeEdit(1)); await editor.waitFor({ state: 'detached' });
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      await setup(); await editor.fill('password=synthetic_edit_secret');
+      await page.locator(host).getByRole('button', { name: '保存修改' }).click();
+      await page.evaluate(() => { receipts = [receiptFor(0, 'follow_up_created', { revision: 2, edited_at: 500, payload: { text: '最新正文' } })]; edits[0].reject(new Error('lost response')); });
+      await reconcile(page);
+      await page.locator(host).getByRole('button', { name: '收起编辑' }).click();
+      await page.locator(host).getByRole('button', { name: '展开编辑草稿' }).click();
+      assert.equal(await editor.inputValue(), 'password=synthetic_edit_secret');
+      await page.locator(host).getByRole('button', { name: '核对并重试编辑' }).click();
+      await page.waitForFunction(() => edits.length === 2);
+      assert.deepEqual(await page.evaluate(() => edits[1].body), await page.evaluate(() => edits[0].body));
+      await page.evaluate(() => completeEdit(1, { revision: 1, payload: { text: 'password=[REDACTED]' } }, { payload: { text: 'password=[REDACTED]' } }));
+      await page.locator(host).getByRole('button', { name: '核对并重试编辑' }).waitFor({ state: 'detached' });
+      assert.match(await page.locator(host).textContent(), /追问 · 最新正文/);
+      assert.equal(await page.locator(`${host} [data-state="follow_up_created"]`).count(), 1);
+      assert.deepEqual(await page.evaluate(() => controlRequests), []);
+      if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+
+      for (const change of ['job', 'account']) {
+        await setup(); await editor.fill('late edit'); await page.locator(host).getByRole('button', { name: '保存修改' }).click();
+        await page.evaluate(({ surface, change, job }) => {
+          if (change === 'account') { AiPanel.client.configure({ token: 'bob' }); AiPanel.debug.setState({ userId: 'bob' }); }
+          else if (surface === 'ai') AiPanel.adoptJob({ ...job, id: 'new-job' });
+          else { CodexiaAgentView._internal.getState().selectedId = 'new-job'; CodexiaAgentView._internal.setDebugData({ projects: [{ id: 'project' }], jobs: [{ ...job, id: 'new-job' }] }); }
+        }, { surface, change, job });
+        await page.locator(input).fill('切换后的草稿'); await page.evaluate(() => completeEdit(0));
+        assert.equal(await page.locator(input).inputValue(), '切换后的草稿');
+        assert.equal(await page.locator(host).isHidden(), true);
+        if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
+      }
+      await setup(); await editor.fill('<img src=x onerror="window.messageXss=1">' + '长正文'.repeat(60));
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await page.locator(host).evaluate(node => node.scrollWidth > node.clientWidth + 1), false);
+      assert.equal(await page.locator(`${host} img`).count(), 0);
+      await page.setViewportSize({ width: 1300, height: 1000 });
       if (surface === 'cx') await page.locator('#cxSidebarDownload').click();
     }
 

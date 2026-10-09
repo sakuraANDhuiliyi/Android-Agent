@@ -169,6 +169,10 @@ async function main() {
   fs.writeFileSync(path.join(scenarios, 'child.json'), JSON.stringify({ id: 'desktop_messages_child', steps: [
     { type: 'final', delay_ms: 2500, text: 'MESSAGE_RECEIPTS_CHILD_DONE' },
   ] }));
+  fs.writeFileSync(path.join(scenarios, 'edit-parent.json'), JSON.stringify({ id: 'desktop_edit_parent', steps: [
+    { type: 'tool', delay_ms: 1500, calls: [{ name: 'read_file', arguments: { path: 'app/src/main/AndroidManifest.xml' } }] },
+    { type: 'final', text: 'EDIT_PARENT_DONE' },
+  ] }));
   track(spawn('python3', [SHARED_STUB], { cwd: repoRoot,
     env: isolatedSmokeEnv({ AGENT_E2E_STUB_PORT: String(STUB_PORT), AGENT_E2E_SCENARIO_DIR: scenarios }), stdio: 'ignore' }));
   await waitForTcp(STUB_PORT, 15000); startService(); await waitForTcp(AGENT_PORT, 30000);
@@ -331,6 +335,92 @@ async function main() {
     await page.locator('#cxSidebarDownload').click(); await page.evaluate(id => AiPanel.openJob(id), source);
     await page.locator('#aiMessageReceipts').getByRole('button', { name: '查看后续任务' }).first().click();
     await page.waitForFunction(id => AiPanel.getState().currentJobId === id, child.id);
+    // A second real queue retains A/B/C identities and positions while B is
+    // edited to X. Lost edit ACKs survive reload and require original-key POST.
+    const editSource = await page.evaluate(async () => {
+      const reply = await AiPanel.client.askConversation(AiPanel.getState().conversationId, { prompt: '只读编辑队列验收 [[desktop_edit_parent]]', run_mode: 'read_only' });
+      await AiPanel.client.pauseJob(reply.job.id); AiPanel.adoptJob(reply.job); return reply.job.id;
+    });
+    await waitUntil(async () => (await httpJson('GET', `/api/jobs/${editSource}`, { token })).json.job.status === 'paused', 20000, 'edit parent paused');
+    await page.evaluate(id => AiPanel.openJob(id), editSource);
+    await page.locator('#btnFollowUp').click();
+    for (const [index, name] of ['A', 'B', 'C'].entries()) {
+      await page.fill('#promptInput', `编辑队列 ${name} [[desktop_messages_child]]`); await page.click('#btnSend');
+      await page.waitForFunction(count => document.querySelectorAll('#aiMessageReceipts [data-state="pending"]').length === count, index + 1);
+    }
+    const editQueue = (await httpJson('GET', `/api/jobs/${editSource}/messages?include_consumed=true`, { token })).json.messages.filter(row => row.type === 'follow_up');
+    assert.deepEqual(editQueue.map(row => row.payload.text), ['A', 'B', 'C'].map(name => `编辑队列 ${name} [[desktop_messages_child]]`));
+    const middle = editQueue[1]; let editPosts = 0, originalEdit;
+    await page.route(`**/api/jobs/${editSource}/messages/${middle.id}/edits`, async route => {
+      editPosts++;
+      if (editPosts !== 1) return route.continue();
+      originalEdit = route.request().postDataJSON();
+      const response = await route.fetch(); assert.equal(response.status(), 201);
+      assert.equal((await response.json()).edit.revision, 1); await route.abort('failed');
+    });
+    await page.locator('[data-mode="agent-windows"]').click(); await page.evaluate(() => CodexiaAgentView.refresh());
+    await page.locator('.cx-project-task').filter({ hasText: '只读编辑队列验收' }).click();
+    const middleCx = page.locator(`#cxMessageReceipts [data-message-key="${middle.message_key}"]`);
+    await middleCx.getByRole('button', { name: '编辑追问', exact: true }).click();
+    await middleCx.locator('textarea').fill('password=synthetic_edit_receipt_secret');
+    await middleCx.getByRole('button', { name: '保存修改' }).click();
+    await middleCx.getByRole('button', { name: '核对并重试编辑' }).waitFor();
+    await page.reload(); await page.waitForFunction(() => window.AiPanel?.getState().connected);
+    await page.evaluate(id => AiPanel.openJob(id), editSource);
+    const middleAi = page.locator(`#aiMessageReceipts [data-message-key="${middle.message_key}"]`);
+    await middleAi.getByRole('button', { name: '核对并重试编辑' }).waitFor();
+    assert.equal(editPosts, 1, 'reopening never posts an edit');
+    await page.waitForFunction(key => document.querySelector(`#aiMessageReceipts [data-message-key="${key}"] .message-receipt-text`)?.textContent.includes('password=[REDACTED]'), middle.message_key);
+    assert.equal(await middleAi.locator('textarea').inputValue(), originalEdit.payload.text);
+    const newer = await httpJson('POST', `/api/jobs/${editSource}/messages/${middle.id}/edits`, { token, body: {
+      edit_key: 'other-client-r2', expected_revision: 1, payload: { text: '编辑队列 X [[desktop_messages_child]]' },
+    } });
+    assert.equal(newer.status, 201); assert.equal(newer.json.message.revision, 2);
+    await middleAi.getByRole('button', { name: '核对并重试编辑' }).click();
+    await middleAi.getByRole('button', { name: '核对并重试编辑' }).waitFor({ state: 'detached' });
+    assert.equal(editPosts, 2); assert.match(await middleAi.textContent(), /编辑队列 X/);
+    assert.equal(await middleAi.locator('textarea').count(), 0);
+
+    // A competing edit wins CAS; the UI retains its separate draft even after
+    // reload, then cancellation only removes that local editor.
+    const head = editQueue[0]; const headAi = page.locator(`#aiMessageReceipts [data-message-key="${head.message_key}"]`);
+    await headAi.getByRole('button', { name: '编辑追问', exact: true }).click();
+    await headAi.locator('textarea').fill('冲突后应保存到本地的草稿');
+    const headWinner = await httpJson('POST', `/api/jobs/${editSource}/messages/${head.id}/edits`, { token, body: {
+      edit_key: 'head-other-client', expected_revision: 0, payload: head.payload,
+    } });
+    assert.equal(headWinner.status, 201);
+    await headAi.getByRole('button', { name: '保存修改' }).click();
+    await headAi.getByRole('button', { name: '以最新版本继续编辑' }).waitFor();
+    await page.reload(); await page.waitForFunction(() => window.AiPanel?.getState().connected);
+    await page.evaluate(id => AiPanel.openJob(id), editSource);
+    await headAi.getByRole('button', { name: '以最新版本继续编辑' }).waitFor();
+    assert.equal(await headAi.locator('textarea').inputValue(), '冲突后应保存到本地的草稿');
+    await headAi.getByRole('button', { name: '取消编辑' }).click();
+    await page.evaluate(id => AiPanel.client.resumeJob(id), editSource);
+    const editedChildren = await waitUntil(async () => {
+      const rows = (await httpJson('GET', `/api/jobs/${editSource}/messages?include_consumed=true`, { token })).json.messages.filter(row => row.type === 'follow_up');
+      return rows.length === 3 && rows.every(row => row.delivery_state === 'follow_up_created') ? rows : null;
+    }, 45000, 'A/X/C creates in original queue order');
+    assert.deepEqual(editedChildren.map(row => row.id), editQueue.map(row => row.id));
+    const actualChildren = [];
+    for (const row of editedChildren) {
+      const done = await waitUntil(async () => {
+        const j = (await httpJson('GET', `/api/jobs/${row.follow_up_job_id}`, { token })).json.job;
+        return ['succeeded', 'failed', 'canceled'].includes(j.status) ? j : null;
+      }, 30000, 'edited child completed');
+      assert.equal(done.status, 'succeeded'); actualChildren.push(done);
+    }
+    assert.deepEqual(actualChildren.map(row => row.prompt), [editQueue[0].payload.text, '编辑队列 X [[desktop_messages_child]]', editQueue[2].payload.text]);
+    assert.ok(actualChildren[0].created_at <= actualChildren[1].created_at && actualChildren[1].created_at <= actualChildren[2].created_at);
+    const oldAck = await httpJson('POST', `/api/jobs/${editSource}/messages/${middle.id}/edits`, { token, body: originalEdit });
+    assert.equal(oldAck.status, 200); assert.equal(oldAck.json.edit.revision, 1); assert.equal(oldAck.json.message.revision, 2);
+    assert.equal(oldAck.json.message.delivery_state, 'follow_up_created');
+    assert.equal(oldAck.json.message.follow_up_job_id, editedChildren[1].follow_up_job_id);
+    const editHistory = (await httpJson('GET', `/api/conversations/${actualChildren[0].conversation_id}/events`, { token })).json.events;
+    const editPrompts = editHistory.filter(event => editedChildren.some(row => row.id === event.payload?.task_message_id));
+    assert.equal(editPrompts.length, 3); assert.deepEqual(editPrompts.map(event => event.payload.task_message_id), editQueue.map(row => row.id));
+    console.log('ok - A/B/C edit B to X retains identity/FIFO; redacted lost ACK reload retries exactly; CAS draft survives reload; terminal old ACK cannot recreate child');
     assert.deepEqual(errors, []);
     console.log('ok - both real desktop entries, repeated text as distinct intents, one canonical receipt per steer, terminal idempotency, and authoritative child navigation');
     console.log('electron-messages-smoke.test: OK');

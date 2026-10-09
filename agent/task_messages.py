@@ -11,9 +11,24 @@ from agent.conversation_events import ConversationEventStore
 from agent.database import TaskMessageConflict
 from agent.permissions import VALID_PROFILES
 from agent.project_lifecycle import project_operation
+from agent.redaction import redact_sensitive_value
 from agent.task_settings import inherited_execution_context, model_selection, resolve_task_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _latest_revision(conn, message_id: int):
+    return conn.execute("SELECT * FROM task_message_revisions WHERE message_id=? ORDER BY revision DESC LIMIT 1",
+                        (message_id,)).fetchone()
+
+
+def _editable_source(conn, parent) -> bool:
+    if parent['status'] not in {'queued', 'running', 'awaiting_approval', 'paused', 'succeeded'}:
+        return False
+    return conn.execute("""SELECT 1 FROM conversation_turns r JOIN conversations c ON c.id=r.conversation_id
+        WHERE r.task_id=? AND r.user_id=? AND r.project_id=? AND r.conversation_id=?
+          AND c.user_id=r.user_id AND c.project_id=r.project_id""",
+        (parent['id'], parent['user_id'], parent['project_id'], parent['conversation_id'])).fetchone() is not None
 
 
 def _parent(conn, task_id: str, user_id: str):
@@ -76,7 +91,7 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
     result = {key: message.get(key) for key in ("id", "task_id", "message_key", "type", "payload", "created_at", "consumed_at")}
     result.update(schema_version=1, delivery_state="unknown", context_message_id=None,
                   follow_up_job_id=None, follow_up_turn_id=None, reason="legacy_missing_receipt",
-                  withdrawn_at=None, can_withdraw=False)
+                  withdrawn_at=None, can_withdraw=False, revision=0, edited_at=None, can_edit=False)
     with nullcontext(_conn) if _conn is not None else store._connect() as conn:
         if _conn is None:
             conn.execute("BEGIN")
@@ -88,6 +103,11 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
         if parent is None:
             return result
         if message["type"] == "follow_up":
+            latest = _latest_revision(conn, message['id'])
+            if latest:
+                if latest['user_id'] != user_id:
+                    return result
+                result.update(payload=json.loads(latest['payload']), revision=latest['revision'], edited_at=latest['created_at'])
             raw_link = conn.execute("SELECT 1 FROM task_message_followups WHERE message_id=?", (message['id'],)).fetchone()
             withdrawal = conn.execute("SELECT * FROM task_message_withdrawals WHERE message_id=?", (message['id'],)).fetchone()
             if withdrawal:
@@ -99,7 +119,8 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
                 result.update(delivery_state="follow_up_created", follow_up_job_id=child["task_id"], follow_up_turn_id=child["turn_id"], reason=None)
             elif not raw_link and message.get("consumed_at") is None:
                 state, reason = _follow_up_gate(conn, message, parent)
-                result.update(delivery_state=state, reason=reason, can_withdraw=True)
+                result.update(delivery_state=state, reason=reason, can_withdraw=True,
+                              can_edit=state == 'pending' and _editable_source(conn, parent))
         elif message["type"] == "steer":
             event = conn.execute("""SELECT e.payload_json FROM conversation_events e JOIN conversation_turns r ON r.id=e.turn_id
                 WHERE e.event_key=? AND r.task_id=? AND r.user_id=? AND e.role='user' AND e.context_visible=1""",
@@ -114,6 +135,51 @@ def message_receipt(store, message: dict, user_id: str, *, _conn=None) -> dict:
                 else:
                     result.update(delivery_state="pending", reason="parent_paused" if parent["status"] == "paused" else "awaiting_safe_boundary")
     return result
+
+
+def _edit_receipt(row, task_id: str) -> dict:
+    return dict(schema_version=1, task_id=task_id, message_id=row['message_id'], edit_key=row['edit_key'],
+                expected_revision=row['revision'] - 1, revision=row['revision'],
+                created_at=row['created_at'], payload=json.loads(row['payload']))
+
+
+def edit_follow_up(store, task_id: str, message_id: int, user_id: str, *, edit_key: str,
+                   expected_revision: int, payload: dict) -> tuple[dict, dict, bool] | None:
+    """Append a version without changing original send identity or FIFO position."""
+    if message_id <= 0 or message_id > 2**63 - 1:
+        return None
+    if (not isinstance(edit_key, str) or not edit_key.strip() or len(edit_key) > 200
+            or type(expected_revision) is not int or not 0 <= expected_revision < 2**63 - 1
+            or not isinstance(payload, dict) or set(payload) != {'text'}
+            or not isinstance(payload['text'], str) or not payload['text'].strip() or len(payload['text']) > 100_000):
+        raise ValueError('编辑必须包含稳定标识、有效版本和非空文本')
+    fingerprint = store._message_hash('follow_up_edit', {'expected_revision': expected_revision, 'payload': payload})
+    with store._connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("""SELECT m.* FROM task_messages m JOIN tasks t ON t.id=m.task_id
+            WHERE m.id=? AND m.task_id=? AND t.user_id=?""", (message_id, task_id, user_id)).fetchone()
+        if row is None:
+            return None
+        existing = conn.execute('SELECT * FROM task_message_revisions WHERE message_id=? AND edit_key=?',
+                                (message_id, edit_key)).fetchone()
+        # A lost acknowledgement remains resolvable after dispatch, withdrawal,
+        # or another edit. Eligibility only applies to a new operation.
+        if existing:
+            if existing['user_id'] != user_id or existing['request_hash'] != fingerprint:
+                raise TaskMessageConflict('同一 edit_key 已用于不同编辑')
+            return (message_receipt(store, store._row_to_message(row), user_id, _conn=conn),
+                    _edit_receipt(existing, task_id), False)
+        receipt = message_receipt(store, store._row_to_message(row), user_id, _conn=conn)
+        if not receipt['can_edit']:
+            raise TaskMessageConflict('追问已创建后续任务、撤回或被阻塞，无法编辑')
+        if receipt['revision'] != expected_revision:
+            raise TaskMessageConflict('追问已被更新，请重新核对当前版本')
+        conn.execute('''INSERT INTO task_message_revisions(message_id,revision,edit_key,request_hash,payload,user_id,created_at)
+            VALUES(?,?,?,?,?,?,?)''', (message_id, expected_revision + 1, edit_key, fingerprint,
+                json.dumps(redact_sensitive_value(payload), ensure_ascii=False), user_id, time.time()))
+        accepted = _latest_revision(conn, message_id)
+        return (message_receipt(store, store._row_to_message(row), user_id, _conn=conn),
+                _edit_receipt(accepted, task_id), True)
 
 
 def withdraw_follow_up(store, task_id: str, message_id: int, user_id: str) -> dict | None:
@@ -180,7 +246,11 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
             (parent["id"], message_id)).fetchall()
         if any(not (link := _link(conn, previous["id"], parent)) or link["status"] != "succeeded" or _blocked(link) for previous in prior):
             return None
-        payload = json.loads(row["payload"])
+        latest = _latest_revision(conn, message_id)
+        if latest and latest['user_id'] != row['user_id']:
+            raise ValueError('追问版本不属于此用户')
+        payload = json.loads(latest['payload'] if latest else row["payload"])
+        revision = latest['revision'] if latest else 0
         prompt = payload.get("text") or payload.get("prompt") or payload.get("content")
         if not isinstance(prompt, str) or not prompt.strip():
             conn.execute("UPDATE task_messages SET consumed_at=? WHERE id=?", (time.time(), message_id))
@@ -205,7 +275,8 @@ def _enqueue_follow_up_locked(store, message_id: int, settings) -> str | None:
             turn_id=turn_id, status="queued", provider=selected.provider, model=selected.model, created_at=now, _conn=conn)
         identity = f"follow-up:{message_id}"
         events.append_event_idempotent(parent["conversation_id"], turn_id, "user_message", f"turn:{turn_id}:user_message",
-            {"message_id": identity, "content": [{"type": "text", "text": prompt}], "source": "user", "task_message_id": message_id},
+            {"message_id": identity, "content": [{"type": "text", "text": prompt}], "source": "user",
+             "task_message_id": message_id, "task_message_revision": revision},
             task_id=job_id, role="user", context_visible=True, created_at=now, _conn=conn)
         conn.execute("INSERT INTO task_message_followups VALUES(?,?,?)", (message_id, job_id, turn_id))
         conn.execute("UPDATE task_messages SET consumed_at=? WHERE id=? AND consumed_at IS NULL", (now, message_id))

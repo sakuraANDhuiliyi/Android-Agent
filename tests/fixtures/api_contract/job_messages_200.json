@@ -19,7 +19,10 @@
       "follow_up_turn_id": null,
       "reason": "awaiting_safe_boundary",
       "withdrawn_at": null,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -38,7 +41,10 @@
       "follow_up_turn_id": null,
       "reason": null,
       "withdrawn_at": null,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -57,7 +63,10 @@
       "follow_up_turn_id": "turn-002",
       "reason": null,
       "withdrawn_at": null,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -76,7 +85,10 @@
       "follow_up_turn_id": null,
       "reason": "parent_failed",
       "withdrawn_at": null,
-      "can_withdraw": true
+      "can_withdraw": true,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -95,7 +107,10 @@
       "follow_up_turn_id": null,
       "reason": "turn_finished_before_consumption",
       "withdrawn_at": null,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -114,7 +129,10 @@
       "follow_up_turn_id": null,
       "reason": "legacy_missing_receipt",
       "withdrawn_at": null,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     },
     {
       "schema_version": 1,
@@ -133,7 +151,10 @@
       "follow_up_turn_id": null,
       "reason": null,
       "withdrawn_at": 1006.0,
-      "can_withdraw": false
+      "can_withdraw": false,
+      "revision": 0,
+      "edited_at": null,
+      "can_edit": false
     }
   ]
 }

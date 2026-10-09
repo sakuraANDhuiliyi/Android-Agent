@@ -516,6 +516,182 @@ class E2ERunner:
         listing.raise_for_status()
         context.check([job["id"] for job in listing.json()["jobs"]] == [context.job["id"]], "withdrawal executed blocked work")
 
+    def paused_edit_queue(self, context: ScenarioContext, count: int = 3) -> tuple[list[dict], list[dict]]:
+        source = self.send_prompt(context)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not context.workspace_file("app/src/test/edited-prompts.txt"):
+            time.sleep(0.05)
+        context.check(bool(context.workspace_file("app/src/test/edited-prompts.txt")), "source prompt never reached real tool")
+        context.client.pause_job(source["id"])
+        context.job = context.client.wait_job(source["id"], until={"paused"})
+        bodies, rows = [], []
+        for label in ("A", "B", "C")[:count]:
+            body = {"message_key": f"edit-{label}", "type": "follow_up",
+                    "payload": {"text": f"[[{context.scenario['id']}]] original {label}"}}
+            reply = context.client.http.post(f"/api/jobs/{source['id']}/messages", json=body)
+            context.check(reply.status_code == 201, "could not queue editable follow-up")
+            row = reply.json()["message"]
+            context.check(row.get("revision") == 0 and row.get("edited_at") is None and row.get("can_edit") is True,
+                          "original queued receipt lacks edit capability or version")
+            bodies.append(body)
+            rows.append(row)
+        return bodies, rows
+
+    def edit_receipt(self, context: ScenarioContext, message_id: int, body: dict, status: int) -> dict:
+        response = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{message_id}/edits", json=body)
+        context.check(response.status_code == status, f"edit status={response.status_code}: {response.text}")
+        data = response.json()
+        context.check(data.get("schema_version") == 1 and data.get("job_id") == context.job["id"], "wrong edit envelope")
+        edit, row = data["edit"], data["message"]
+        context.check(edit.get("schema_version") == 1 and edit.get("task_id") == context.job["id"]
+                      and edit.get("message_id") == message_id and edit.get("edit_key") == body["edit_key"]
+                      and edit.get("expected_revision") == body["expected_revision"]
+                      and edit.get("revision") == body["expected_revision"] + 1 and edit.get("payload") == body["payload"],
+                      "immutable edit receipt does not identify accepted operation")
+        context.check(row["id"] == message_id and row.get("revision", -1) >= edit["revision"]
+                      and (edit.get("created_at") or 0) >= row["created_at"], "current receipt regressed behind accepted edit")
+        return data
+
+    def assert_edit_children(self, context: ScenarioContext, rows: list[dict], expected_texts: list[str], revisions: list[int]) -> list[dict]:
+        children = [context.client.wait_job(row["follow_up_job_id"]) for row in rows]
+        context.check(all(child["status"] == "succeeded" and child["prompt"] == text
+                          and child["conversation_id"] == context.conversation_id and child["project_id"] == context.project_id
+                          for child, text in zip(children, expected_texts)), "child executed old edited prompt or changed scope")
+        context.check(all(right["created_at"] >= left["finished_at"] for left, right in zip(children, children[1:])),
+                      "editing changed FIFO execution order")
+        events = context.client.conversation_events(context.conversation_id)
+        for row, child, text, revision in zip(rows, children, expected_texts, revisions):
+            prompts = [event["payload"] for event in events if event.get("turn_id") == child["turn_id"]
+                       and event.get("event_type") == "user_message" and (event.get("payload") or {}).get("task_message_id") == row["id"]]
+            context.check(len(prompts) == 1 and prompts[0].get("task_message_revision") == revision
+                          and prompts[0].get("content") == [{"type": "text", "text": text}], "canonical child prompt has wrong revision")
+        listing = context.client.http.get("/api/jobs", params={"project_id": context.project_id})
+        listing.raise_for_status()
+        context.check({row["id"] for row in listing.json()["jobs"]} == {context.job["id"], *(child["id"] for child in children)},
+                      "edit or retry created an extra task")
+        expected_lines = [f"[[{context.scenario['id']}]] {context.scenario['prompt']}", *expected_texts]
+        context.check(context.workspace_file("app/src/test/edited-prompts.txt").splitlines() == expected_lines,
+                      "actual model/tool execution did not receive exactly the latest prompts in queue order")
+        return children
+
+    def driver_edit_queue(self, context: ScenarioContext) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        bodies, originals = self.paused_edit_queue(context)
+        index = context.scenario["edit_index"]
+        target = originals[index]
+        url = f"/api/jobs/{context.job['id']}/messages/{target['id']}/edits"
+        first_body = {"edit_key": "revision-one", "expected_revision": 0,
+                      "payload": {"text": f"[[{context.scenario['id']}]] edited once"}}
+        stranger = E2EClient(self.stack)
+        try:
+            stranger.register_account()
+            context.check(stranger.http.post(url, json=first_body).status_code == 404, "cross-account edit disclosed or changed message")
+        finally:
+            stranger.close()
+        wrong = context.client.http.post(f"/api/jobs/missing-source/messages/{target['id']}/edits", json=first_body)
+        context.check(wrong.status_code == 404, "edit ignored source task binding")
+        first = self.edit_receipt(context, target["id"], first_body, 201)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            repeats = list(pool.map(lambda _: self.edit_receipt(context, target["id"], first_body, 200), range(2)))
+        context.check(all(reply["edit"] == first["edit"] for reply in repeats), "repeated edit changed immutable acknowledgement")
+        second_body = {"edit_key": "revision-two", "expected_revision": 1,
+                       "payload": {"text": f"[[{context.scenario['id']}]] latest revised instruction"}}
+        second = self.edit_receipt(context, target["id"], second_body, 201)
+        stale = context.client.http.post(url, json={**first_body, "edit_key": "stale-new-operation"})
+        changed_key_body = context.client.http.post(url, json={**first_body, "payload": second_body["payload"]})
+        context.check(stale.status_code == changed_key_body.status_code == 409, "stale version or changed same-key body overwrote latest edit")
+        self.stack.restart_idle_agent()
+        retry = self.edit_receipt(context, target["id"], first_body, 200)
+        context.check(retry["edit"] == first["edit"] and retry["message"]["revision"] == 2
+                      and retry["message"]["payload"] == second_body["payload"], "old edit retry lost acknowledgement or revived old text after restart")
+        original_retry = context.client.http.post(f"/api/jobs/{context.job['id']}/messages", json=bodies[index])
+        context.check(original_retry.status_code == 200 and original_retry.json()["message"]["payload"] == second_body["payload"],
+                      "original send retry reset the current edited text")
+        changed_send = context.client.http.post(f"/api/jobs/{context.job['id']}/messages", json={**bodies[index], "payload": second_body["payload"]})
+        context.check(changed_send.status_code == 409, "editing changed original send identity/hash")
+        current = self.message_receipts(context)
+        context.check([(r["id"], r["message_key"], r["created_at"]) for r in current]
+                      == [(r["id"], r["message_key"], r["created_at"]) for r in originals], "editing changed queue identity or position")
+        context.client.resume_job(context.job["id"])
+        context.job = context.client.wait_job(context.job["id"])
+        self.wait_terminal_events(context)
+        rows = self.wait_receipts(context, 3, "follow_up_created", timeout=60)
+        expected_texts = [body["payload"]["text"] for body in bodies]
+        expected_texts[index] = second_body["payload"]["text"]
+        revisions = [0, 0, 0]
+        revisions[index] = 2
+        self.assert_edit_children(context, rows, expected_texts, revisions)
+        context.check(not any(payload.get("task_message_id") in {row["id"] for row in rows}
+                              for payload in context.payloads("user_message")), "queued edit leaked into parent canonical context")
+        for body, accepted in ((first_body, first), (second_body, second)):
+            confirmed = self.edit_receipt(context, target["id"], body, 200)
+            context.check(confirmed["edit"] == accepted["edit"] and confirmed["message"]["revision"] == 2
+                          and confirmed["message"]["follow_up_job_id"] == rows[index]["follow_up_job_id"],
+                          "post-dispatch retry changed edit acknowledgement or child mapping")
+
+    def driver_edit_created(self, context: ScenarioContext) -> None:
+        bodies, originals = self.paused_edit_queue(context, 1)
+        context.client.resume_job(context.job["id"])
+        context.job = context.client.wait_job(context.job["id"])
+        self.wait_terminal_events(context)
+        deadline = time.monotonic() + 20
+        row = None
+        while time.monotonic() < deadline:
+            candidate = self.message_receipts(context)[0]
+            if candidate.get("follow_up_job_id"):
+                row = candidate
+                break
+            time.sleep(0.1)
+        context.check(row is not None, "dispatcher did not create the child before editing")
+        child_id = row["follow_up_job_id"]
+        approval = context.client.wait_approval(child_id)
+        before = context.client.get_job(child_id)
+        response = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{originals[0]['id']}/edits",
+            json={"edit_key": "too-late", "expected_revision": 0, "payload": {"text": "must not change running child"}})
+        context.check(response.status_code == 409, "already-created child accepted a new edit")
+        after = context.client.get_job(child_id)
+        context.check((after["status"], after.get("cancel_requested"), after["prompt"])
+                      == (before["status"], before.get("cancel_requested"), before["prompt"]), "rejected edit changed child state or prompt")
+        context.check(approval["id"] in {item["id"] for item in context.client.pending_approvals(child_id)}, "edit implicitly approved child")
+        current = self.message_receipts(context)[0]
+        context.check(current.get("revision") == 0 and current.get("can_edit") is False
+                      and current["follow_up_job_id"] == child_id, "rejected edit changed queue revision or capability")
+        self.pump.watch(child_id)
+        self.assert_edit_children(context, [current], [bodies[0]["payload"]["text"]], [0])
+
+    def driver_edit_withdrawn(self, context: ScenarioContext) -> None:
+        _, originals = self.paused_edit_queue(context, 1)
+        target = originals[0]
+        body = {"edit_key": "accepted-before-ending", "expected_revision": 0,
+                "payload": {"text": f"[[{context.scenario['id']}]] revised but never executed"}}
+        accepted = self.edit_receipt(context, target["id"], body, 201)
+        if context.scenario.get("cancel_parent"):
+            context.client.cancel_job(context.job["id"])
+            context.job = context.client.wait_job(context.job["id"], until={"canceled"})
+            self.wait_terminal_events(context)
+            row = self.message_receipts(context)[0]
+            context.check(row["delivery_state"] == "blocked" and row.get("can_edit") is False and row.get("can_withdraw") is True,
+                          "blocked queue offered editing or lost withdrawal")
+            context.check(self.edit_receipt(context, target["id"], body, 200)["edit"] == accepted["edit"],
+                          "blocking hid an accepted edit")
+            rejected = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{target['id']}/edits",
+                json={**body, "edit_key": "blocked-edit", "expected_revision": 1})
+            context.check(rejected.status_code == 409, "new edit silently unblocked canceled queue")
+        withdrawn = self.withdraw_receipt(context, target["id"])
+        self.stack.restart_idle_agent()
+        repeated = self.edit_receipt(context, target["id"], body, 200)
+        context.check(repeated["edit"] == accepted["edit"] and repeated["message"]["delivery_state"] == "withdrawn"
+                      and repeated["message"]["withdrawn_at"] == withdrawn["withdrawn_at"], "accepted edit retry revived withdrawn work")
+        denied = context.client.http.post(f"/api/jobs/{context.job['id']}/messages/{target['id']}/edits",
+            json={**body, "edit_key": "after-withdrawal", "expected_revision": 1})
+        context.check(denied.status_code == 409, "new edit revived withdrawn message")
+        if not context.scenario.get("cancel_parent"):
+            context.client.resume_job(context.job["id"])
+            context.job = context.client.wait_job(context.job["id"])
+            self.wait_terminal_events(context)
+        self.assert_edit_children(context, [], [], [])
+
     def driver_approval(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])

@@ -19,6 +19,10 @@ Protocol
     {"type": "final", "text": "final answer",
      "delay_ms": 0, "chunk": 8}           -> finish_reason "stop"
 
+  A run_command call may set ``append_user_prompt_arg: true`` to append the
+  actual marker-bearing user prompt to argv. Queue-edit scenarios record it
+  through a real tool so stale model context cannot pass a receipt-only check.
+
   Steps beyond the scripted list fall back to a default final answer so an
   under-scripted scenario degrades instead of hanging the agent loop.
 
@@ -295,7 +299,10 @@ class Handler(BaseHTTPRequestHandler):
             calls = step.get("calls") or []
             for position, call in enumerate(calls):
                 name = str(call.get("name") or "")
-                arguments = json.dumps(call.get("arguments") or {}, ensure_ascii=False)
+                call_arguments = call.get("arguments") or {}
+                if name == "run_command" and call.get("append_user_prompt_arg") is True:
+                    call_arguments = {**call_arguments, "argv": [*call_arguments["argv"], user_marker_text(messages)]}
+                arguments = json.dumps(call_arguments, ensure_ascii=False)
                 self.wfile.write(
                     chunk(
                         {

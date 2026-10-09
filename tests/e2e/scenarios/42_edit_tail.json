@@ -1,0 +1,32 @@
+{
+  "id": "42_edit_tail",
+  "title": "编辑队尾追问不重复创建任务",
+  "driver": "edit_queue",
+  "prompt": "执行当前指令并记录实际模型输入",
+  "steps": [
+    {
+      "type": "tool",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; import sys,time; p=Path(\"app/src/test/edited-prompts.txt\"); p.parent.mkdir(parents=True,exist_ok=True); p.open(\"a\").write(sys.argv[1]+\"\\n\"); time.sleep(2); print(\"PROMPT_RECORDED\")"
+            ]
+          },
+          "append_user_prompt_arg": true
+        }
+      ]
+    },
+    {
+      "type": "final",
+      "text": "本轮实际指令已执行并记录。"
+    }
+  ],
+  "expect": {
+    "job_status": "succeeded"
+  },
+  "edit_index": 2
+}

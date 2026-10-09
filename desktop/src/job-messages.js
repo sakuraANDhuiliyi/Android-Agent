@@ -8,6 +8,7 @@
   const REASONS = { awaiting_safe_boundary: "等待下一个安全边界", awaiting_parent_completion: "等待本轮完成", awaiting_dispatch: "等待创建后续任务", parent_paused: "前序任务已暂停", parent_failed: "前序任务失败", parent_canceled: "前序任务已取消", parent_interrupted: "前序任务中断", turn_finished_before_consumption: "本轮已结束", legacy_missing_receipt: "旧记录缺少关联回执" };
   const stamp = value => typeof value === "number" && Number.isFinite(value) && value > 0;
   const nonempty = value => typeof value === "string" && Boolean(value.trim());
+  const revision = value => Number.isSafeInteger(value) && value >= 0;
   const keyFor = scope => JSON.stringify([scope.server, scope.user, scope.project, scope.conversation, scope.job]);
   const bodyText = payload => typeof payload?.text === "string" ? payload.text : typeof payload?.prompt === "string" ? payload.prompt : typeof payload?.content === "string" ? payload.content : "";
   const sameBody = (a, b) => a.type === b.type && JSON.stringify(a.payload) === JSON.stringify(b.payload);
@@ -28,9 +29,19 @@
     if (state === "withdrawn" && (raw.type !== "follow_up" || raw.consumed_at != null || hasContext || hasChild
         || !stamp(raw.withdrawn_at) || raw.can_withdraw !== false)) state = "unknown";
     if (state !== "withdrawn" && raw.withdrawn_at != null) state = "unknown";
+    const hasRevision = revision(raw.revision) && (raw.revision === 0 ? raw.edited_at === null : stamp(raw.edited_at));
     return { ...raw, delivery_state: state, phase: "received", retryable: false,
+      revision: hasRevision ? raw.revision : null, edited_at: hasRevision ? raw.edited_at : null,
+      can_edit: raw.can_edit === true && hasRevision && raw.type === "follow_up" && state === "pending",
       can_withdraw: raw.can_withdraw === true && raw.type === "follow_up" && ["pending", "blocked"].includes(state),
       reason: Object.hasOwn(REASONS, raw.reason) ? raw.reason : null };
+  }
+
+  function normalizeEdit(raw, scope, messageId) {
+    if (raw?.schema_version !== 1 || raw.task_id !== scope.job || raw.message_id !== messageId
+        || !nonempty(raw.edit_key) || !revision(raw.expected_revision) || !revision(raw.revision)
+        || raw.revision !== raw.expected_revision + 1 || !stamp(raw.created_at) || !nonempty(raw.payload?.text)) return null;
+    return raw;
   }
 
   class Store {
@@ -46,12 +57,28 @@
               || !nonempty(item.message_key) || !TYPES.has(item.type) || !nonempty(bodyText(item.payload))
               || bodyText(item.payload).length > 24000 || !stamp(item.created_at)) continue;
           let record;
-          if (item.kind === "withdraw") {
+          if (item.kind === "withdraw" || item.kind === "edit" || item.kind === "edit_draft") {
             if (item.type !== "follow_up" || !Number.isSafeInteger(item.id) || item.id <= 0) continue;
             // Cached intent is not proof of current withdrawal eligibility.
             record = { scope: s, id: item.id, message_key: item.message_key, type: item.type,
               payload: { text: bodyText(item.payload) }, created_at: item.created_at, phase: "received", retryable: false,
-              delivery_state: "unknown", can_withdraw: false, withdrawPhase: "unconfirmed" };
+              delivery_state: "unknown", can_withdraw: false, can_edit: false, revision: null };
+            if (item.kind === "withdraw") record.withdrawPhase = "unconfirmed";
+            else if (item.kind === "edit_draft") {
+              if (typeof item.draft?.text !== "string" || item.draft.text.length > 24000 || !revision(item.draft.version)
+                  || !revision(item.draft.baseRevision)) continue;
+              record.editor = { ...item.draft, open: true };
+            } else {
+              const intent = item.edit;
+              if (!nonempty(intent?.edit_key) || !revision(intent.expected_revision) || !nonempty(intent.payload?.text)
+                  || intent.payload.text.length > 24000) continue;
+              record.editIntent = { edit_key: intent.edit_key, expected_revision: intent.expected_revision,
+                payload: { text: intent.payload.text }, phase: "unconfirmed", draftVersion: 0 };
+              record.editor = { text: intent.payload.text, baseRevision: intent.expected_revision, version: 0, open: true };
+              if (typeof item.draft?.text === "string" && item.draft.text.length <= 24000 && revision(item.draft.version)
+                  && revision(item.draft.baseRevision)) record.editor = { ...item.draft, open: item.draft.open !== false };
+              if (revision(intent.draftVersion)) record.editIntent.draftVersion = intent.draftVersion;
+            }
           } else {
             if (item.kind != null || !nonempty(item.payload?.text)) continue;
             record = { scope: s, message_key: item.message_key, type: item.type, payload: { text: item.payload.text },
@@ -82,9 +109,14 @@
     subscribe(callback) { this.listeners.add(callback); return () => this.listeners.delete(callback); }
     emit() { this.save(); for (const listener of this.listeners) listener(); }
     save() {
-      const pending = [...this.records.values()].flatMap(map => [...map.values()]).filter(row => row.phase !== "received" && row.retryable || row.withdrawPhase);
+      const pending = [...this.records.values()].flatMap(map => [...map.values()]).filter(row => row.phase !== "received" && row.retryable || row.withdrawPhase || row.editIntent || row.editor);
       const rows = pending.map(row => ({ scope: { server: row.scope.server, user: row.scope.user, project: row.scope.project, conversation: row.scope.conversation, job: row.scope.job },
         ...(row.withdrawPhase ? { kind: "withdraw", id: row.id } : {}),
+        ...(row.editor && !row.editIntent && !row.withdrawPhase ? { kind: "edit_draft", id: row.id,
+          draft: { text: row.editor.text, baseRevision: row.editor.baseRevision, version: row.editor.version, open: row.editor.open } } : {}),
+        ...(row.editIntent ? { kind: "edit", id: row.id, edit: { edit_key: row.editIntent.edit_key,
+          expected_revision: row.editIntent.expected_revision, payload: row.editIntent.payload, draftVersion: row.editIntent.draftVersion },
+          ...(row.editor ? { draft: { text: row.editor.text, baseRevision: row.editor.baseRevision, version: row.editor.version, open: row.editor.open } } : {}) } : {}),
         message_key: row.message_key, type: row.type, payload: row.payload, created_at: row.created_at }));
       try { this.storage?.setItem(STORAGE_KEY, JSON.stringify(rows)); this.persistenceError = false; }
       catch (_) { this.persistenceError = true; }
@@ -98,7 +130,7 @@
         phase: "unconfirmed", retryable: true };
       this.bucket(scope).set(row.message_key, row); this.emit(); return row;
     }
-    pendingCount() { return [...this.records.values()].reduce((n, map) => n + [...map.values()].filter(row => row.retryable || row.withdrawPhase).length, 0); }
+    pendingCount() { return [...this.records.values()].reduce((n, map) => n + [...map.values()].filter(row => row.retryable || row.withdrawPhase || row.editIntent || row.editor).length, 0); }
     merge(scope, raw, acknowledged = false) {
       const next = normalize(raw, scope);
       if (!next) return false;
@@ -108,16 +140,23 @@
       // its explicit original-body POST is accepted by server idempotency.
       if (prior && prior.phase !== "received" && !acknowledged && !sameBody(prior, next)) return false;
       if (prior?.phase === "received" && prior.id !== next.id) return false;
+      if (revision(prior?.revision) && !revision(next.revision)) {
+        prior.can_edit = false; prior.can_withdraw = false; return true;
+      }
+      if (revision(prior?.revision) && next.revision < prior.revision) return true;
       if (prior?.phase === "received" && (settled(prior.delivery_state) && next.delivery_state !== prior.delivery_state
           && !(prior.delivery_state === "blocked" && next.delivery_state === "withdrawn")
           || prior.delivery_state !== "unknown" && next.delivery_state === "unknown")) {
         // Even a degraded receipt can revoke a previously offered capability.
         prior.can_withdraw = prior.can_withdraw && next.can_withdraw;
+        prior.can_edit = prior.can_edit && next.can_edit;
         return true;
       }
       const withdrawal = prior?.withdrawPhase && !["withdrawn", "follow_up_created"].includes(next.delivery_state)
         ? { withdrawPhase: prior.withdrawPhase, withdrawError: prior.withdrawError, withdrawRequestId: prior.withdrawRequestId } : {};
-      this.bucket(scope).set(next.message_key, { ...next, ...withdrawal, scope: { ...scope } }); return true;
+      this.bucket(scope).set(next.message_key, { ...next, ...withdrawal,
+        ...(prior?.editor ? { editor: prior.editor } : {}), ...(prior?.editIntent ? { editIntent: prior.editIntent } : {}),
+        ...(prior?.editError ? { editError: prior.editError } : {}), scope: { ...scope } }); return true;
     }
     envelope(data, scope) { return data?.schema_version === 1 && data.job_id === scope.job; }
     submit(scope, messageKey) {
@@ -157,7 +196,7 @@
       const row = this.bucket(scope).get(messageKey);
       const id = `withdraw:${scope.session}:${keyFor(scope)}:${row?.id}`;
       if (this.requests.has(id)) return this.requests.get(id);
-      if (!row || row.phase !== "received" || !row.can_withdraw || !Number.isSafeInteger(row.id) || row.id <= 0) return Promise.resolve(false);
+      if (!row || row.phase !== "received" || !row.can_withdraw || row.editIntent || row.editor || !Number.isSafeInteger(row.id) || row.id <= 0) return Promise.resolve(false);
       if (!row.withdrawPhase && this.pendingCount() >= 100) return Promise.reject(new Error("待确认操作已达上限，请先核对旧记录"));
       Object.assign(row, { withdrawPhase: "sending", withdrawError: null, withdrawRequestId: id }); this.emit();
       const request = this.client.withdrawJobMessage(scope.job, row.id).then(data => {
@@ -203,6 +242,93 @@
       }
       return this.withdraw(scope, messageKey);
     }
+    openEditor(scope, messageKey) {
+      const row = this.bucket(scope).get(messageKey);
+      if (!this.current(scope) || !row || (!row.editor && !row.can_edit) || row.withdrawPhase) return;
+      if (!row.editor && this.pendingCount() >= 100) throw new Error("本地草稿已达上限，请先核对或取消旧草稿");
+      row.editor ||= { text: bodyText(row.payload), baseRevision: row.revision, version: 0 };
+      row.editor.open = true; this.emit();
+    }
+    updateEditor(scope, messageKey, text) {
+      const row = this.bucket(scope).get(messageKey);
+      if (!this.current(scope) || !row?.editor || text.length > 24000) return;
+      row.editor.text = text; row.editor.version++;
+      this.save();
+    }
+    closeEditor(scope, messageKey) {
+      const row = this.bucket(scope).get(messageKey);
+      if (!this.current(scope) || !row?.editor) return;
+      if (row.editIntent) row.editor.open = false; else delete row.editor;
+      this.emit();
+    }
+    rebaseEditor(scope, messageKey) {
+      const row = this.bucket(scope).get(messageKey);
+      if (!this.current(scope) || !row?.editor || !row.can_edit || row.editIntent) return;
+      row.editor.baseRevision = row.revision; row.editor.version++; row.editError = null; this.emit();
+    }
+    saveEdit(scope, messageKey) {
+      const row = this.bucket(scope).get(messageKey);
+      if (!this.current(scope) || !row?.can_edit || !row.editor?.open || row.withdrawPhase || row.editIntent) return Promise.resolve(false);
+      if (!nonempty(row.editor.text) || row.editor.text.length > 24000) return Promise.reject(new Error("请输入 1–24000 字符的追问正文"));
+      if (row.editor.baseRevision !== row.revision) return Promise.reject(new Error("此消息已更新，请核对当前正文后继续编辑"));
+      row.editIntent = { edit_key: this.uuid(), expected_revision: row.editor.baseRevision,
+        payload: { text: row.editor.text }, draftVersion: row.editor.version, phase: "unconfirmed" };
+      row.editError = null;
+      return this.submitEdit(scope, messageKey);
+    }
+    submitEdit(scope, messageKey) {
+      const row = this.bucket(scope).get(messageKey), intent = row?.editIntent;
+      if (!this.current(scope) || !intent) return Promise.resolve(false);
+      const id = `edit:${scope.session}:${keyFor(scope)}:${row.id}:${intent.edit_key}`;
+      if (this.requests.has(id)) return this.requests.get(id);
+      intent.phase = "sending"; intent.requestId = id; row.editError = null; this.emit();
+      if (this.persistenceError) {
+        intent.phase = "unconfirmed"; row.editError = "本地保存失败，编辑尚未发送；恢复存储后可核对并重试";
+        delete intent.requestId; this.emit(); return Promise.resolve(false);
+      }
+      const request = this.client.editJobMessage(scope.job, row.id, { edit_key: intent.edit_key,
+        expected_revision: intent.expected_revision, payload: { ...intent.payload } }).then(data => {
+        if (!this.current(scope)) return false;
+        const edit = normalizeEdit(data?.edit, scope, row.id), message = normalize(data?.message, scope);
+        if (!this.envelope(data, scope) || !edit || edit.edit_key !== intent.edit_key || edit.expected_revision !== intent.expected_revision
+            || message?.id !== row.id || message.message_key !== messageKey || message.type !== "follow_up"
+            || !revision(message.revision) || message.revision < edit.revision || !this.merge(scope, message, true)) {
+          throw new Error("服务器回执无法确认编辑结果，请使用原请求核对");
+        }
+        const current = this.bucket(scope).get(messageKey);
+        if (current?.editIntent?.edit_key !== intent.edit_key) return false;
+        delete current.editIntent; current.editError = null;
+        if (current.editor?.version === intent.draftVersion) delete current.editor;
+        else if (current.editor) current.editor.baseRevision = edit.revision;
+        return true;
+      }).catch(async error => {
+        if (!this.current(scope)) return false;
+        const current = this.bucket(scope).get(messageKey);
+        if (current?.editIntent?.edit_key !== intent.edit_key) return false;
+        intent.phase = "unconfirmed";
+        current.editError = String(error.message || "连接中断");
+        if ([400, 403, 404, 409, 422].includes(error.status)) {
+          delete current.editIntent; current.can_edit = false;
+          current.editError = error.status === 409 ? "保存冲突，草稿已保留，请核对当前正文" : "编辑未被接受，草稿已保留";
+          if (error.status === 409) await this.reconcile(scope);
+        }
+        return false;
+      }).finally(() => {
+        this.requests.delete(id);
+        const current = this.bucket(scope).get(messageKey);
+        if (current?.editIntent?.requestId === id) {
+          current.editIntent.phase = "unconfirmed"; delete current.editIntent.requestId;
+        }
+        this.emit();
+      });
+      this.requests.set(id, request); return request;
+    }
+    async retryEdit(scope, messageKey) {
+      await this.reconcile(scope);
+      // A successful earlier edit may now be followed by another revision,
+      // withdrawal or child creation. Its immutable ACK remains retrievable.
+      return this.submitEdit(scope, messageKey);
+    }
     remove(scope, messageKey) {
       const row = this.bucket(scope).get(messageKey);
       if (!row || row.phase === "sending" || row.phase === "received") return;
@@ -232,7 +358,7 @@
       if (!this.timer) this.timer = setInterval(() => {
         if (root.document?.visibilityState === "hidden") return;
         const scopes = new Map();
-        for (const value of this.watches.values()) if (value.active || this.list(value.scope).some(row => row.retryable || row.withdrawPhase || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
+        for (const value of this.watches.values()) if (value.active || this.list(value.scope).some(row => row.retryable || row.withdrawPhase || row.editIntent || row.delivery_state === "pending")) scopes.set(keyFor(value.scope), value.scope);
         for (const value of scopes.values()) this.reconcile(value);
       }, 2000);
     }
@@ -257,6 +383,9 @@
     host._messageSignature = signature;
     const body = host.querySelector(".message-receipts-body");
     if (!body) return;
+    const focused = body.contains(document.activeElement) && document.activeElement.classList.contains("message-edit-text")
+      ? { key: document.activeElement.closest(".message-receipt").dataset.messageKey,
+        start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
     body.replaceChildren();
     for (const row of rows) {
       const section = document.createElement("div"); section.className = "message-receipt";
@@ -267,25 +396,48 @@
       if (row.error) status.textContent += ` · ${row.error}`;
       if (row.withdrawPhase) status.textContent += row.withdrawPhase === "sending" ? " · 撤回中…" : " · 撤回结果待确认";
       if (row.withdrawError) status.textContent += ` · ${row.withdrawError}`;
+      if (row.edited_at) status.textContent += " · 已编辑";
+      if (row.editIntent) status.textContent += row.editIntent.phase === "sending" ? " · 保存中…" : " · 编辑结果待确认";
+      if (row.editError) status.textContent += ` · ${row.editError}`;
       section.append(text, status);
       const action = (label, callback) => {
         const button = document.createElement("button"); button.type = "button"; button.className = "ghost-btn sm"; button.textContent = label;
         button.addEventListener("click", async () => { button.disabled = true; try { await callback(); } catch (error) { status.textContent = error.message; } finally { button.disabled = false; } });
         section.appendChild(button);
+        return button;
       };
       if (row.retryable && row.phase !== "sending") action("核对并重试", () => store.retry(scope, row.message_key));
       if (row.phase === "unconfirmed" || row.phase === "rejected") action("移除本地记录", () => store.remove(scope, row.message_key));
       if (row.withdrawPhase === "unconfirmed") action("核对并重试撤回", () => store.retryWithdrawal(scope, row.message_key));
-      else if (row.phase === "received" && row.can_withdraw && !row.withdrawPhase) action("撤回追问", () => store.withdraw(scope, row.message_key));
+      else if (row.phase === "received" && row.can_withdraw && !row.withdrawPhase && !row.editIntent && !row.editor) action("撤回追问", () => store.withdraw(scope, row.message_key));
+      if (row.editIntent?.phase === "unconfirmed") action("核对并重试编辑", () => store.retryEdit(scope, row.message_key));
+      if (row.editor && !row.editor.open) action("展开编辑草稿", () => store.openEditor(scope, row.message_key));
+      else if (row.can_edit && !row.editor && !row.withdrawPhase && !row.editIntent) action("编辑追问", () => store.openEditor(scope, row.message_key));
+      if (row.editor?.open) {
+        const note = document.createElement("small"); note.textContent = "仅保存成功后生效，队列位置不变。"; section.appendChild(note);
+        const field = document.createElement("textarea"); field.className = "message-edit-text"; field.setAttribute("aria-label", "编辑追问正文");
+        field.maxLength = 24000; field.rows = 3; field.value = row.editor.text; section.appendChild(field);
+        const save = action("保存修改", () => store.saveEdit(scope, row.message_key));
+        const disableSave = () => { save.disabled = !row.can_edit || Boolean(row.editIntent || row.withdrawPhase)
+          || row.editor.baseRevision !== row.revision || !nonempty(field.value); };
+        disableSave();
+        field.addEventListener("input", () => { store.updateEditor(scope, row.message_key, field.value); disableSave(); });
+        if (row.can_edit && row.editor.baseRevision !== row.revision && !row.editIntent) action("以最新版本继续编辑", () => store.rebaseEditor(scope, row.message_key));
+        action(row.editIntent ? "收起编辑" : "取消编辑", () => store.closeEditor(scope, row.message_key));
+      }
       if (row.delivery_state === "follow_up_created" && openChild) action("查看后续任务", () => openChild(scope, row));
       body.appendChild(section);
+      if (focused?.key === row.message_key) {
+        const field = section.querySelector(".message-edit-text");
+        if (field) { field.focus({ preventScroll: true }); field.setSelectionRange(focused.start, focused.end); }
+      }
     }
     if (store.persistenceError) {
       const note = document.createElement("small"); note.textContent = "本地保存不可用，未确认的消息仅保留在本次窗口。"; body.appendChild(note);
     }
   }
 
-  const api = { Store, normalize, render, keyFor, STORAGE_KEY };
+  const api = { Store, normalize, normalizeEdit, render, keyFor, STORAGE_KEY };
   root.JobMessages = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

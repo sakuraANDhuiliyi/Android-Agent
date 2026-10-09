@@ -72,6 +72,7 @@ class ConversationMessageReceiptTest {
     private inner class Harness(
         val storage: MutableMap<String, String> = ConcurrentHashMap(),
         val withdrawalStorage: MutableMap<String, String> = ConcurrentHashMap(),
+        val editStorage: MutableMap<String, String> = ConcurrentHashMap(),
         val account: AtomicBoolean = AtomicBoolean(true),
         val selected: AtomicBoolean = AtomicBoolean(true),
         val respond: (Request) -> JSONObject? = { null },
@@ -81,18 +82,22 @@ class ConversationMessageReceiptTest {
         val requests = CopyOnWriteArrayList<String>()
         val postBodies = CopyOnWriteArrayList<JSONObject>()
         val serverMessages = CopyOnWriteArrayList<JSONObject>()
+        val editBodies = CopyOnWriteArrayList<JSONObject>()
+        val acceptedEdits = ConcurrentHashMap<String, JSONObject>()
         val watches = CopyOnWriteArrayList<Watcher>()
         var jobs = listOf(job())
         val api = AgentApi("https://receipts.test", "synthetic", OkHttpClient.Builder().addInterceptor { chain ->
             val req = chain.request()
             requests += "${req.method} ${req.url.encodedPath}"
             if (req.method == "POST" && req.url.encodedPath.endsWith("/messages")) postBodies += body(req)
+            if (req.url.encodedPath.endsWith("/edits")) editBodies += body(req)
             val reply = respond(req) ?: when (req.url.encodedPath) {
                 "/api/conversations/c/events" -> JSONObject().put("conversation_id", "c").put("events", JSONArray()).put("has_more", false)
                 "/api/jobs" -> JSONObject().put("jobs", JSONArray(jobs))
                 "/api/jobs/j", "/api/jobs/child" -> JSONObject().put("job", jobs.firstOrNull { it.getString("id") == req.url.pathSegments.last() } ?: job("child", "paused"))
                 "/api/jobs/j/approvals", "/api/jobs/child/approvals" -> JSONObject().put("approvals", JSONArray())
                 "/api/jobs/j/cancel" -> JSONObject().put("job", job(status = "canceled"))
+                "/api/jobs/j/messages/1/edits" -> acceptEdit(body(req))
                 "/api/jobs/j/messages/1/withdraw" -> {
                     val row = serverMessages.first { it.getLong("id") == 1L }
                     withdraw(row)
@@ -120,10 +125,27 @@ class ConversationMessageReceiptTest {
             receiptPollIntervalMs = 20,
             readPendingWithdrawal = { PendingMessageWithdrawal.parse(withdrawalStorage[it]) },
             writePendingWithdrawal = { key, value -> if (value == null) withdrawalStorage.remove(key) else withdrawalStorage[key] = value.toJson().toString() },
+            readMessageEdit = { SavedMessageEdit.parse(editStorage[it]) },
+            writeMessageEdit = { key, value -> if (value == null) editStorage.remove(key) else editStorage[key] = value.toJson().toString() },
         ).also { models += it }
         init {
             val scope = CoroutineScope(Dispatchers.Unconfined).also { scopes += it }
             scope.launch { vm.signals.collect { signals += it } }
+        }
+        fun acceptEdit(request: JSONObject): JSONObject {
+            val row = serverMessages.single()
+            val key = request.getString("edit_key")
+            var edit = acceptedEdits[key]
+            if (edit == null) {
+                if (request.getInt("expected_revision") != row.optInt("revision")) return JSONObject().put("__status", 409).put("detail", "stale revision")
+                val revision = request.getInt("expected_revision") + 1
+                row.put("revision", revision).put("edited_at", 1700000003).put("payload", request.getJSONObject("payload"))
+                edit = JSONObject().put("schema_version", 1).put("task_id", "j").put("message_id", 1).put("edit_key", key)
+                    .put("expected_revision", request.getInt("expected_revision")).put("revision", revision).put("created_at", 1700000003)
+                    .put("payload", request.getJSONObject("payload"))
+                acceptedEdits[key] = edit
+            }
+            return JSONObject().put("schema_version", 1).put("job_id", "j").put("message", row).put("edit", edit)
         }
         fun start() { vm.start("p", "c"); await { vm.state.value.job?.id == "j" } }
     }
@@ -133,10 +155,133 @@ class ConversationMessageReceiptTest {
     private fun readyFollowUp(h: Harness) {
         h.start()
         h.serverMessages += receipt(JSONObject().put("message_key", "follow").put("type", "follow_up").put("payload", JSONObject().put("text", "later")))
-            .put("can_withdraw", true).put("withdrawn_at", JSONObject.NULL)
+            .put("can_withdraw", true).put("withdrawn_at", JSONObject.NULL).put("revision", 0).put("edited_at", JSONObject.NULL).put("can_edit", true)
         h.vm.setForeground(true)
         await { h.vm.state.value.messageReceipts.any { it.canWithdraw } }
         h.vm.setForeground(false)
+    }
+
+    @Test fun `switching message cannot silently overwrite another edit draft`() {
+        val h = Harness(); readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("unsaved A")
+        h.serverMessages += JSONObject(h.serverMessages.single().toString()).put("id", 2).put("message_key", "B")
+        h.vm.setForeground(true); await { h.vm.state.value.messageReceipts.size == 2 }; h.vm.setForeground(false)
+        h.vm.beginMessageEdit("B")
+        assertEquals("follow", h.vm.state.value.messageEdit!!.draft.identity.messageKey)
+        assertEquals("unsaved A", h.vm.state.value.messageEdit!!.draft.text)
+        h.vm.discardMessageEdit(); assertNull(h.vm.state.value.messageEdit)
+        h.vm.beginMessageEdit("B"); assertEquals("B", h.vm.state.value.messageEdit!!.draft.identity.messageKey)
+    }
+
+    @Test fun `edit double click uses one immutable request and acknowledgement retains newer edit and main draft`() {
+        val entered = gate(); val release = gate()
+        val h = Harness { req -> if (req.url.encodedPath.endsWith("/edits")) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }; null }
+        readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("first edit"); h.vm.saveMessageEdit()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertNotNull(SavedMessageEdit.parse(h.editStorage["j"])!!.pending)
+        h.vm.saveMessageEdit(); h.vm.retryMessageEdit(); h.vm.withdrawMessage("follow"); h.vm.send("main draft", true, emptyList())
+        assertEquals(1, h.editBodies.size)
+        h.vm.updateMessageEditText("newer unsaved edit")
+        h.vm.controlJob("cancel"); await { h.requests.any { it.endsWith("/cancel") } }
+        release.countDown(); await { !h.vm.state.value.editingMessage }
+        assertNull(h.vm.state.value.messageEdit!!.pending)
+        assertEquals("newer unsaved edit", h.vm.state.value.messageEdit!!.draft.text)
+        assertEquals(1, h.vm.state.value.messageEdit!!.draft.revision)
+        assertEquals("first edit", h.vm.state.value.messageReceipts.single().text)
+        assertEquals("newer unsaved edit", SavedMessageEdit.parse(h.editStorage["j"])!!.draft.text)
+        assertTrue(h.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+    }
+
+    @Test fun `matching GET after restart cannot confirm own edit and old key retry works after later revision withdrawal or dispatch`() {
+        for (later in listOf("same", "revision2", "withdrawn", "follow_up_created")) {
+            lateinit var h: Harness
+            h = Harness { req -> if (req.url.encodedPath.endsWith("/edits")) { h.acceptEdit(body(req)); throw IOException("accepted then lost") }; null }
+            readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("token=private"); h.vm.saveMessageEdit()
+            await { !h.vm.state.value.editingMessage && h.vm.state.value.messageEdit?.pending != null }
+            val original = h.editBodies.single().toString()
+            val restored = Harness(editStorage = h.editStorage)
+            restored.serverMessages += h.serverMessages.map { JSONObject(it.toString()) }
+            restored.acceptedEdits.putAll(h.acceptedEdits)
+            val row = restored.serverMessages.single()
+            if (later == "revision2") row.put("revision", 2).put("payload", JSONObject().put("text", "other client"))
+            if (later == "withdrawn") withdraw(row).put("can_edit", false)
+            if (later == "follow_up_created") row.put("delivery_state", later).put("consumed_at", 1700000004).put("follow_up_job_id", "child").put("follow_up_turn_id", "child-turn").put("can_edit", false).put("can_withdraw", false)
+            restored.start(); restored.vm.setForeground(true); await { restored.vm.state.value.messageReceipts.isNotEmpty() }; restored.vm.setForeground(false)
+            assertNotNull(restored.vm.state.value.messageEdit!!.pending)
+            assertFalse(restored.requests.any { it.startsWith("POST") })
+            restored.vm.updateMessageEditText("new local text"); restored.vm.retryMessageEdit()
+            await { !restored.vm.state.value.editingMessage && restored.vm.state.value.messageEdit?.pending == null }
+            assertEquals(original, restored.editBodies.single().toString())
+            assertEquals("new local text", restored.vm.state.value.messageEdit!!.draft.text)
+            assertEquals(row.getJSONObject("payload").getString("text"), restored.vm.state.value.messageReceipts.single().text)
+            assertTrue(restored.signals.filterIsInstance<ConversationSignal.ComposerAcknowledged>().isEmpty())
+        }
+    }
+
+    @Test fun `unaccepted edit survives restart and only manual retry can apply frozen text`() {
+        val h = Harness { req -> if (req.url.encodedPath.endsWith("/edits")) throw IOException("offline"); null }
+        readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("original edit"); h.vm.saveMessageEdit()
+        await { !h.vm.state.value.editingMessage && h.vm.state.value.messageEdit?.pending != null }
+        val restored = Harness(editStorage = h.editStorage); restored.serverMessages += h.serverMessages
+        restored.start(); restored.vm.setForeground(true); await { restored.vm.state.value.messageReceipts.isNotEmpty() }; restored.vm.setForeground(false)
+        assertTrue(restored.editBodies.isEmpty())
+        restored.vm.updateMessageEditText("new draft"); restored.vm.retryMessageEdit()
+        await { !restored.vm.state.value.editingMessage && restored.vm.state.value.messageEdit?.pending == null }
+        assertEquals(h.editBodies.single().toString(), restored.editBodies.single().toString())
+        assertEquals("original edit", restored.vm.state.value.messageReceipts.single().text)
+        assertEquals("new draft", restored.vm.state.value.messageEdit!!.draft.text)
+    }
+
+    @Test fun `CAS conflict keeps draft and explicit rebase preserves text before a fresh save`() {
+        val h = Harness(); readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("mine")
+        h.serverMessages.single().put("revision", 1).put("edited_at", 1700000001).put("payload", JSONObject().put("text", "theirs"))
+        h.vm.saveMessageEdit(); await { !h.vm.state.value.editingMessage && h.editBodies.isNotEmpty() }
+        assertNull(h.vm.state.value.messageEdit!!.pending)
+        assertEquals("mine", h.vm.state.value.messageEdit!!.draft.text)
+        assertEquals("theirs", h.vm.state.value.messageReceipts.single().text)
+        h.vm.saveMessageEdit(); assertEquals(1, h.editBodies.size)
+        h.vm.rebaseMessageEdit(); assertEquals("mine", h.vm.state.value.messageEdit!!.draft.text)
+        h.vm.updateMessageEditText("explicit revision two"); h.vm.saveMessageEdit()
+        await { !h.vm.state.value.editingMessage && h.editBodies.size == 2 }
+        assertEquals(1, h.editBodies.last().getInt("expected_revision"))
+        assertFalse(h.requests.any { it.endsWith("/messages") && it.startsWith("POST") || it.endsWith("/resume") })
+    }
+
+    @Test fun `old account conversation and job reject late edit acknowledgement`() {
+        for (change in listOf("account", "conversation", "job")) {
+            val entered = gate(); val release = gate()
+            val h = Harness { req -> if (req.url.encodedPath.endsWith("/edits")) { entered.countDown(); release.await(5, TimeUnit.SECONDS) }; null }
+            readyFollowUp(h); h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("edit"); h.vm.saveMessageEdit()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            when (change) { "account" -> h.account.set(false); "conversation" -> h.selected.set(false)
+                else -> { h.jobs = listOf(job("child", "paused")); h.vm.refresh(); await { h.vm.state.value.jobId == "child" } } }
+            release.countDown(); await { h.acceptedEdits.isNotEmpty() }; Thread.sleep(40)
+            assertNotNull(SavedMessageEdit.parse(h.editStorage["j"])!!.pending)
+            assertFalse(h.vm.state.value.messageReceipts.any { it.revision == 1 })
+        }
+    }
+
+    @Test fun `stale GET cannot roll back the accepted edit revision or body`() {
+        val h = Harness(); readyFollowUp(h)
+        val stale = JSONObject(h.serverMessages.single().toString())
+        h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("new"); h.vm.saveMessageEdit()
+        await { !h.vm.state.value.editingMessage && h.vm.state.value.messageEdit?.pending == null }
+        h.serverMessages.clear(); h.serverMessages += stale
+        h.vm.setForeground(true); await { h.requests.count { it == "GET /api/jobs/j/messages" } >= 2 }; Thread.sleep(40)
+        assertEquals(1, h.vm.state.value.messageReceipts.single().revision)
+        assertEquals("new", h.vm.state.value.messageReceipts.single().text)
+        h.vm.setForeground(false)
+    }
+
+    @Test fun `unknown legacy guest or blocked capability cannot start a new edit`() {
+        for (mode in listOf("legacy", "unknown", "blocked", "guest")) {
+            val h = Harness(); readyFollowUp(h)
+            val row = h.serverMessages.single()
+            when (mode) { "legacy" -> row.remove("revision"); "unknown" -> row.put("can_edit", "true")
+                "blocked" -> row.put("delivery_state", "blocked"); "guest" -> h.session.guestMode = true }
+            if (mode != "guest") { h.vm.setForeground(true); await { h.vm.state.value.messageReceipts.none { it.canEdit } }; h.vm.setForeground(false) }
+            h.vm.beginMessageEdit("follow"); h.vm.updateMessageEditText("cannot save"); h.vm.saveMessageEdit()
+            assertTrue(h.editBodies.isEmpty()); assertNull(h.vm.state.value.messageEdit)
+        }
     }
 
     @Test fun `withdraw double click has one request leaves composer alone and permits stop`() {

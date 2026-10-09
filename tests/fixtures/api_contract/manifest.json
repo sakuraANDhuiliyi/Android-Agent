@@ -208,6 +208,27 @@
       "path": "/api/jobs/{job_id}/messages/{message_id}/withdraw",
       "fixture": "job_message_withdraw_200.json",
       "status": 200
+    },
+    {
+      "id": "job_message_edit_201",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/{message_id}/edits",
+      "fixture": "job_message_edit_201.json",
+      "status": 201
+    },
+    {
+      "id": "job_message_edit_200",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/{message_id}/edits",
+      "fixture": "job_message_edit_200.json",
+      "status": 200
+    },
+    {
+      "id": "job_message_edit_withdrawn_200",
+      "method": "POST",
+      "path": "/api/jobs/{job_id}/messages/{message_id}/edits",
+      "fixture": "job_message_edit_withdrawn_200.json",
+      "status": 200
     }
   ],
   "client_tests": [

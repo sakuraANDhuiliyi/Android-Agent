@@ -291,6 +291,8 @@ button svg { flex-shrink: 0; }
 .message-receipt-text { margin: 0 0 4px; white-space: pre-wrap; max-height: 80px; overflow: auto; }
 .message-receipt small { display: block; color: var(--muted); white-space: pre-wrap; }
 .message-receipt button { margin: 5px 6px 0 0; }
+.message-edit-text { display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 68px; max-height: 180px; resize: vertical; margin-top: 7px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface, #181d24); color: var(--text, #e8ebf1); font: inherit; }
+.message-receipts-body:has(.message-edit-text) { max-height: 300px; }
 .message-receipt[data-state="unconfirmed"] small, .message-receipt[data-state="blocked"] small { color: var(--warning, #b78022); }
 .message-modes { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 8px; }
 .message-modes [aria-pressed="true"] { background: var(--accent-soft, rgba(112, 137, 255, .15)); }

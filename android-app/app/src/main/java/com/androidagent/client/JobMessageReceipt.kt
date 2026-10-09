@@ -21,6 +21,9 @@ data class JobMessageReceipt(
     val verifiedIdentity: Boolean = false,
     val withdrawnAt: Double? = null,
     val canWithdraw: Boolean = false,
+    val revision: Int? = null,
+    val editedAt: Double? = null,
+    val canEdit: Boolean = false,
 ) {
     val label: String get() = when (delivery) {
         MessageDelivery.PENDING -> if (type == "steer") "待加入本轮上下文" else "等待创建后续任务"
@@ -56,6 +59,10 @@ data class JobMessageReceipt(
             val child = json.string("follow_up_job_id")
             val turn = json.string("follow_up_turn_id")
             val withdrawnAt = json.time("withdrawn_at")
+            val editedAt = json.time("edited_at")
+            val rawRevision = json.opt("revision") as? Number
+            val revision = rawRevision?.toDouble()?.takeIf { it.isFinite() && it >= 0 && it < Int.MAX_VALUE && it % 1.0 == 0.0 }
+                ?.toInt()?.takeIf { if (it == 0) json.isNull("edited_at") else editedAt != null }
             val noLinks = json.isNull("context_message_id") && json.isNull("follow_up_job_id") && json.isNull("follow_up_turn_id")
             val untouched = json.isNull("consumed_at") && noLinks
             val verified = envelopeSupported && json.opt("schema_version") == 1 && id > 0 &&
@@ -77,7 +84,10 @@ data class JobMessageReceipt(
                 json.string("reason")?.takeIf { it in REASONS && state != MessageDelivery.WITHDRAWN }, verified,
                 withdrawnAt.takeIf { state == MessageDelivery.WITHDRAWN },
                 verified && json.opt("can_withdraw") == true && type == "follow_up" && untouched &&
-                    json.isNull("withdrawn_at") && state in setOf(MessageDelivery.PENDING, MessageDelivery.BLOCKED))
+                    json.isNull("withdrawn_at") && state in setOf(MessageDelivery.PENDING, MessageDelivery.BLOCKED),
+                revision.takeIf { verified }, editedAt.takeIf { verified && revision != null },
+                verified && revision != null && json.opt("can_edit") == true && type == "follow_up" && untouched &&
+                    json.isNull("withdrawn_at") && state == MessageDelivery.PENDING)
         }
         private val REASONS = setOf("awaiting_safe_boundary", "awaiting_parent_completion", "awaiting_dispatch",
             "parent_paused", "parent_failed", "parent_canceled", "parent_interrupted", "turn_finished_before_consumption", "legacy_missing_receipt")

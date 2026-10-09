@@ -18,6 +18,9 @@
     "follow_up_turn_id": null,
     "reason": null,
     "withdrawn_at": 1006.0,
-    "can_withdraw": false
+    "can_withdraw": false,
+    "revision": 0,
+    "edited_at": null,
+    "can_edit": false
   }
 }

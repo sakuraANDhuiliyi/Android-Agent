@@ -70,7 +70,7 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
     fun clearAuth() {
         ApkCache.clearAccount(cacheRoot, serverUrl, userId)
         prefs.edit().also { edit ->
-            prefs.all.keys.filter { it.startsWith("pending_job_message:") || it.startsWith("pending_message_withdrawal:") }.forEach(edit::remove)
+            prefs.all.keys.filter { it.startsWith("pending_job_message:") || it.startsWith("pending_message_withdrawal:") || it.startsWith("message_edit:") }.forEach(edit::remove)
         }.apply()
         apiToken = ""
         guestMode = true
@@ -168,6 +168,19 @@ class AgentPrefs(context: Context) : ConversationSessionPrefs {
         val edit = prefs.edit()
         if (value == null) edit.remove(key) else edit.putString(key, value.toJson().toString())
         check(edit.commit()) { "无法保存待确认撤回，请重试" }
+    }
+
+    fun messageEdit(session: CacheSession, jobId: String): SavedMessageEdit? {
+        if (!session.isCurrent(this)) return null
+        return SavedMessageEdit.parse(prefs.getString("message_edit:${session.sessionKey}:$jobId", null))
+    }
+
+    fun setMessageEdit(session: CacheSession, jobId: String, value: SavedMessageEdit?) {
+        if (!session.isCurrent(this)) return
+        val edit = prefs.edit()
+        val key = "message_edit:${session.sessionKey}:$jobId"
+        if (value == null) edit.remove(key) else edit.putString(key, value.toJson().toString())
+        check(edit.commit()) { "无法保存追问编辑，请重试" }
     }
 
     fun approvalAllowlist(): MutableSet<String> =

@@ -5,6 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.androidagent.client.AgentApi
+import com.androidagent.client.MessageEditDraft
+import com.androidagent.client.PendingMessageEdit
+import com.androidagent.client.SavedMessageEdit
+import com.androidagent.client.mergeJobMessageReceipts
 import com.androidagent.client.AgentPrefs
 import com.androidagent.client.ApiException
 import com.androidagent.client.ApprovalAllowlist
@@ -62,6 +66,9 @@ data class ConversationUiState(
     val pendingWithdrawal: PendingMessageWithdrawal? = null,
     val withdrawing: Boolean = false,
     val withdrawalNotice: String? = null,
+    val messageEdit: SavedMessageEdit? = null,
+    val editingMessage: Boolean = false,
+    val editNotice: String? = null,
 ) {
     enum class Source { NONE, CACHE, FRESH }
 }
@@ -85,6 +92,8 @@ class ConversationViewModel(
     private val receiptPollIntervalMs: Long = 2500L,
     private val readPendingWithdrawal: (String) -> PendingMessageWithdrawal? = { null },
     private val writePendingWithdrawal: (String, PendingMessageWithdrawal?) -> Unit = { _, _ -> },
+    private val readMessageEdit: (String) -> SavedMessageEdit? = { null },
+    private val writeMessageEdit: (String, SavedMessageEdit?) -> Unit = { _, _ -> },
 ) : ViewModel() {
 
     var store = TimelineStore()
@@ -116,6 +125,8 @@ class ConversationViewModel(
     private var receiptRefreshJob: Job? = null
     private var receiptPollJob: Job? = null
     private var receiptPollBudget = 0
+    private var editRequest = 0L
+    private var editJob: Job? = null
     private var withdrawalRequest = 0L
     private var withdrawalJob: Job? = null
     private val submittingApprovals = HashSet<String>()
@@ -217,19 +228,20 @@ class ConversationViewModel(
             val preferred = _state.value.jobId ?: session.selectedJobId
             val active = jobs.firstOrNull { it.id == preferred &&
                 (it.resolvedStatus() in ACTIVE_STATUSES || it.canRecover || it.recoveryJobId != null ||
-                    _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null || _state.value.messageReceipts.isNotEmpty()) }
+                    _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null || _state.value.messageEdit != null || _state.value.messageReceipts.isNotEmpty()) }
                 ?: jobs.firstOrNull { it.resolvedStatus() in ACTIVE_STATUSES }
                 ?: jobs.firstOrNull()
             when {
                 active == null -> {
                     ++bindingGeneration
                     ++messageRequest
+                    ++editRequest
                     ++withdrawalRequest
                     stopReceiptRefresh()
                     watcher?.stop()
                     watcher = null
                     updateState { it.copy(job = null, jobId = null, messageReceipts = emptyList(), pendingMessage = null, messageNotice = null, sending = false,
-                        pendingWithdrawal = null, withdrawing = false, withdrawalNotice = null) }
+                        pendingWithdrawal = null, withdrawing = false, withdrawalNotice = null, messageEdit = null, editingMessage = false, editNotice = null) }
                     bumpTimeline()
                 }
                 active.id == _state.value.jobId && watcher != null -> applyJob(active)
@@ -290,6 +302,7 @@ class ConversationViewModel(
         flushPendingTaskEvents()
         val generation = ++bindingGeneration
         ++messageRequest
+        ++editRequest
         ++withdrawalRequest
         stopReceiptRefresh()
         val pending = readPendingMessage(jobId)?.takeIf {
@@ -298,10 +311,14 @@ class ConversationViewModel(
         val withdrawal = readPendingWithdrawal(jobId)?.takeIf {
             it.jobId == jobId && it.projectId == projectId && it.conversationId == conversationId
         }
+        val savedEdit = readMessageEdit(jobId)?.takeIf { it.draft.identity.let { identity ->
+            identity.jobId == jobId && identity.projectId == projectId && identity.conversationId == conversationId
+        } }
         if (!resume) trackNewJob(jobId) else scheduleTaskSync()
         updateState { it.copy(jobId = jobId, job = initialJob, sending = false, messageReceipts = emptyList(),
             pendingMessage = pending, messageNotice = pending?.let { "发送结果待确认，请刷新回执后重试原消息" }, refreshingMessages = false,
-            pendingWithdrawal = withdrawal, withdrawing = false, withdrawalNotice = withdrawal?.let { "上次撤回结果待确认，请核对后重试" }) }
+            pendingWithdrawal = withdrawal, withdrawing = false, withdrawalNotice = withdrawal?.let { "上次撤回结果待确认，请核对后重试" },
+            messageEdit = savedEdit, editingMessage = false, editNotice = savedEdit?.pending?.let { "上次编辑结果待确认，可核对并重试原编辑" }) }
         rememberSelectedJob(jobId)
         watcher?.stop()
         val cursor = if (resume) session.eventCursor(jobId) else 0L
@@ -466,7 +483,7 @@ class ConversationViewModel(
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
         val original = current.job ?: return
-        if (current.recovering || current.sending || current.withdrawing || !belongsToConversation(original)) return
+        if (current.recovering || current.sending || current.withdrawing || current.editingMessage || !belongsToConversation(original)) return
         val existingId = original.recoveryJobId
         if (existingId == null && (!original.canRecover || original.status !in setOf("failed", "interrupted"))) return
         val generation = bindingGeneration
@@ -522,6 +539,7 @@ class ConversationViewModel(
         foreground = value
         if (value) {
             if (messageSubmissionJob?.isActive != true && _state.value.pendingMessage != null) updateState { it.copy(sending = false) }
+            if (editJob?.isActive != true && _state.value.messageEdit?.pending != null) updateState { it.copy(editingMessage = false) }
             if (withdrawalJob?.isActive != true && _state.value.pendingWithdrawal != null) updateState { it.copy(withdrawing = false) }
             refreshMessageReceipts()
         } else stopReceiptRefresh()
@@ -538,7 +556,7 @@ class ConversationViewModel(
     }
 
     fun refreshMessageReceipts(restartWindow: Boolean = true) {
-        if (!foreground || !hasCurrentSession() || session.guestMode || _state.value.withdrawing || !isSelectedConversation(projectId, conversationId)) return
+        if (!foreground || !hasCurrentSession() || session.guestMode || _state.value.withdrawing || _state.value.editingMessage || !isSelectedConversation(projectId, conversationId)) return
         val jobId = _state.value.jobId ?: return
         if (restartWindow) receiptPollBudget = 24
         if (receiptRefreshJob?.isActive == true) return
@@ -550,7 +568,7 @@ class ConversationViewModel(
                 val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(jobId) }
                 if (!foreground || request != receiptRequest || !isBoundJob(jobId, generation) ||
                     !isSelectedConversation(projectId, conversationId)) return@launch
-                updateState { it.copy(messageReceipts = page.messages, messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新") }
+                updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, page.messages), messageNotice = if (page.supported) null else "服务端缺少可靠回执，请升级后刷新") }
                 reconcileWithdrawal(page.messages)
                 val pending = _state.value.pendingMessage
                 if (pending != null && page.messages.any(pending::matches)) acknowledgeMessage(pending)
@@ -586,7 +604,7 @@ class ConversationViewModel(
         }
     }
 
-    private fun hasUnresolvedMessages(): Boolean = _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null ||
+    private fun hasUnresolvedMessages(): Boolean = _state.value.messageEdit?.pending != null || _state.value.pendingMessage != null || _state.value.pendingWithdrawal != null ||
         _state.value.messageReceipts.any { it.delivery == MessageDelivery.PENDING }
 
     private fun acknowledgeMessage(pending: PendingJobMessage) {
@@ -600,14 +618,14 @@ class ConversationViewModel(
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
         val pending = current.pendingMessage ?: return
-        if (current.sending || current.recovering || current.withdrawing || pending.jobId != current.jobId) return
+        if (current.sending || current.recovering || current.withdrawing || current.editingMessage || pending.jobId != current.jobId) return
         submitMessage(pending, reconcileFirst = true)
     }
 
     fun openFollowUpMessage(messageKey: String) {
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
-        if (current.sending || current.recovering || current.withdrawing) return
+        if (current.sending || current.recovering || current.withdrawing || current.editingMessage) return
         val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.delivery == MessageDelivery.FOLLOW_UP_CREATED } ?: return
         val childId = receipt.followUpJobId ?: return
         val generation = bindingGeneration
@@ -639,7 +657,7 @@ class ConversationViewModel(
     fun withdrawMessage(messageKey: String) {
         if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
-        if (current.withdrawing || current.sending || current.recovering || current.pendingMessage != null || current.pendingWithdrawal != null) return
+        if (current.withdrawing || current.editingMessage || current.sending || current.recovering || current.pendingMessage != null || current.pendingWithdrawal != null || current.messageEdit?.pending != null) return
         val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.jobId == current.jobId && it.canWithdraw } ?: return
         val pending = PendingMessageWithdrawal(projectId, conversationId, receipt.jobId, receipt.id, receipt.key)
         try { writePendingWithdrawal(receipt.jobId, pending) } catch (e: Exception) { emitSignal(errorSignal(e)); return }
@@ -651,7 +669,7 @@ class ConversationViewModel(
         if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
         val current = _state.value
         val pending = current.pendingWithdrawal ?: return
-        if (current.withdrawing || current.sending || current.recovering || pending.jobId != current.jobId) return
+        if (current.withdrawing || current.editingMessage || current.sending || current.recovering || pending.jobId != current.jobId) return
         submitWithdrawal(pending, reconcileFirst = true)
     }
 
@@ -693,7 +711,7 @@ class ConversationViewModel(
                     if (!isWithdrawalRequest(pending, generation, request)) return@launch
                     check(page.supported) { "服务端缺少可靠回执，无法安全重试撤回" }
                     check(page.messages.any(pending::matches)) { "原消息身份尚未核实，请刷新后重试" }
-                    updateState { it.copy(messageReceipts = page.messages) }
+                    updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, page.messages)) }
                     reconcileWithdrawal(page.messages)
                     if (_state.value.pendingWithdrawal == null) return@launch
                     check(page.messages.first(pending::matches).canWithdraw) { "当前回执不允许撤回，请刷新核对" }
@@ -703,7 +721,7 @@ class ConversationViewModel(
                     api.withdrawJobMessage(pending.jobId, pending.messageId, pending.messageKey)
                 }
                 if (!isWithdrawalRequest(pending, generation, request)) return@launch
-                updateState { it.copy(messageReceipts = (it.messageReceipts.filterNot { old -> old.key == receipt.key } + receipt).sortedBy { row -> row.id }) }
+                updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, listOf(receipt), replace = false)) }
                 finishWithdrawal(pending, "追问已撤回")
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
@@ -717,7 +735,7 @@ class ConversationViewModel(
                             try {
                                 val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(pending.jobId) }
                                 if (!isWithdrawalRequest(pending, generation, request)) return@launch
-                                updateState { it.copy(messageReceipts = page.messages, withdrawalNotice =
+                                updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, page.messages), withdrawalNotice =
                                     if (page.messages.any { row -> pending.matches(row) && row.delivery == MessageDelivery.FOLLOW_UP_CREATED })
                                         "后续任务已创建，无法撤回；可查看后续任务" else "无法撤回，请查看最新回执") }
                             } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
@@ -742,11 +760,127 @@ class ConversationViewModel(
         }
     }
 
+    fun beginMessageEdit(messageKey: String) {
+        if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        if (current.editingMessage || current.sending || current.recovering || current.withdrawing || current.pendingMessage != null ||
+            current.pendingWithdrawal != null || current.messageEdit?.pending != null) return
+        if (current.messageEdit?.draft?.identity?.messageKey == messageKey) return
+        if (current.messageEdit != null) {
+            updateState { it.copy(editNotice = "已有另一条追问的编辑草稿，请先处理或显式放弃该草稿") }
+            return
+        }
+        val receipt = current.messageReceipts.firstOrNull { it.key == messageKey && it.jobId == current.jobId && it.canEdit } ?: return
+        val identity = PendingMessageWithdrawal(projectId, conversationId, receipt.jobId, receipt.id, receipt.key)
+        persistMessageEdit(SavedMessageEdit(MessageEditDraft(identity, receipt.revision ?: return, receipt.text)), null)
+    }
+
+    fun updateMessageEditText(text: String) {
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) || text.length > 100000) return
+        val saved = _state.value.messageEdit ?: return
+        if (saved.draft.text == text) return
+        persistMessageEdit(saved.copy(draft = saved.draft.copy(text = text)), _state.value.editNotice)
+    }
+
+    fun rebaseMessageEdit() {
+        val current = _state.value
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) || current.editingMessage || current.messageEdit?.pending != null) return
+        val saved = current.messageEdit ?: return
+        val receipt = current.messageReceipts.firstOrNull { saved.draft.identity.matches(it) && it.canEdit } ?: return
+        persistMessageEdit(saved.copy(draft = saved.draft.copy(revision = receipt.revision ?: return)), "已按最新版本继续编辑；再次保存将用当前编辑正文更新该版本")
+    }
+
+    fun discardMessageEdit() {
+        if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val saved = current.messageEdit ?: return
+        if (current.editingMessage || saved.pending != null) return
+        try {
+            writeMessageEdit(saved.draft.identity.jobId, null)
+            updateState { it.copy(messageEdit = null, editNotice = null) }
+        } catch (e: Exception) { emitSignal(errorSignal(e)) }
+    }
+
+    private fun persistMessageEdit(saved: SavedMessageEdit, notice: String?): Boolean = try {
+        writeMessageEdit(saved.draft.identity.jobId, saved)
+        updateState { it.copy(messageEdit = saved, editNotice = notice) }
+        true
+    } catch (e: Exception) { emitSignal(errorSignal(e)); false }
+
+    fun saveMessageEdit() {
+        if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val saved = current.messageEdit ?: return
+        if (current.editingMessage || current.sending || current.recovering || current.withdrawing || current.pendingWithdrawal != null || current.pendingMessage != null || saved.pending != null) return
+        val receipt = current.messageReceipts.firstOrNull(saved.draft.identity::matches) ?: return
+        if (!receipt.canEdit || receipt.revision != saved.draft.revision) {
+            updateState { it.copy(editNotice = "消息已变化或无法编辑；草稿已保留，请核对最新正文") }; return
+        }
+        if (saved.draft.text.isBlank() || saved.draft.text.length > 100000) {
+            updateState { it.copy(editNotice = "请输入 1 至 100000 字符的追问正文") }; return
+        }
+        val pending = PendingMessageEdit(saved.draft, UUID.randomUUID().toString())
+        if (persistMessageEdit(saved.copy(pending = pending), "正在保存编辑…")) submitMessageEdit(pending)
+    }
+
+    fun retryMessageEdit() {
+        if (!hasCurrentSession() || session.guestMode || !isSelectedConversation(projectId, conversationId)) return
+        val current = _state.value
+        val pending = current.messageEdit?.pending ?: return
+        if (current.editingMessage || current.sending || current.recovering || current.withdrawing || pending.draft.identity.jobId != current.jobId) return
+        // The immutable edit key can confirm an already accepted edit after withdrawal/dispatch/later edits.
+        submitMessageEdit(pending)
+    }
+
+    private fun submitMessageEdit(pending: PendingMessageEdit) {
+        val identity = pending.draft.identity
+        val generation = bindingGeneration
+        val request = ++editRequest
+        fun isCurrent() = request == editRequest && isBoundJob(identity.jobId, generation) && isSelectedConversation(projectId, conversationId)
+        stopReceiptRefresh()
+        updateState { it.copy(editingMessage = true, editNotice = "正在确认并保存原编辑…") }
+        editJob = viewModelScope.launch {
+            try {
+                val ack = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.editJobMessage(pending) }
+                if (!isCurrent()) return@launch
+                val saved = _state.value.messageEdit?.takeIf { it.pending == pending } ?: return@launch
+                val merged = mergeJobMessageReceipts(_state.value.messageReceipts, listOf(ack.message), replace = false)
+                val latest = merged.firstOrNull(identity::matches)
+                val draft = if (saved.draft.revision == pending.draft.revision && latest?.revision == ack.revision)
+                    saved.draft.copy(revision = ack.revision) else saved.draft
+                if (persistMessageEdit(SavedMessageEdit(draft), if (latest?.revision == ack.revision)
+                        "该次编辑已保存 · 版本 ${ack.revision}" else "该次编辑已保存 · 版本 ${ack.revision}；消息另有更新，请核对当前正文")) {
+                    updateState { it.copy(messageReceipts = merged) }
+                }
+            } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+            } catch (e: Exception) {
+                if (isCurrent()) {
+                    val saved = _state.value.messageEdit?.takeIf { it.pending == pending } ?: return@launch
+                    if (e is ApiException && e.code in setOf(400, 401, 403, 404, 409, 422)) {
+                        persistMessageEdit(saved.copy(pending = null), "编辑未保存：消息已变化或不可编辑；编辑草稿已保留，请核对最新正文")
+                        updateState { it.copy(messageReceipts = it.messageReceipts.map { row -> if (identity.matches(row)) row.copy(canEdit = false) else row }) }
+                        try {
+                            val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(identity.jobId) }
+                            if (isCurrent()) updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, page.messages)) }
+                        } catch (cancelled: CancellationException) { hasCurrentSession(); throw cancelled
+                        } catch (_: Exception) { /* The rejected capability stays revoked until a fresh GET. */ }
+                    } else updateState { it.copy(editNotice = "编辑结果待确认；原编辑已保存，可手动核对并重试，不会自动重发") }
+                }
+            } finally {
+                if (isCurrent()) {
+                    updateState { it.copy(editingMessage = false) }
+                    receiptPollBudget = 24
+                    startReceiptPolling()
+                }
+            }
+        }
+    }
+
     // ---------- 发送 ----------
 
     fun send(prompt: String, steer: Boolean, contexts: List<ContextAttachment>) {
         if (!hasCurrentSession() || !isSelectedConversation(projectId, conversationId) ||
-            _state.value.sending || _state.value.recovering || _state.value.withdrawing) return
+            _state.value.sending || _state.value.recovering || _state.value.withdrawing || _state.value.editingMessage) return
         val text = prompt.trim()
         if (text.isBlank()) return
         if (_state.value.pendingMessage != null) {
@@ -837,7 +971,7 @@ class ConversationViewModel(
                     val page = withContext(Dispatchers.IO) { repository.requireCurrentSession(); api.listJobMessages(jobId) }
                     if (!isMessageRequest(jobId, generation, request)) return@launch
                     check(page.supported) { "服务端缺少可靠回执，无法安全重试" }
-                    updateState { it.copy(messageReceipts = page.messages) }
+                    updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, page.messages)) }
                     val existing = page.messages.firstOrNull { it.key == pending.key }
                     if (existing != null && pending.matches(existing)) {
                         acknowledgeMessage(pending)
@@ -855,7 +989,7 @@ class ConversationViewModel(
                 ++receiptRequest
                 receiptRefreshJob?.cancel()
                 receiptRefreshJob = null
-                updateState { it.copy(messageReceipts = (it.messageReceipts.filterNot { old -> old.key == receipt.key } + receipt).sortedBy { r -> r.id }, refreshingMessages = false) }
+                updateState { it.copy(messageReceipts = mergeJobMessageReceipts(it.messageReceipts, listOf(receipt), replace = false), refreshingMessages = false) }
                 acknowledgeMessage(pending)
             } catch (cancelled: CancellationException) {
                 hasCurrentSession()
@@ -988,6 +1122,7 @@ class ConversationViewModel(
         bindingGeneration++
         recoveryRequest++
         messageRequest++
+        editRequest++
         withdrawalRequest++
         // Do not call the session-checking helper while invalidating the session itself.
         receiptRequest++
@@ -1084,6 +1219,8 @@ class ConversationViewModel(
                 writePendingMessage = { job, pending -> prefs.setPendingJobMessage(receiptSession, job, pending) },
                 readPendingWithdrawal = { prefs.pendingMessageWithdrawal(receiptSession, it) },
                 writePendingWithdrawal = { job, pending -> prefs.setPendingMessageWithdrawal(receiptSession, job, pending) },
+                readMessageEdit = { prefs.messageEdit(receiptSession, it) },
+                writeMessageEdit = { job, value -> prefs.setMessageEdit(receiptSession, job, value) },
             ) as T
             }
         }

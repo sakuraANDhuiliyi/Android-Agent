@@ -18,7 +18,10 @@
     "follow_up_turn_id": null,
     "reason": "awaiting_safe_boundary",
     "withdrawn_at": null,
-    "can_withdraw": false
+    "can_withdraw": false,
+    "revision": 0,
+    "edited_at": null,
+    "can_edit": false
   },
   "guest_remaining": null
 }

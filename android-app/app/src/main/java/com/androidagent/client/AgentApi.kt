@@ -810,6 +810,28 @@ class AgentApi(
         return receipt
     }
 
+    fun editJobMessage(pending: PendingMessageEdit): JobMessageEditAck {
+        val original = pending.draft
+        val identity = original.identity
+        require(original.text.isNotBlank() && original.text.length <= 100000 && original.revision >= 0 && pending.editKey.isNotBlank())
+        val json = postJson("/api/jobs/${identity.jobId}/messages/${identity.messageId}/edits", pending.body())
+        require(json.opt("schema_version") == 1 && json.opt("job_id") == identity.jobId) { "编辑回执不属于当前任务" }
+        val receipt = JobMessageReceipt.parse(json.getJSONObject("message"), identity.jobId, true)
+        require(identity.matches(receipt)) { "编辑回执与原消息不符" }
+        val edit = json.getJSONObject("edit")
+        require(edit.opt("schema_version") == 1 && edit.opt("task_id") == identity.jobId &&
+            edit.opt("message_id") is Number && edit.getDouble("message_id") == identity.messageId.toDouble() &&
+            edit.opt("edit_key") == pending.editKey && exactRevision(edit.opt("expected_revision")) == original.revision) { "编辑确认与原请求不符" }
+        val revision = exactRevision(edit.opt("revision")) ?: error("编辑版本无效")
+        require(revision.toLong() == original.revision.toLong() + 1 && receipt.revision != null && receipt.revision >= revision)
+        val created = (edit.opt("created_at") as? Number)?.toDouble()
+        require(created != null && created.isFinite() && created > 0 && created <= 253402300799.0)
+        val text = edit.optJSONObject("payload")?.opt("text") as? String
+        require(!text.isNullOrBlank()) { "编辑确认缺少保存的正文" }
+        // The immutable edit ACK validates the original hash; redacted text need not equal the request.
+        return JobMessageEditAck(receipt, pending.editKey, original.revision, revision, created, text)
+    }
+
     fun listApprovals(jobId: String): List<ApprovalInfo> {
         val json = getJson("/api/jobs/$jobId/approvals")
         val items = json.optJSONArray("approvals") ?: JSONArray()

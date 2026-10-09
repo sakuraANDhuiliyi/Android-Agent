@@ -300,6 +300,34 @@ class TaskStore:
                     user_id TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS task_message_revisions (
+                    message_id INTEGER NOT NULL REFERENCES task_messages(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK (revision > 0),
+                    edit_key TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (message_id, revision),
+                    UNIQUE (message_id, edit_key)
+                );
+                CREATE TRIGGER IF NOT EXISTS immutable_task_message_revision
+                BEFORE UPDATE ON task_message_revisions
+                BEGIN SELECT RAISE(ABORT, 'immutable_message_revision'); END;
+                CREATE TRIGGER IF NOT EXISTS prevent_stale_followup_revision
+                BEFORE INSERT ON task_message_followups
+                WHEN EXISTS (SELECT 1 FROM task_message_revisions WHERE message_id=NEW.message_id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM conversation_events e
+                    WHERE e.task_id=NEW.task_id AND e.turn_id=NEW.turn_id
+                      AND e.event_key='turn:' || NEW.turn_id || ':user_message'
+                      AND e.event_type='user_message' AND e.role='user' AND e.context_visible=1
+                      AND json_type(e.payload_json, '$.task_message_id')='integer'
+                      AND json_extract(e.payload_json, '$.task_message_id')=NEW.message_id
+                      AND json_type(e.payload_json, '$.task_message_revision')='integer'
+                      AND json_extract(e.payload_json, '$.task_message_revision')=(
+                        SELECT MAX(revision) FROM task_message_revisions WHERE message_id=NEW.message_id))
+                BEGIN SELECT RAISE(ABORT, 'follow_up_revision_mismatch'); END;
                 CREATE TRIGGER IF NOT EXISTS prevent_withdrawn_followup_creation
                 BEFORE INSERT ON task_message_followups
                 WHEN EXISTS (SELECT 1 FROM task_message_withdrawals WHERE message_id=NEW.message_id)

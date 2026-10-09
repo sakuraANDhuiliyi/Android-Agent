@@ -82,6 +82,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private var receiptsDialog: BottomSheetDialog? = null
     private var receiptsDialogContent: LinearLayout? = null
     private var receiptRenderKey: List<Any?>? = null
+    private var editMessageDialog: AlertDialog? = null
+    private var editMessageInput: android.widget.EditText? = null
+    private var editMessageInfo: TextView? = null
+    private var editMessageIdentity: PendingMessageWithdrawal? = null
+    private var renderingMessageEdit = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -235,10 +240,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     private fun observeViewModel() {
         lifecycleScope.launch {
             viewModel.state.collect { st ->
-                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && st.pendingMessage == null
+                binding.btnSend.isEnabled = !st.sending && !st.recovering && !st.withdrawing && !st.editingMessage && st.pendingMessage == null
                 binding.btnStop.isEnabled = !st.recovering
                 binding.btnMessageReceipts.isVisible = st.jobId != null && !prefs.guestMode
                 binding.btnMessageReceipts.text = when {
+                    st.editingMessage -> "正在保存追问编辑…"
+                    st.messageEdit?.pending != null -> "编辑结果待确认 · 查看回执"
                     st.withdrawing -> "正在撤回追问…"
                     st.pendingWithdrawal != null -> "撤回结果待确认 · 查看回执"
                     st.sending && st.pendingMessage != null -> "消息发送中…"
@@ -249,10 +256,11 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
                     else -> "本任务消息回执"
                 }
                 renderMessageReceipts()
+                renderMessageEditor()
                 binding.bannerDisconnect.isVisible = st.offline
                 binding.agentEmotion.setStatus(when {
                     st.offline -> "offline"
-                    st.sending || st.recovering || st.withdrawing -> "sending"
+                    st.sending || st.recovering || st.withdrawing || st.editingMessage -> "sending"
                     else -> st.job?.resolvedStatus() ?: "idle"
                 })
                 if (st.job !== lastJobInstance) {
@@ -354,6 +362,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
     }
 
     override fun onDestroy() {
+        editMessageDialog?.dismiss()
         receiptsDialog?.dismiss()
         binding.agentEmotion.release()
         super.onDestroy()
@@ -452,7 +461,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         val state = viewModel.state.value
         // Job status/event updates must not replace the button beneath a pending touch.
         val key = listOf(state.jobId, state.messageReceipts, state.pendingMessage, state.messageNotice, state.sending, state.recovering,
-            state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice)
+            state.pendingWithdrawal, state.withdrawing, state.withdrawalNotice, state.messageEdit, state.editingMessage, state.editNotice)
         if (key == receiptRenderKey) return
         receiptRenderKey = key
         content.removeAllViews()
@@ -475,7 +484,12 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         text("引导加入本轮上下文；追问在原任务成功后创建后续任务。回执不代表执行完成。")
         state.messageNotice?.let(::text)
         state.withdrawalNotice?.let(::text)
-        val busy = state.sending || state.recovering || state.withdrawing
+        state.editNotice?.let(::text)
+        val busy = state.sending || state.recovering || state.withdrawing || state.editingMessage
+        state.messageEdit?.let {
+            action(if (it.pending != null) "查看待确认编辑" else "继续编辑草稿") { showMessageEditor() }
+            if (it.pending == null) action("放弃编辑草稿", !busy) { viewModel.discardMessageEdit() }
+        }
         state.pendingWithdrawal?.let {
             text("撤回结果待确认 · 消息 #${it.messageId}")
             action("核对并重试撤回", !busy) { viewModel.retryWithdrawal() }
@@ -486,9 +500,16 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         }
         if (state.messageReceipts.isEmpty() && state.pendingMessage == null) text("暂无消息回执")
         state.messageReceipts.forEach { receipt ->
-            text("${receipt.modeLabel} · ${receipt.label}\n${receipt.text}" + receipt.reasonLabel?.let { "\n$it" }.orEmpty())
+            text("${receipt.modeLabel} · ${receipt.label}" + receipt.revision?.takeIf { it > 0 }?.let { " · 已编辑 v$it" }.orEmpty() +
+                "\n${receipt.text}" + receipt.reasonLabel?.let { "\n$it" }.orEmpty())
+            if (receipt.canEdit) {
+                action("编辑追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
+                    viewModel.beginMessageEdit(receipt.key)
+                    showMessageEditor()
+                }
+            }
             if (receipt.canWithdraw) {
-                action("撤回追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null) {
+                action("撤回追问", !busy && state.pendingWithdrawal == null && state.pendingMessage == null && state.messageEdit?.pending == null) {
                     viewModel.withdrawMessage(receipt.key)
                 }
             }
@@ -500,6 +521,72 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
             }
         }
         action("刷新回执") { viewModel.refreshMessageReceipts() }
+    }
+
+    private fun showMessageEditor() {
+        if (!cacheSession.isCurrent(prefs)) return
+        val saved = viewModel.state.value.messageEdit ?: return
+        if (editMessageDialog?.isShowing == true) return
+        val identity = saved.draft.identity
+        editMessageIdentity = identity
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        editMessageInfo = TextView(this).also { content.addView(it) }
+        editMessageInput = android.widget.EditText(this).apply {
+            contentDescription = "追问编辑正文"
+            hint = "修改排队中的追问"
+            minLines = 3
+            maxLines = 7
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            filters = arrayOf(android.text.InputFilter.LengthFilter(100000))
+            doAfterTextChanged {
+                if (!renderingMessageEdit && cacheSession.isCurrent(prefs) && viewModel.state.value.messageEdit?.draft?.identity == identity)
+                    viewModel.updateMessageEditText(it?.toString().orEmpty())
+            }
+        }.also { content.addView(it) }
+        editMessageDialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("编辑追问 #${identity.messageId} · 保留队列位置")
+            .setView(android.widget.ScrollView(this).apply { addView(content) })
+            .setPositiveButton("保存编辑", null).setNeutralButton("按最新版本继续编辑", null)
+            .setNegativeButton("关闭", null).create().also { dialog ->
+                dialog.setOnDismissListener { editMessageDialog = null; editMessageInput = null; editMessageInfo = null; editMessageIdentity = null }
+                dialog.show()
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    if (cacheSession.isCurrent(prefs) && viewModel.state.value.messageEdit?.draft?.identity == identity) {
+                        if (viewModel.state.value.messageEdit?.pending != null) viewModel.retryMessageEdit() else viewModel.saveMessageEdit()
+                    }
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    if (cacheSession.isCurrent(prefs) && viewModel.state.value.messageEdit?.draft?.identity == identity) viewModel.rebaseMessageEdit()
+                }
+            }
+        renderMessageEditor()
+    }
+
+    private fun renderMessageEditor() {
+        val dialog = editMessageDialog ?: return
+        val state = viewModel.state.value
+        val saved = state.messageEdit
+        if (saved == null || saved.draft.identity != editMessageIdentity || !cacheSession.isCurrent(prefs)) { dialog.dismiss(); return }
+        val current = state.messageReceipts.firstOrNull(saved.draft.identity::matches)
+        editMessageInfo?.text = "编辑草稿基于 v${saved.draft.revision}；队列位置不变。\n" +
+            (current?.let { "当前消息 v${it.revision ?: "未知"} · ${it.label}\n${it.text.take(500)}\n" } ?: "当前回执暂不可用\n") +
+            saved.pending?.let { "待确认原编辑：${it.draft.text.take(300)}\n" }.orEmpty() + state.editNotice.orEmpty()
+        val input = editMessageInput ?: return
+        if (input.text.toString() != saved.draft.text) {
+            renderingMessageEdit = true
+            input.setText(saved.draft.text); input.setSelection(input.text.length)
+            renderingMessageEdit = false
+        }
+        val busy = state.editingMessage || state.sending || state.recovering || state.withdrawing
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).apply {
+            text = if (saved.pending != null) "核对并重试原编辑" else "保存编辑"
+            isEnabled = !busy && (saved.pending != null || (current?.canEdit == true && current.revision == saved.draft.revision && saved.draft.text.isNotBlank()))
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = !busy && saved.pending == null && current?.canEdit == true
     }
 
     private fun updateMenuVisibility(job: JobInfo?) {
@@ -515,7 +602,7 @@ class ConversationActivity : AppCompatActivity(), ConversationTimelineAdapter.Ca
         menu.findItem(R.id.action_recover)?.apply {
             isVisible = job?.let { it.recoveryJobId != null ||
                 (it.canRecover && it.status in setOf("failed", "interrupted")) } == true
-            isEnabled = !busy && !state.withdrawing
+            isEnabled = !busy && !state.withdrawing && !state.editingMessage
             setTitle(when {
                 state.recovering && job?.recoveryJobId != null -> R.string.menu_opening_recovery
                 state.recovering -> R.string.menu_recovering

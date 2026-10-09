@@ -103,6 +103,27 @@
   assert.strictEqual(receipts[3].reason, "parent_failed");
   assert.strictEqual(receipts[5].reason, "legacy_missing_receipt");
 
+  for (const [file, currentRevision, state] of [
+    ['job_message_edit_201.json', 1, 'pending'],
+    ['job_message_edit_200.json', 2, 'pending'],
+    ['job_message_edit_withdrawn_200.json', 2, 'withdrawn'],
+  ]) {
+    const data = assertSuccessFixture(file, ['schema_version', 'job_id', 'message', 'edit']);
+    const current = messages.normalize(data.message, scope);
+    const acceptedEdit = messages.normalizeEdit(data.edit, scope, current.id);
+    assert.ok(acceptedEdit);
+    assert.strictEqual(acceptedEdit.revision, 1);
+    assert.strictEqual(acceptedEdit.expected_revision, 0);
+    assert.strictEqual(acceptedEdit.edit_key, 'client-edit-001');
+    assert.strictEqual(current.revision, currentRevision);
+    assert.strictEqual(current.delivery_state, state);
+    assert.strictEqual(current.can_edit, state === 'pending');
+    assert.strictEqual(current.edited_at > 0, true);
+    assert.strictEqual(current.consumed_at, null);
+    assert.strictEqual(current.follow_up_job_id, null);
+    if (currentRevision > 1) assert.notStrictEqual(acceptedEdit.payload.text, current.payload.text);
+  }
+
   const eventsPage = assertSuccessFixture("conversation_events_200.json", [
     "conversation_id",
     "schema_version",

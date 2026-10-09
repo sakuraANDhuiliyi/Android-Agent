@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "job_id": "job-001",
+  "message": {
+    "schema_version": 1,
+    "id": 49,
+    "task_id": "job-001",
+    "message_key": "client-msg-008",
+    "type": "follow_up",
+    "payload": {
+      "text": "Explain the settings changes with examples"
+    },
+    "created_at": 1002.0,
+    "consumed_at": null,
+    "delivery_state": "withdrawn",
+    "context_message_id": null,
+    "follow_up_job_id": null,
+    "follow_up_turn_id": null,
+    "reason": null,
+    "withdrawn_at": 1009.0,
+    "can_withdraw": false,
+    "revision": 2,
+    "edited_at": 1008.0,
+    "can_edit": false
+  },
+  "edit": {
+    "schema_version": 1,
+    "task_id": "job-001",
+    "message_id": 49,
+    "edit_key": "client-edit-001",
+    "expected_revision": 0,
+    "revision": 1,
+    "created_at": 1007.0,
+    "payload": {
+      "text": "Explain the settings changes concisely"
+    }
+  }
+}

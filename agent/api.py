@@ -358,6 +358,31 @@ class JobMessageResponse(BaseModel):
     reason: str | None = "legacy_missing_receipt"
     withdrawn_at: float | None = None
     can_withdraw: bool = False
+    revision: int = 0
+    edited_at: float | None = None
+    can_edit: bool = False
+
+
+class JobMessageEditPayload(StrictRequest):
+    text: str = Field(..., min_length=1, max_length=100_000, strict=True)
+
+    @model_validator(mode="after")
+    def validate_text(self):
+        if not self.text.strip():
+            raise ValueError("编辑文本不能为空")
+        return self
+
+
+class JobMessageEditRequest(StrictRequest):
+    edit_key: str = Field(..., min_length=1, max_length=200, strict=True)
+    expected_revision: int = Field(..., ge=0, lt=2**63 - 1, strict=True)
+    payload: JobMessageEditPayload
+
+    @model_validator(mode="after")
+    def validate_key(self):
+        if not self.edit_key.strip():
+            raise ValueError("编辑标识不能为空")
+        return self
 
 
 class CreateTerminalRequest(StrictRequest):
@@ -1818,6 +1843,24 @@ def create_app(
         if receipt is None:
             raise HTTPException(status_code=404, detail="任务消息不存在")
         return {"schema_version": 1, "job_id": job_id, "message": JobMessageResponse(**receipt).model_dump()}
+
+    @app.post("/api/jobs/{job_id}/messages/{message_id}/edits", status_code=201,
+              responses={200: {"description": "Existing immutable edit acknowledgement and current message"}})
+    def edit_job_message(job_id: str, message_id: int, body: JobMessageEditRequest, response: Response,
+                         user_id: str = Depends(current_user)) -> dict[str, Any]:
+        from agent.database import TaskMessageConflict
+        from agent.task_messages import edit_follow_up
+        try:
+            result = edit_follow_up(effective_task_store, job_id, message_id, user_id, edit_key=body.edit_key,
+                                    expected_revision=body.expected_revision, payload=body.payload.model_dump())
+        except TaskMessageConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail="任务消息不存在")
+        receipt, edit, created = result
+        response.status_code = 201 if created else 200
+        return {"schema_version": 1, "job_id": job_id,
+                "message": JobMessageResponse(**receipt).model_dump(), "edit": edit}
 
     @app.get("/api/jobs/{job_id}/messages")
     def get_job_messages(
