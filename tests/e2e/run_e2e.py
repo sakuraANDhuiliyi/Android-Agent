@@ -1371,6 +1371,35 @@ class E2ERunner:
     def driver_pause_resume(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)
         job_id = str(job["id"])
+        pause_cycles = int(context.scenario.get("pause_cycles") or 1)
+        if pause_cycles > 1:
+            original_turn_id = job.get("turn_id")
+            for completed_tools in range(1, pause_cycles + 1):
+                deadline = time.monotonic() + 45
+                while time.monotonic() < deadline:
+                    events = context.client.conversation_events(context.conversation_id)
+                    completed = sum(
+                        event.get("event_type") == "tool_result"
+                        and (event.get("payload") or {}).get("name") == "run_command"
+                        for event in events
+                    )
+                    if completed >= completed_tools:
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise ScenarioFailure(
+                        f"only {completed_tools - 1} real commands completed before pause cycle {completed_tools}"
+                    )
+                self.wait_until_pause_can_be_requested(context, job_id)
+                self.pause_and_resume(context, job_id, wait_terminal=False)
+                current = context.client.get_job(job_id)
+                context.check(current.get("id") == job_id and current.get("turn_id") == original_turn_id,
+                              "pause/resume changed task or turn identity")
+                context.check(current.get("status") in {"queued", "running"},
+                              f"resume did not requeue the same task: {current.get('status')}")
+            context.job = context.client.wait_job(job_id, timeout=90)
+            self.wait_terminal_events(context)
+            return
         context.client.wait_event(
             context.conversation_id,
             lambda event: event.get("event_type") == "tool_call" and (
@@ -1422,7 +1451,7 @@ class E2ERunner:
             time.sleep(0.05)
         raise ScenarioFailure("task never returned to running between approval and tool execution")
 
-    def pause_and_resume(self, context: ScenarioContext, job_id: str) -> None:
+    def pause_and_resume(self, context: ScenarioContext, job_id: str, *, wait_terminal: bool = True) -> None:
         context.client.pause_job(job_id)
         paused_seen = False
         deadline = time.monotonic() + 20
@@ -1446,8 +1475,9 @@ class E2ERunner:
             context.check(not any(event.get("turn_id") == turn_id and event.get("event_type") == "changes"
                                   for event in events), "pause prematurely published final canonical changes")
         context.client.resume_job(job_id)
-        context.job = context.client.wait_job(job_id, timeout=90)
-        self.wait_terminal_events(context)
+        if wait_terminal:
+            context.job = context.client.wait_job(job_id, timeout=90)
+            self.wait_terminal_events(context)
 
     def driver_pause_after_steer(self, context: ScenarioContext) -> None:
         job = self.send_prompt(context)

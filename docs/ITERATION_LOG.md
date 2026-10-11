@@ -179,3 +179,17 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 - [Claude Code 消息队列](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)：运行中的输入需要可见的排队状态。
 - [Cursor 更新记录](https://prod.cursor.com/docs/release-notes)：错误恢复入口、最近一轮审查和追问恢复改进可作为交互参考。
 - [brace-expansion 递归漏洞](https://github.com/advisories/GHSA-qhr7-859c-m2p7) 与 [扩展复杂度漏洞](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr)：此次依赖升级的直接依据。
+
+## 三轮真实暂停与工具副作用验收（第十一轮）
+
+日期：2026-10-11。状态：实现与完整验收完成，待同步远端并推送；基线 `837c1bc188542ecbc5e04e7755868d899e24e496` 已推送。
+
+重新核实 [OpenAI Agents SDK 结果与状态](https://developers.openai.com/api/docs/guides/agents/results)：中断运行应作为未完成结果返回，并沿用同一运行的可恢复状态；[Cursor Agent](https://cursor.com/help/ai-features/agent) 提供显式 Stop 和运行中排队交互。两者支持把暂停边界与恢复身份作为完整运行流程验收，但没有描述本项目的本地工具重放保证。
+
+复核上一轮证据发现差距：`test_repeated_pause_resume_uses_persisted_request_each_cycle` 仅把任务状态在测试中直接改写三轮；真实 HTTP/WebSocket 的暂停场景只暂停一次。单次全量发布门禁通过不等于已兑现“三轮同一任务恢复后工具副作用恰好一次”的验收。此轮限定补足隔离 E2E：真实服务 API 发起三轮暂停/继续，核对同一任务与 turn、每轮均到 `paused` 并从原进度继续，真实命令日志逐条且仅一条，最终产物、规范事件和完成状态一致。若出现重复/跳过副作用，则修复后再运行全量发布门禁；若测试仅暴露计时不确定性，采用事件屏障而不放宽断言。
+
+验收标准：真实 HTTP/WebSocket 场景对同一任务完成三次暂停及继续；各步骤命令写入唯一编号并验证最终列表精确匹配、无额外执行；暂停时不提前发布最终检查点/变更事件；同一 turn 成功结束。专项场景通过后，仍须从冻结源码运行默认发布门禁全套检查且无跳过项，再同步并推送。
+
+新增真实服务 E2E 场景 `21_pause_three_cycles`，按事件屏障在三条真实命令各完成后暂停同一任务，再继续原 turn。三次暂停均等到服务端 `paused`，暂停窗口确认没有最终检查点或规范 changes 事件；恢复后任务与 turn ID 不变，最终四条命令各运行一次，隔离工作区日志精确为 `1,2,3,4`，规范 turn 成功。专项 **1/1** 通过，纳入完整 E2E **63/63**。
+
+默认发布门禁报告 `.artifacts/iteration-011/release-final-v2.json`，**26/26 通过，无跳过项**：后端 **732 项测试、292 项子测试**；HTTP/WebSocket E2E **63/63**；Android **310 项 JVM 测试**（无失败或跳过）、Debug 构建与 lint；桌面检查、单元、表情、恢复、交付、消息、提交、截图和真实 Electron 回归全部通过，npm audit 为 0 漏洞。首次门禁报告 `release-final.json` 因调用 Python 3.10 环境缺少 pytest 而失败；按仓库 `.python-version` 使用 Python 3.12.14 隔离环境完整重跑，全部通过。发布生成的已跟踪桌面截图已恢复，用户 `design/` 仍保持未跟踪且未纳入提交。

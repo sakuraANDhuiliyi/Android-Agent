@@ -1,0 +1,87 @@
+{
+  "id": "21_pause_three_cycles",
+  "title": "同一任务三轮真实暂停与副作用去重",
+  "description": "通过真实 HTTP 连续暂停并继续同一运行三次，验证命令逐项只执行一次",
+  "prompt": "依次执行四段脚本后总结",
+  "pause_cycles": 3,
+  "assert_pause_evidence": true,
+  "auto_approve": true,
+  "steps": [
+    {
+      "type": "tool",
+      "text": "执行第一段。",
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; p=Path('app/build/pause-cycles.log'); p.parent.mkdir(parents=True, exist_ok=True); p.open('a').write('1\\n'); print('CYCLE-1')"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 3000,
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; Path('app/build/pause-cycles.log').open('a').write('2\\n'); print('CYCLE-2')"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 3000,
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; Path('app/build/pause-cycles.log').open('a').write('3\\n'); print('CYCLE-3')"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "delay_ms": 3000,
+      "calls": [
+        {
+          "name": "run_command",
+          "arguments": {
+            "argv": [
+              "python3",
+              "-c",
+              "from pathlib import Path; Path('app/build/pause-cycles.log').open('a').write('4\\n'); print('CYCLE-4')"
+            ]
+          }
+        }
+      ]
+    },
+    { "type": "final", "text": "四段脚本各执行一次，任务完成。" }
+  ],
+  "driver": "pause_resume",
+  "expect": {
+    "job_status": "succeeded",
+    "tool_calls": ["run_command", "run_command", "run_command", "run_command"],
+    "tool_result_contains": { "run_command": "CYCLE-4" },
+    "final_text_contains": "四段脚本各执行一次",
+    "event_types_include": ["user_message", "tool_call", "tool_result", "assistant_message", "turn_completed"],
+    "file_lines": {
+      "app/build/pause-cycles.log": ["1", "2", "3", "4"]
+    }
+  }
+}
