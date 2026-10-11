@@ -1079,6 +1079,7 @@ class AgentApi(
         onEvent: (JSONObject) -> Unit,
         onDone: (JSONObject) -> Unit,
         onFailure: (Throwable) -> Unit,
+        onOpen: () -> Unit = {},
     ): CloseableWatcher {
         val wsUrl = normalizedBaseUrl
             .replaceFirst("^http".toRegex(), "ws") +
@@ -1091,6 +1092,10 @@ class AgentApi(
         }
         val request = requestBuilder.build()
         val webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!closed.get()) onOpen()
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (closed.get()) return
                 try {

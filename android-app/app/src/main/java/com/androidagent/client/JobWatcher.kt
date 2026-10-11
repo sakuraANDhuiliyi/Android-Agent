@@ -48,11 +48,11 @@ class JobWatcher(
                                 jobId = jobId,
                                 afterEventId = lastEventId.get(),
                                 onEvent = { raw ->
-                                    connected.set(true)
                                     attempt = 0
                                     val event = if (raw.has("event")) raw.optJSONObject("event") ?: raw else raw
                                     if (accept(event)) onEvent(event)
                                 },
+                                onOpen = { connected.set(true) },
                                 onDone = {
                                     done.set(true)
                                 },

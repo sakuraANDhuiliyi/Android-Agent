@@ -1,7 +1,10 @@
 package com.androidagent.client
 
 import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -12,6 +15,7 @@ import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class AgentApiTest {
 
@@ -312,6 +316,54 @@ class AgentApiTest {
 }
 
 class JobWatcherFallbackTest {
+
+    @Test
+    fun successfulIdleWebSocketHandshakeDoesNotTriggerReconnectBeforeFirstEvent() {
+        val server = MockWebServer()
+        server.start()
+        val handshakes = AtomicInteger()
+        val deliveredEvents = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val done = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.path?.startsWith("/api/ws/jobs/j1") == true) {
+                    return MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                            handshakes.incrementAndGet()
+                            Thread {
+                                Thread.sleep(1_300)
+                                webSocket.send("""{"id":51,"type":"text","content":"late event"}""")
+                                webSocket.send("""{"type":"done","status":"succeeded"}""")
+                            }.apply { isDaemon = true; start() }
+                        }
+                    })
+                }
+                return MockResponse().setBody(
+                    """{"job":{"id":"j1","project_id":"p1","status":"running","events":[],"changed_files":[]}}""",
+                )
+            }
+        }
+        val api = AgentApi(server.url("/").toString().trimEnd('/'), "tok")
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        val watcher = JobWatcher(
+            api = api,
+            scope = scope,
+            onEvent = { deliveredEvents.add(it.optString("type")) },
+            onJob = {},
+            onDone = { done.countDown() },
+            onError = {},
+        )
+        try {
+            watcher.start("j1", afterEventId = 50L)
+            assertTrue("done event should be delivered", done.await(6, TimeUnit.SECONDS))
+            assertEquals("one successful handshake should remain active while idle", 1, handshakes.get())
+            assertEquals(listOf("text"), deliveredEvents)
+            assertTrue(server.takeRequest(1, TimeUnit.SECONDS)?.path?.contains("after_event_id=50") == true)
+        } finally {
+            watcher.stop()
+            server.shutdown()
+        }
+    }
 
     @Test
     fun fallsBackToPollingWhenWebsocketFails() {

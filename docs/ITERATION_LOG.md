@@ -209,3 +209,17 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 完整发布门禁最终报告 `.artifacts/iteration-012/release-final.json` **26/26 通过，无跳过项**：Python 后端 **736 项测试、292 项子测试**；真实 HTTP/WebSocket **63/63**；Android **310 项 JVM 测试**（无失败或跳过）、Debug 构建与 lint；桌面代码检查、单元、表情、恢复、交付、消息、提交、浏览器截图与 Electron 集成检查全部通过，npm audit 为 0 漏洞。运行时依赖预检和正确 Python 环境全程使用隔离本地数据，没有安装/下载依赖或调用付费模型；测试生成的桌面截图已还原，`design/` 保持原样。首次 Python 3.10 失败记录保存在 `.artifacts/iteration-011/release-final.json`。
 
 最终复核恢复了原有 `tests/test_release_check.py` 中 6 项完整日志、超时与嵌套存储隔离回归，再加 4 项新预检测试，最终均纳入 736 项后端测试。一次完整门禁中的 Electron smoke 发现旧断言要求所有任务的本地队列 outbox 全局为空；该会话可能合法保留其他任务的待核对意图。断言已改为只核对本场景任务的原排序请求确实清除，不放宽该任务状态；修正后的 smoke 与完整 26 项门禁均通过，失败过程证据保留于 `.artifacts/iteration-012/release-final-reviewed.json`。
+
+## Android 空闲 WebSocket 握手识别（第十三轮）
+
+日期：2026-10-11。状态：实现与完整验收完成；基线 `40a4ef170bd2e9464319d8b8d61402273e42d374` 已推送。
+
+代码检查发现 Android `JobWatcher` 的 `connected` 只会在收到消息时设为 true。服务端已接受连接、客户端从最新事件游标恢复但暂无新事件时，800ms 检查会把健康连接误判为失败，主动关闭后转 HTTP 轮询，并每轮很快重新尝试 WebSocket。活跃任务空闲等待长操作时因此可能重复握手和制造不必要的轮询。
+
+重新核实 [Cursor iOS 移动端说明](https://prod.cursor.com/help/ai-features/mobile-app)：网络变化后聊天流会重连，应用后台时暂停并在回前台补齐；[OpenAI 自托管 sandbox 连接说明](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)描述执行端断线重连与明确的 pending/connected/failed 连接状态。资料支持按连接生命周期而非“是否已收到业务消息”判断健康连接；本项目差异是 Android OkHttp watcher 当前没有把 WebSocket `onOpen` 揭示给轮询协调器。
+
+验收限定为将握手成功单独通知 watcher：成功握手后即使暂无事件仍维持同一 WebSocket，继续使用既有事件游标；握手失败仍走 HTTP 轮询及恢复；Done、页面退出与 terminal 行为不变。通过 MockWebServer 建立真实本地 WebSocket 握手，故意延迟首个事件超过 800ms，断言连接只建立一次、事件及完成状态按序交付；保留现有失败回退测试。Android JVM、构建与 lint 后再运行完整发布门禁，无跳过项方可推送。
+
+已让 `AgentApi.watchJob` 在 OkHttp `onOpen` 时通知 `JobWatcher`，连接健康状态不再依赖收到首条业务事件。新增 MockWebServer 真实 WebSocket 回归：从事件游标 50 建立连接，首条事件延迟 1300ms，确认 800ms 空闲窗口内不降级重连，事件 51 和完成状态按序交付；原有握手失败回退测试保留。专项 `JobWatcherFallbackTest` 通过。
+
+首次完整门禁 `.artifacts/iteration-013/release-final.json` 为 **25/26**：后端 **736 项测试、292 项子测试**、真实 HTTP/WebSocket **63/63**、桌面集成与 npm audit 均通过；Android Studio 自带 JBR 17.0.9 的 Gradle 守护进程在 lint 的 C1 编译器内部崩溃（`assembler_aarch64.hpp:267`，`hs_err_pid9368.log`），Android 项不能计为通过。复验使用仅作用于本地命令的 `JAVA_TOOL_OPTIONS=-XX:TieredStopAtLevel=0` 避开该 JIT 路径，先完整执行 `testDebugUnitTest assembleDebug lintDebug` 成功，再运行默认发布门禁所有项目。最终报告 `.artifacts/iteration-013/release-final-v2.json` **26/26 通过，无跳过项**；Android **311 项 JVM 测试**零失败/错误/跳过，Debug 构建与 lint 均通过，npm audit 为 0 漏洞。所有测试使用隔离数据与本地桩，未调用付费模型；生成的已跟踪桌面截图已还原，用户 `design/` 保持未跟踪且未纳入提交。
