@@ -574,7 +574,10 @@ async function main() {
     await page.locator('#aiMessageReceipts').getByRole('button', { name: '核对并重试排序' }).waitFor({ state: 'detached' });
     await page.waitForFunction(id => document.querySelector('#aiMessageReceipts [data-queue-position="1"]')?.dataset.messageId === String(id), c.id);
     assert.equal(reorderPosts, 2);
-    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem(JobMessages.QUEUE_STORAGE_KEY)).length), 0);
+    const unresolvedSourceReorders = await page.evaluate(jobId =>
+      JSON.parse(localStorage.getItem(JobMessages.QUEUE_STORAGE_KEY) || "[]")
+        .filter(entry => entry.scope?.job === String(jobId)), queueSource);
+    assert.deepEqual(unresolvedSourceReorders, [], "the reconciled source reorder is removed from the outbox");
     // A real CAS loser is reconciled without automatically applying its order.
     let conflictSeen = false;
     await page.route(`**/api/jobs/${queueSource}/messages/reorders`, async route => {

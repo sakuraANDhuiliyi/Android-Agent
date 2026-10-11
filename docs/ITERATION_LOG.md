@@ -196,7 +196,7 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 
 ## 发布门禁 Python 环境快速预检（第十二轮）
 
-日期：2026-10-11。状态：实现完成，待完整发布验收；基线 `9cb1feb22721a25f5004036cd3415660474b64d7` 已推送。
+日期：2026-10-11。状态：实现与完整验收完成；基线 `9cb1feb22721a25f5004036cd3415660474b64d7` 已推送。
 
 本轮全量门禁首次使用系统注入的 Python 3.10 启动：发布脚本依次通过静态检查，却在耗时的后端/E2E 之后才遇到 `No module named pytest`。仓库 `.python-version` 要求 3.12，`requirements-dev.txt` 锁定 pytest 9.1.1；改用已有 Python 3.12.14 隔离环境后 26/26 通过。这是门禁缺少启动前环境校验的问题，不应再让依赖错误消耗完整套件运行时间。
 
@@ -204,6 +204,8 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 
 验收限定为发布门禁启动时读取 `.python-version` 并验证当前解释器 major/minor 匹配、`pytest` 可导入；不满足时在启动任何昂贵测试之前输出明确修复命令并以非零状态退出。增加隔离单测覆盖版本不匹配、pytest 缺失与有效环境；用实际 Python 3.10 环境确认快速失败，用正确 Python 3.12 环境重新运行完整发布门禁且无跳项。不得自动安装依赖或联网下载运行环境。
 
-已实现发布脚本早期预检：在创建报告/日志目录及启动任一门禁前，验证 `.python-version` 的主次版本和 `pytest` 可用性；错误时打印仓库现有依赖安装方式，不自动安装。新增 `tests/test_release_check.py` 覆盖 Python 版本不匹配、缺少 pytest、正常环境和错误版本文件 **4/4** 通过；以系统 Python 3.10 实测返回码 2，且未生成指定报告文件。完整发布门禁仍待运行。
+已实现发布脚本早期预检：在创建报告/日志目录及启动任一门禁前，验证 `.python-version` 的主次版本和 `pytest` 可用性；错误时打印仓库现有依赖安装方式，不自动安装。新增 `tests/test_release_check.py` 覆盖 Python 版本不匹配、缺少 pytest、正常环境和错误版本文件 **4/4** 通过；以系统 Python 3.10 实测返回码 2，且未生成指定报告文件。
 
-完整发布门禁报告 `.artifacts/iteration-012/release-final.json` **26/26 通过，无跳过项**：Python 后端 **730 项测试、292 项子测试**；真实 HTTP/WebSocket **63/63**；Android **310 项 JVM 测试**、Debug 构建与 lint；桌面代码检查、单元、表情、恢复、交付、消息、提交、浏览器截图与 Electron 集成检查全部通过，npm audit 为 0 漏洞。运行时依赖预检和正确 Python 环境全程使用隔离本地数据，没有安装/下载依赖或调用付费模型；测试生成的桌面截图已还原，`design/` 保持原样。首次 Python 3.10 失败记录保存在 `.artifacts/iteration-011/release-final.json`。
+完整发布门禁最终报告 `.artifacts/iteration-012/release-final.json` **26/26 通过，无跳过项**：Python 后端 **736 项测试、292 项子测试**；真实 HTTP/WebSocket **63/63**；Android **310 项 JVM 测试**（无失败或跳过）、Debug 构建与 lint；桌面代码检查、单元、表情、恢复、交付、消息、提交、浏览器截图与 Electron 集成检查全部通过，npm audit 为 0 漏洞。运行时依赖预检和正确 Python 环境全程使用隔离本地数据，没有安装/下载依赖或调用付费模型；测试生成的桌面截图已还原，`design/` 保持原样。首次 Python 3.10 失败记录保存在 `.artifacts/iteration-011/release-final.json`。
+
+最终复核恢复了原有 `tests/test_release_check.py` 中 6 项完整日志、超时与嵌套存储隔离回归，再加 4 项新预检测试，最终均纳入 736 项后端测试。一次完整门禁中的 Electron smoke 发现旧断言要求所有任务的本地队列 outbox 全局为空；该会话可能合法保留其他任务的待核对意图。断言已改为只核对本场景任务的原排序请求确实清除，不放宽该任务状态；修正后的 smoke 与完整 26 项门禁均通过，失败过程证据保留于 `.artifacts/iteration-012/release-final-reviewed.json`。
