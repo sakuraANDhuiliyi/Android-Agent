@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -15,6 +16,32 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def python_environment_problem(
+    *,
+    root: Path = ROOT,
+    current_version: tuple[int, ...] = sys.version_info,
+    pytest_available: bool | None = None,
+) -> str | None:
+    version_file = root / ".python-version"
+    try:
+        required = version_file.read_text(encoding="utf-8").strip().split(".")
+        required_version = (int(required[0]), int(required[1]))
+    except (OSError, ValueError, IndexError):
+        return f"无法读取有效的 Python 版本要求：{version_file}"
+
+    active_version = tuple(current_version[:2])
+    if active_version != required_version:
+        return (
+            f"发布门禁要求 Python {required_version[0]}.{required_version[1]}，"
+            f"当前解释器为 {active_version[0]}.{active_version[1]}。"
+        )
+    if pytest_available is None:
+        pytest_available = importlib.util.find_spec("pytest") is not None
+    if not pytest_available:
+        return "当前 Python 环境未安装 pytest（requirements-dev.txt）。"
+    return None
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None, env: dict | None = None, log_dir: Path | None = None) -> dict:
@@ -81,6 +108,18 @@ def main() -> int:
         default=ROOT / ".artifacts" / "release_report.json",
     )
     args = parser.parse_args()
+    problem = python_environment_problem()
+    if problem:
+        print(f"发布门禁环境不符合要求：{problem}", file=sys.stderr)
+        print(
+            "请使用仓库要求的环境后重试：\n"
+            "  python3.12 -m venv .venv\n"
+            "  .venv/bin/python -m pip install --require-hashes -r requirements.lock\n"
+            "  .venv/bin/python -m pip install -r requirements-dev.txt\n"
+            "  .venv/bin/python scripts/release_check.py",
+            file=sys.stderr,
+        )
+        return 2
     args.report.parent.mkdir(parents=True, exist_ok=True)
     log_dir = Path(tempfile.mkdtemp(prefix=args.report.stem + "-logs-", dir=args.report.parent))
 

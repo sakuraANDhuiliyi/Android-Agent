@@ -193,3 +193,17 @@ Android 最终安装包另完成 **25 项设备验收**，最终单次完整执�
 新增真实服务 E2E 场景 `21_pause_three_cycles`，按事件屏障在三条真实命令各完成后暂停同一任务，再继续原 turn。三次暂停均等到服务端 `paused`，暂停窗口确认没有最终检查点或规范 changes 事件；恢复后任务与 turn ID 不变，最终四条命令各运行一次，隔离工作区日志精确为 `1,2,3,4`，规范 turn 成功。专项 **1/1** 通过，纳入完整 E2E **63/63**。
 
 默认发布门禁报告 `.artifacts/iteration-011/release-final-v2.json`，**26/26 通过，无跳过项**：后端 **732 项测试、292 项子测试**；HTTP/WebSocket E2E **63/63**；Android **310 项 JVM 测试**（无失败或跳过）、Debug 构建与 lint；桌面检查、单元、表情、恢复、交付、消息、提交、截图和真实 Electron 回归全部通过，npm audit 为 0 漏洞。首次门禁报告 `release-final.json` 因调用 Python 3.10 环境缺少 pytest 而失败；按仓库 `.python-version` 使用 Python 3.12.14 隔离环境完整重跑，全部通过。发布生成的已跟踪桌面截图已恢复，用户 `design/` 仍保持未跟踪且未纳入提交。
+
+## 发布门禁 Python 环境快速预检（第十二轮）
+
+日期：2026-10-11。状态：实现完成，待完整发布验收；基线 `9cb1feb22721a25f5004036cd3415660474b64d7` 已推送。
+
+本轮全量门禁首次使用系统注入的 Python 3.10 启动：发布脚本依次通过静态检查，却在耗时的后端/E2E 之后才遇到 `No module named pytest`。仓库 `.python-version` 要求 3.12，`requirements-dev.txt` 锁定 pytest 9.1.1；改用已有 Python 3.12.14 隔离环境后 26/26 通过。这是门禁缺少启动前环境校验的问题，不应再让依赖错误消耗完整套件运行时间。
+
+重新核实 [uv 项目环境文档](https://docs.astral.sh/uv/guides/projects/)：`.python-version` 用于选择项目 Python，项目命令应在包含其依赖的隔离环境执行；[uv Python 版本文档](https://docs.astral.sh/uv/concepts/python-versions/)说明版本请求和解释器发现规则。[Cursor Terminal 文档](https://prod.cursor.com/help/ai-features/terminal)也将安装依赖、运行测试与核对构建输出列为 Agent 终端工作流。资料支持在运行检查前确认执行环境；uv 的项目锁与仓库当前 requirement 文件结构不同，因此本轮只实现兼容现有仓库的预检，不迁移依赖管理工具。
+
+验收限定为发布门禁启动时读取 `.python-version` 并验证当前解释器 major/minor 匹配、`pytest` 可导入；不满足时在启动任何昂贵测试之前输出明确修复命令并以非零状态退出。增加隔离单测覆盖版本不匹配、pytest 缺失与有效环境；用实际 Python 3.10 环境确认快速失败，用正确 Python 3.12 环境重新运行完整发布门禁且无跳项。不得自动安装依赖或联网下载运行环境。
+
+已实现发布脚本早期预检：在创建报告/日志目录及启动任一门禁前，验证 `.python-version` 的主次版本和 `pytest` 可用性；错误时打印仓库现有依赖安装方式，不自动安装。新增 `tests/test_release_check.py` 覆盖 Python 版本不匹配、缺少 pytest、正常环境和错误版本文件 **4/4** 通过；以系统 Python 3.10 实测返回码 2，且未生成指定报告文件。完整发布门禁仍待运行。
+
+完整发布门禁报告 `.artifacts/iteration-012/release-final.json` **26/26 通过，无跳过项**：Python 后端 **730 项测试、292 项子测试**；真实 HTTP/WebSocket **63/63**；Android **310 项 JVM 测试**、Debug 构建与 lint；桌面代码检查、单元、表情、恢复、交付、消息、提交、浏览器截图与 Electron 集成检查全部通过，npm audit 为 0 漏洞。运行时依赖预检和正确 Python 环境全程使用隔离本地数据，没有安装/下载依赖或调用付费模型；测试生成的桌面截图已还原，`design/` 保持原样。首次 Python 3.10 失败记录保存在 `.artifacts/iteration-011/release-final.json`。
